@@ -158,21 +158,32 @@ class MasharikiWeatherDataset:
             self.parameters_table = pd.DataFrame()
 
     def _open_zipped_zarr(self, rel_path: str, lazy: bool = True) -> Optional[xr.Dataset]:
-        full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
-        try:
-            remote_file = self.fs.open(full_path)
-            zip_mapper = fsspec.get_mapper("zip://", fo=remote_file)
-            
-            chunks = {} if lazy else None
-            
+            full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
             try:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True})
-            except Exception:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False})
-            return ds
-        except Exception as e:
-            print(f"Error: Could not open {rel_path}. {e}")
-            return None
+                # Verify token permissions and file existence BEFORE reading
+                if not self.fs.exists(full_path):
+                    print(f"Authentication Error: Cannot find {full_path}.")
+                    print("Check that your HF Token is correct and has access to the private repository.")
+                    return None
+                    
+                # Pass the URL directly rather than the file object
+                zip_mapper = fsspec.get_mapper(
+                    "zip://", 
+                    fo=full_path, 
+                    target_options={"token": self.token}
+                )
+                
+                chunks = {} if lazy else None
+                
+                try:
+                    ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True})
+                except Exception:
+                    ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False})
+                return ds
+                
+            except Exception as e:
+                print(f"Error: Could not open {rel_path}. {e}")
+                return None
 
     def _load_registries(self):
         # Merge coordinates and parameter meta across all networks
