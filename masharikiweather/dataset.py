@@ -160,18 +160,17 @@ class MasharikiWeatherDataset:
     def _open_zipped_zarr(self, rel_path: str, lazy: bool = True) -> Optional[xr.Dataset]:
             full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
             try:
-                # Verify token permissions and file existence BEFORE reading
+                # Safety Check: Verify file exists and token is valid
                 if not self.fs.exists(full_path):
                     print(f"Authentication Error: Cannot find {full_path}.")
                     print("Check that your HF Token is correct and has access to the private repository.")
                     return None
                     
-                # Pass the URL directly rather than the file object
-                zip_mapper = fsspec.get_mapper(
-                    "zip://", 
-                    fo=full_path, 
-                    target_options={"token": self.token}
-                )
+                # Explicitly open the remote file object first
+                remote_file = self.fs.open(full_path)
+                
+                # Pass the active file object to the zip mapper
+                zip_mapper = fsspec.get_mapper("zip://", fo=remote_file)
                 
                 chunks = {} if lazy else None
                 
