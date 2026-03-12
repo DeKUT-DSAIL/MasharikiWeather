@@ -3,7 +3,7 @@
 ## Overview
 
 **MasharikiWeather** is an open experimental initiative to create an **ML-ready, framework-agnostic weather dataset for East Africa**.  
-It draws inspiration from the [**PeakWeather**](https://huggingface.co/PeakWeather) project — an integrated, harmonized, and machine-learning–ready global climate dataset.
+It draws inspiration from the [**PeakWeather**](https://huggingface.co/datasets/MeteoSwiss/PeakWeather) project — an integrated, harmonized, and machine-learning–ready global climate dataset.
 
 **At the moment, this is to remain an in-house tool for DSAIL.**
 
@@ -17,7 +17,7 @@ Ultimately, MasharikiWeather aims to be a **multi-variable benchmark dataset** t
 Clone the repository and install the required dependencies:
 
 ```bash
-git clone [https://github.com/DeKUT-DSAIL/MasharikiWeather.git](https://github.com/DeKUT-DSAIL/MasharikiWeather.git)
+git clone https://github.com/DeKUT-DSAIL/MasharikiWeather.git
 cd MasharikiWeather
 pip install -r requirements.txt
 ```
