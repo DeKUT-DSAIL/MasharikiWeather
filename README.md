@@ -68,7 +68,7 @@ print(ml_tensors.y) # Your targets
 
 1. **Reproduce and understand the PeakWeather pipeline**
    - Explore its dataset schema, preprocessing philosophy, and data fusion principles.
-2. **Develop an Africa-centered multi-source fusion framework**
+2. **Develop an East Africa-centered multi-source fusion framework**
    - Harmonize **station**, **reanalysis**, **satellite**, and **static prior** datasets in a unified structure.
 3. **Build a benchmark-ready, multi-variable dataset**
    - Include precipitation, temperature, humidity, solar radiation, wind, and other key atmospheric variables.
