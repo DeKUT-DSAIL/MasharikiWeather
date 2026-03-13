@@ -308,7 +308,7 @@ class MasharikiWeatherDataset:
             print(f"Warning: Could not load topography data. {e}")
             return None
 
-    def interpolate_topography(self, method: Literal["nearest", "linear"] = "nearest") -> None:
+    def interpolate_topography(self) -> None:
         if self._topo_ds is None:
             self._topo_ds = self.load_topography()
         if self._topo_ds is None:
@@ -323,14 +323,28 @@ class MasharikiWeatherDataset:
         lons = xr.DataArray(valid_stations['longitude'].values, dims="station", 
                             coords={"station": ("station", valid_stations.index.values)})
 
-        try:
-            sampled = self._topo_ds.sel(lat=lats, lon=lons, method=method) if method == "nearest" else self._topo_ds.interp(lat=lats, lon=lons, method=method)
-        except KeyError:
-            sampled = self._topo_ds.sel(latitude=lats, longitude=lons, method=method) if method == "nearest" else self._topo_ds.interp(latitude=lats, longitude=lons, method=method)
+        # Strictly Nearest Neighbor for Categorical/Circular
+        nearest_vars = ['LandCover', 'Aspect']
+        valid_nearest = [v for v in nearest_vars if v in self._topo_ds.data_vars]
+        if valid_nearest:
+            sampled_nearest = self._topo_ds[valid_nearest].sel(lat=lats, lon=lons, method="nearest")
+            df_nearest = sampled_nearest.to_dataframe().drop(columns=['lat', 'lon'], errors='ignore')
+        else:
+            df_nearest = pd.DataFrame(index=valid_stations.index)
 
-        df_topo = sampled.to_dataframe()
-        cols_to_drop = [c for c in ['lat', 'lon', 'latitude', 'longitude'] if c in df_topo.columns]
-        df_topo = df_topo.drop(columns=cols_to_drop, errors='ignore')
+        # Bilinear Interpolation for Continuous Physical Fields
+        continuous_vars = [v for v in self._topo_ds.data_vars if v not in nearest_vars]
+        if continuous_vars:
+            sampled_bilinear = self._topo_ds[continuous_vars].interp(lat=lats, lon=lons, method="linear")
+            df_bilinear = sampled_bilinear.to_dataframe().drop(columns=['lat', 'lon'], errors='ignore')
+        else:
+            df_bilinear = pd.DataFrame(index=valid_stations.index)
+
+        # Combine and Join
+        df_topo = pd.concat([df_nearest, df_bilinear], axis=1)
+        
+        # Fill coastal/ocean-masked topography NaNs with 0 (for GHCNd coastal stations)
+        df_topo = df_topo.fillna(0)
 
         self.stations_table = self.stations_table.join(df_topo)
 
