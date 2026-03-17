@@ -32,8 +32,10 @@ This pipeline streams data directly from the DeKUT-DSAIL/weather-data Hugging Fa
 
 
 ### Quickstart
-from mashariki_dataset import MasharikiWeatherDataset
+
 ```python
+from masharikiweather import MasharikiWeatherDataset
+
 # 1. Initialize the Pipeline (Handles caching and network fusion)
 ds = MasharikiWeatherDataset(
     repo_id="DeKUT-DSAIL/weather-data",
@@ -106,7 +108,7 @@ MasharikiWeather seeks to **bridge these gaps** through:
 | **TAMSAT** | Satellite | Africa | Precipitation | Bias-corrected rainfall |
 | **IMERG** | Satellite | Global | Precipitation | Half-houly rainfall |
 | **Static Priors (EE)** | Earth Engine Layers | Africa | Elevation, Slope, Aspect, Land Cover, Distance to Water | Geophysical context |
-| **(Future)** ECMWF ML, FuXi, GraphCast | Global | Precip, Temp, Wind, Radiation | ML & hybrid forecasts |
+| **(Future)** ECMWF ML, FuXi, GraphCast, FourCastNet | Global | Precip, Temp, Wind, Radiation | ML & hybrid forecasts |
 
 ---
 
@@ -173,8 +175,12 @@ MasharikiWeather seeks to **bridge these gaps** through:
 
 ---
 
-## Credits
+## Contributing
+We welcome active experimentation and stress-testing from the DSAIL team! Whether you are testing a new spatial masking technique, adding a new satellite data source, or optimizing the data loaders, we want your contributions.
 
+To ensure the core engine remains stable while we experiment, please review our [Contribution Guidelines](CONTRIBUTING.md) before pushing code. All new features and experiments should be developed on a separate branch and submitted via a Pull Request (PR) for peer review.
+
+## Credits
 Developed as part of an effort to **advance localized, data-driven weather prediction for East Africa**,  
 inspired by **[PeakWeather](https://arxiv.org/abs/2506.13652)** and **[WeatherBench2](https://sites.research.google/gr/weatherbench/)**.  
 
