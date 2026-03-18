@@ -1088,8 +1088,8 @@ class MasharikiWeatherDataset:
             method_overrides (Optional[Dict[str, str]]): Method overrides for specific variables.
             patch_radius (int): Radius to use for patch extraction.
             ml_task (Literal["downscaling", "forecasting"]): Defines the tensor mapping.
-                - "downscaling": Includes future tensors.
-                - "forecasting": Blocks future tensors to prevent data leakage.
+                - "downscaling": Includes future tensors in the output.
+                - "forecasting": Blocks future tensors in the output to prevent data leakage.
             as_xarray (bool): Whether to return the data as xarray.
         """
         if split is not None and split not in ["train", "test"]:
