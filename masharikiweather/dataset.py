@@ -847,14 +847,20 @@ class MasharikiWeatherDataset:
                     group_results.append(sampled_patch)
 
                 # --- Merge and Flatten to DataFrame ---
-                merged_yearly_ds = xr.merge(group_results)
-                df = merged_yearly_ds.to_dataframe().reset_index()
-                
-                # Drop nuisance coordinates to yield a clean multi-index structure
+                # Drop nuisance coordinates PRE-MERGE to avoid strict Xarray spatial dimension conflicts
                 nuisance_coords = [lat_dim, lon_dim, 'latitude', 'longitude', 'step',
                                    'number', 'surface', 'valid_time', 'height',
-                                   'spatial', 'band', 'spatial_ref']
+                                   'spatial', 'band', 'spatial_ref', 'patch_y', 'patch_x']
                 
+                clean_results = []
+                for res_ds in group_results:
+                    drop_c = [c for c in nuisance_coords if c in res_ds.coords or c in res_ds.data_vars]
+                    clean_results.append(res_ds.drop_vars(drop_c, errors='ignore'))
+                    
+                merged_yearly_ds = xr.merge(clean_results, compat="override")
+                df = merged_yearly_ds.to_dataframe().reset_index()
+                
+                # Cleanup residual columns explicitly in pandas
                 cols_to_drop = [c for c in nuisance_coords if c in df.columns]
                 df = df.drop(columns=cols_to_drop, errors='ignore')
                 
