@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "masharikiweather"
+version = "0.1.0"
+description = "A geostatistical extraction and alignment engine for East African weather and satellite data."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name="Teo" }
+]
+
+# Tell the build system to read dependencies dynamically
+dynamic = ["dependencies"]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.0.0",
+    "torchvision"
+]
+
+# Point setuptools strictly to your requirements file
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+include = ["masharikiweather*"]
