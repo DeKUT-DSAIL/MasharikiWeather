@@ -220,3 +220,6 @@ dist/
 build/
 .DS_Store
 mashariki_data/
+
+# Agents
+.agents/
