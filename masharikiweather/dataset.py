@@ -11,6 +11,9 @@ FrameArray = Union[pd.DataFrame, np.ndarray]
 
 @dataclass
 class Windows:
+    """
+    A container for sliding window views of the dataset.
+    """
     x: Union[pd.DataFrame, np.ndarray, xr.Dataset]
     mask_x: Union[pd.DataFrame, np.ndarray, xr.Dataset]
     y: Union[pd.DataFrame, np.ndarray, xr.Dataset]
@@ -28,6 +31,16 @@ class Windows:
     feature_labels: Optional[Sequence[str]] = None
 
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
+    """
+    Create a sliding window view of an array.
+
+    Args:
+        a (np.ndarray): Input array.
+        window_shape (int): Shape of the sliding window.
+
+    Returns:
+        np.ndarray: Sliding window view of the array.
+    """
     from numpy.lib.stride_tricks import sliding_window_view as np_swv
     if hasattr(a, "values"):
         windows = np_swv(a.values, window_shape, axis=0)
@@ -429,6 +442,9 @@ class MasharikiWeatherDataset:
     def interpolate_topography(self) -> None:
         """
         Interpolate topography data to the station locations.
+
+        Args:
+            filename (str): Name of the topography file.
         """
         if self._topo_ds is None:
             self._topo_ds = self.load_topography()
@@ -473,6 +489,12 @@ class MasharikiWeatherDataset:
         """
         Validate that the requested stations are available in the dataset.
         If stations is None, returns all available stations.
+
+        Args:
+            stations (Optional[Union[str, List[str]]]): List of station IDs.
+
+        Returns:
+            List[str]: List of valid station IDs.
         """
         if stations is None:
             return list(self.stations_table.index)
@@ -731,6 +753,23 @@ class MasharikiWeatherDataset:
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
     ) -> Dict[str, pd.DataFrame]:
+
+        """
+        Extract gridded weather data for a list of stations.
+
+        Args:
+            groups (List[str]): List of gridded products to extract.
+            stations (Optional[Union[str, List[str]]]): List of station IDs to extract data for.
+            years (Optional[Union[int, List[int]]]): List of years to extract data for.
+            variables (Optional[List[str]]): List of variables to extract.
+            method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides.
+            patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
+            first_date (Optional[Union[str, pd.Timestamp]]): First date to extract data for.
+            last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
+
+        Returns:
+            Dict[str, pd.DataFrame]: Dictionary of gridded weather data for each station.
+        """
         
         valid_stations = self.validate_stations(stations)
         if not valid_stations:
@@ -1205,6 +1244,18 @@ class MasharikiWeatherDataset:
         stations: Optional[Union[str, List[str]]],
         parameters: Optional[Union[str, List[str]]],
     ) -> Windows:
+
+        """
+        Convert numpy windows to xarray windows.
+
+        Args:
+            windows (Windows): Numpy windows.
+            stations (Optional[Union[str, List[str]]]): List of station IDs.
+            parameters (Optional[Union[str, List[str]]]): List of parameters.
+
+        Returns:
+            Windows: Xarray windows.
+        """
         
         coord_info = self._get_windows_coordinates(windows, stations, parameters)
         return self._pack_windows_as_xarray(
@@ -1227,6 +1278,15 @@ class MasharikiWeatherDataset:
         Dynamically extracts a single window (batch index) and converts exactly that slice into 
         an Xarray Dataset. This guarantees a O(1) memory footprint for visualization/inspection, 
         bypassing the contiguous RAM expansion of mapping all rolling windows.
+
+        Args:
+            windows (Windows): Numpy windows.
+            batch_idx (int): Batch index.
+            stations (Optional[Union[str, List[str]]]): List of station IDs.
+            parameters (Optional[Union[str, List[str]]]): List of parameters.
+
+        Returns:
+            Windows: Xarray windows.
         """
         import copy
         single = copy.copy(windows)
