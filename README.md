@@ -14,12 +14,17 @@ Ultimately, MasharikiWeather aims to be a **multi-variable benchmark dataset** t
 ---
 
 ## Usage
-Clone the repository and install the required dependencies:
+Create a python virtual environment and activate it.
 
 ```bash
-git clone https://github.com/DeKUT-DSAIL/MasharikiWeather.git
-cd MasharikiWeather
-pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Install the package.
+
+```bash
+pip install masharikiweather
 ```
 
 ### Authentication
