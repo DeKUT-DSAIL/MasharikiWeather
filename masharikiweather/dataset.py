@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Sequence, Tuple, Union, Dict
+from typing import List, Literal, Optional, Sequence, Tuple, Union, Dict, Callable
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -21,14 +21,34 @@ class Windows:
     index_x: Optional[Union[pd.DatetimeIndex, np.ndarray]] = None
     index_y: Optional[Union[pd.DatetimeIndex, np.ndarray]] = None
     
-    # ML Gridded Tensors
+    # ML Gridded Tensors (input resolution)
     gridded_x: Optional[Union[np.ndarray, xr.Dataset]] = None
     gridded_y: Optional[Union[np.ndarray, xr.Dataset]] = None
     gridded_features: Optional[Sequence[str]] = None
 
+    # Target Grid Tensors (for supervised downscaling at a different resolution)
+    target_gridded_y: Optional[np.ndarray] = None
+    target_gridded_features: Optional[Sequence[str]] = None
+    target_grid_lats: Optional[np.ndarray] = None
+    target_grid_lons: Optional[np.ndarray] = None
+    target_temporal_freq: Optional[str] = None
+
+    # Static Tensors - Continuous float32
+    # When target_gridded_url is set: static_grid = target-res, static_grid_input = input-res
+    # When no target grid:           static_grid = input-res,  static_grid_input = None
+    static_stations: Optional[Union[np.ndarray, xr.Dataset]] = None
+    static_stations_categorical: Optional[np.ndarray] = None
+    static_grid: Optional[Union[np.ndarray, xr.Dataset]] = None
+    static_grid_categorical: Optional[np.ndarray] = None
+    static_grid_input: Optional[np.ndarray] = None
+    static_grid_input_categorical: Optional[np.ndarray] = None
+    station_mask_2d: Optional[np.ndarray] = None
+
     # Mathematical Coordinates
     station_labels: Optional[Sequence[str]] = None
     feature_labels: Optional[Sequence[str]] = None
+    grid_lats: Optional[np.ndarray] = None
+    grid_lons: Optional[np.ndarray] = None
 
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
     """
@@ -46,7 +66,8 @@ def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
         windows = np_swv(a.values, window_shape, axis=0)
     else:
         windows = np_swv(a, window_shape, axis=0)
-    return np.moveaxis(windows, -1, 1)
+    # Force contiguous memory layout for safe PyTorch tensor conversion
+    return np.ascontiguousarray(np.moveaxis(windows, -1, 1))
 
 def df_add_missing_columns(df: pd.DataFrame, col0, col1, fill_value=np.nan) -> pd.DataFrame:
     idx = pd.MultiIndex.from_product([col0, col1], names=['station_id', 'parameter'])
@@ -78,11 +99,33 @@ class MasharikiWeatherDataset:
         freq: str = "h",
         test_set_start: Optional[pd.Timestamp] = None,
         parameters: Optional[Union[str, Sequence[str]]] = None,
-        imputation_method: Literal["locf", "zero", None] = "zero",
+        imputation_method: Optional[Union[str, Callable[[pd.DataFrame], pd.DataFrame]]] = None,
+        imputation_limit: Optional[int] = None,
         pad_missing_values: bool = True,
         aggregation_methods: Optional[Dict[str, str]] = None,
         tabular_parquet_path: Optional[str] = None
     ):
+        """
+        Args:
+            repo_id (str): Hugging Face repository ID.
+            token (str): Hugging Face authentication token.
+            root_dir (str): Local directory to store the dataset.
+            years (List[int]): Years to include in the dataset.
+            source_obs (Union[str, List[str]]): Source of observations.
+            freq (str): Temporal frequency of the data.
+            test_set_start (pd.Timestamp): Start date of the test set.
+            parameters (Union[str, Sequence[str]]): Parameters to include in the dataset.
+            imputation_method (Optional[Union[str, Callable[[pd.DataFrame], pd.DataFrame]]]): Method to impute missing values, 
+                "locf": Forward fill with strict limit to prevent weeks of stale data
+                "temporal_linear": Linear interpolation for continuous variables (limit 3 hours)
+                "diurnal_climatology": Fill missing with the historical median for that Month & Hour
+                "zero": Fill missing with 0 (Dangerous for precipitation targets, but acceptable for inputs if masked)
+                None: Leave NaNs intact (Best for PyTorch loss masking)
+                Callable[[pd.DataFrame], pd.DataFrame]: Custom imputation function
+            pad_missing_values (bool): Whether to pad missing values.
+            aggregation_methods (Optional[Dict[str, str]]): Methods to aggregate data.
+            tabular_parquet_path (Optional[str]): Path to tabular parquet file.
+        """
         self.repo_id = repo_id
         self.token = token
         self.root_dir = root_dir
@@ -98,6 +141,7 @@ class MasharikiWeatherDataset:
             self.test_set_start = test_set_start
         self.requested_parameters = parameters
         self.imputation_method = imputation_method
+        self.imputation_limit = imputation_limit
         
         try:
             self.freq = pd.tseries.frequencies.to_offset(freq).freqstr
@@ -223,9 +267,9 @@ class MasharikiWeatherDataset:
             chunks = {} if lazy else None
             
             try:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True})
+                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False})
+                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
             return ds
             
         except Exception as e:
@@ -242,9 +286,9 @@ class MasharikiWeatherDataset:
         if os.path.exists(local_path):
             chunks = {} if lazy else None
             try:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True})
+                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False})
+                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
                 
         # If not cached locally, fallback to Hugging Face lazy streaming pipeline natively
         return self._open_zipped_zarr(f"data/{group}/{year}.zarr.zip", lazy)
@@ -400,44 +444,92 @@ class MasharikiWeatherDataset:
         if self.pad_missing_values:
             obs_df = df_add_missing_columns(obs_df, self.stations, self.parameters)
 
+        # Ensure mask is saved BEFORE any imputation happens
         self.mask = ~obs_df.isna()
         
-        if self.imputation_method == "locf":
-            obs_df = obs_df.ffill()
-        elif self.imputation_method == "zero":
-            obs_df = obs_df.fillna(0)
-        elif self.imputation_method is not None:
-            raise ValueError(f"Invalid imputation method: {self.imputation_method}.")
-        
+        if self.imputation_method is None:
+            pass # Leave NaNs intact (Best for PyTorch loss masking)
+            
+        elif callable(self.imputation_method):
+            # Execute User-Defined Custom Function
+            obs_df = self.imputation_method(obs_df)
+            
+        elif isinstance(self.imputation_method, str):
+            method = self.imputation_method.lower()
+            
+            if method == "locf":
+                # Forward fill with strict limit to prevent weeks of stale data
+                limit = self.imputation_limit if self.imputation_limit is not None else 6
+                obs_df = obs_df.ffill(limit=limit)
+                
+            elif method == "temporal_linear":
+                # Linear interpolation for continuous variables (limit 3 hours)
+                # Note: PyTorch/Pandas struggles to linear-interpolate MultiIndexes easily,
+                # so we apply it down the time axis.
+                limit = self.imputation_limit if self.imputation_limit is not None else 3
+                obs_df = obs_df.interpolate(method='time', limit=limit)
+                
+            elif method == "diurnal_climatology":
+                # Fill missing with the historical median for that Month & Hour
+                obs_df = obs_df.groupby([obs_df.index.month, obs_df.index.hour]).transform(
+                    lambda x: x.fillna(x.median())
+                )
+                
+            elif method == "zero":
+                # DANGEROUS for precipitation targets, but acceptable for inputs if masked
+                obs_df = obs_df.fillna(0)
+                
+            else:
+                raise ValueError(f"Unknown imputation method: {method}")
+                
         self.observations = obs_df
 
     def load_topography(self, filename: str = "east_africa_static_priors") -> Optional[xr.Dataset]:
-        # Define local and remote paths
+        """
+        Load static topographic priors from disk or Hugging Face.
+
+        Applies cyclical encoding to Aspect (degrees -> sin/cos) to prevent
+        the circular paradox where 359 deg and 1 deg appear maximally distant
+        to a neural network, when physically they are adjacent.
+
+        Args:
+            filename (str): Name of the topography file (without extension).
+
+        Returns:
+            Optional[xr.Dataset]: Topographic dataset with Aspect decomposed.
+        """
         local_dir = f"{self.root_dir}/topography"
         local_path = f"{local_dir}/{filename}.nc"
         hf_path = f"hf://datasets/{self.repo_id}/data/topography/{filename}.nc"
 
+        ds = None
         # Minimum-Latency Local Load
         if os.path.exists(local_path):
             try:
-                return xr.open_dataset(local_path, engine="h5netcdf").load()
+                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
             except Exception as e:
                 print(f"Warning: Local topography cache corrupted. Re-downloading... ({e})")
-                # If the file is broken, let it fall through to the download step
 
         # First-Time Fetch (Download to Cache)
-        try:
-            os.makedirs(local_dir, exist_ok=True)
-            
-            # fsspec.get() directly copies the remote file to the local path
-            self.fs.get(hf_path, local_path)
-            
-            # Load the newly cached file
-            return xr.open_dataset(local_path, engine="h5netcdf").load()
-            
-        except Exception as e:
-            print(f"Warning: Could not fetch topography data from Hugging Face. {e}")
-            return None
+        if ds is None:
+            try:
+                os.makedirs(local_dir, exist_ok=True)
+                self.fs.get(hf_path, local_path)
+                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+            except Exception as e:
+                print(f"Warning: Could not fetch topography data from Hugging Face. {e}")
+                return None
+
+        # Cyclical Encoding: Aspect (degrees) -> sin/cos pair
+        # This maps the circular variable onto a 2D unit circle so that
+        # 359 deg and 1 deg are correctly adjacent in feature space.
+        if 'Aspect' in ds.data_vars:
+            aspect_rad = ds['Aspect'] * (np.pi / 180.0)
+            ds['Aspect_sin'] = np.sin(aspect_rad)
+            ds['Aspect_cos'] = np.cos(aspect_rad)
+            ds = ds.drop_vars('Aspect')
+
+        return ds
 
     def interpolate_topography(self) -> None:
         """
@@ -460,8 +552,9 @@ class MasharikiWeatherDataset:
         lons = xr.DataArray(valid_stations['longitude'].values, dims="station", 
                             coords={"station": ("station", valid_stations.index.values)})
 
-        # Strictly Nearest Neighbor for Categorical/Circular
-        nearest_vars = ['LandCover', 'Aspect']
+        # Strictly Nearest Neighbor for Categorical Variables
+        # (Aspect has already been decomposed into continuous sin/cos in load_topography)
+        nearest_vars = ['LandCover']
         valid_nearest = [v for v in nearest_vars if v in self._topo_ds.data_vars]
         if valid_nearest:
             sampled_nearest = self._topo_ds[valid_nearest].sel(lat=lats, lon=lons, method="nearest")
@@ -480,8 +573,17 @@ class MasharikiWeatherDataset:
         # Combine and Join
         df_topo = pd.concat([df_nearest, df_bilinear], axis=1)
         
-        # Fill coastal/ocean-masked topography NaNs with 0 (for GHCNd coastal stations)
-        df_topo = df_topo.fillna(0)
+        # Physically sound defaults for ocean/coastal-masked terrain
+        # DEM/Slope/TPI = 0 (sea level, flat), Aspect_cos = 1 (undefined direction defaults
+        # to unit vector on cos axis), LandCover = 0 (water/ocean class)
+        fill_map = {
+            'DEM': 0, 'Slope': 0, 'TPI': 0,
+            'Aspect_sin': 0, 'Aspect_cos': 1,
+            'LandCover': 0,
+        }
+        for col in df_topo.columns:
+            default_val = fill_map.get(col, 0)
+            df_topo[col] = df_topo[col].fillna(default_val)
 
         self.stations_table = self.stations_table.join(df_topo)
 
@@ -518,6 +620,100 @@ class MasharikiWeatherDataset:
         """
         valid_stations = self.validate_stations(stations)
         return self.stations_table.loc[valid_stations]
+
+    def get_spatial_split(
+        self,
+        test_fraction: float = 0.2,
+        n_clusters: int = 5,
+        seed: int = 42,
+        stations: Optional[Union[str, List[str]]] = None,
+        n_folds: Optional[int] = None,
+    ) -> Union[Dict[str, List[str]], List[Dict[str, List[str]]]]:
+        """
+        Generate geographically stratified train/test station splits.
+
+        Uses KMeans clustering on (latitude, longitude) to partition stations into
+        spatial clusters, then samples the test set proportionally from each cluster.
+        This ensures held-out test stations are spatially representative across the
+        entire East Africa domain, not clustered in one corner.
+
+        Args:
+            test_fraction (float): Fraction of stations to hold out (0.0 to 1.0).
+            n_clusters (int): Number of geographic clusters to stratify across.
+                Higher values give finer spatial balance. Should not exceed the
+                number of stations.
+            seed (int): Random seed for reproducibility.
+            stations (Optional[Union[str, List[str]]]): Subset of stations to split.
+                If None, uses all available stations with valid coordinates.
+            n_folds (Optional[int]): If set, returns a list of n_folds non-overlapping
+                spatial cross-validation folds instead of a single split.
+
+        Returns:
+            If n_folds is None:
+                Dict with keys "train" and "test", each mapping to a list of station IDs.
+            If n_folds is set:
+                List of n_folds dicts, each with "train" and "test" station ID lists.
+                Every station appears in the test set of exactly one fold.
+
+        Example:
+            split = ds.get_spatial_split(test_fraction=0.2, n_clusters=5)
+            train_windows = ds.get_windows(stations=split["train"], ...)
+            test_windows  = ds.get_windows(stations=split["test"], ...)
+        """
+        from sklearn.cluster import KMeans
+
+        valid = self.validate_stations(stations)
+        coords = self.stations_table.loc[valid].dropna(subset=["latitude", "longitude"])
+        if coords.empty:
+            raise ValueError("No stations with valid latitude/longitude found.")
+
+        n_stations = len(coords)
+        actual_clusters = min(n_clusters, n_stations)
+
+        # Cluster stations geographically
+        X = coords[["latitude", "longitude"]].values
+        km = KMeans(n_clusters=actual_clusters, random_state=seed, n_init=10)
+        labels = km.fit_predict(X)
+
+        rng = np.random.default_rng(seed)
+
+        if n_folds is not None:
+            # Spatial K-Fold Cross-Validation
+            # Assign each station a fold index, stratified by cluster
+            fold_assignments = np.full(n_stations, -1, dtype=int)
+            for cluster_id in range(actual_clusters):
+                cluster_mask = labels == cluster_id
+                cluster_indices = np.where(cluster_mask)[0]
+                rng.shuffle(cluster_indices)
+                # Round-robin assign to folds
+                for i, idx in enumerate(cluster_indices):
+                    fold_assignments[idx] = i % n_folds
+
+            station_ids = coords.index.values
+            folds = []
+            for fold_idx in range(n_folds):
+                test_mask = fold_assignments == fold_idx
+                folds.append({
+                    "train": station_ids[~test_mask].tolist(),
+                    "test": station_ids[test_mask].tolist(),
+                })
+            return folds
+
+        # Single train/test split, stratified by cluster
+        train_ids, test_ids = [], []
+        station_ids = coords.index.values
+
+        for cluster_id in range(actual_clusters):
+            cluster_mask = labels == cluster_id
+            cluster_stations = station_ids[cluster_mask]
+            rng.shuffle(cluster_stations)
+
+            n_test = max(1, int(len(cluster_stations) * test_fraction))
+            test_ids.extend(cluster_stations[:n_test].tolist())
+            train_ids.extend(cluster_stations[n_test:].tolist())
+
+        return {"train": train_ids, "test": test_ids}
+
 
     def _apply_lapse_rate_correction_xr(
         self, 
@@ -651,7 +847,10 @@ class MasharikiWeatherDataset:
                 z_850 = sampled_continuous['geopotential'].sel(level=850) / g
                 z_700 = sampled_continuous['geopotential'].sel(level=700) / g
                 eelr = (t_850 - t_700) / (z_700 - z_850)
-                eelr = eelr.fillna(0.0065) # Fallback for missing slices
+                # Force positive (handle rare inversions) and clamp to physical bounds:
+                # Moist adiabatic ~0.004 K/m to dry adiabatic ~0.0098 K/m
+                eelr = xr.where(eelr < 0, np.abs(eelr), eelr)
+                eelr = eelr.clip(min=0.004, max=0.0098).fillna(0.0065)
             except KeyError:
                 # Fallback to standard 6.5 C/km if 850/700hPa levels aren't in the dataset
                 eelr = xr.full_like(grid_elev, 0.0065)
@@ -762,7 +961,8 @@ class MasharikiWeatherDataset:
             stations (Optional[Union[str, List[str]]]): List of station IDs to extract data for.
             years (Optional[Union[int, List[int]]]): List of years to extract data for.
             variables (Optional[List[str]]): List of variables to extract.
-            method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides.
+            method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides
+            for specific variables (e.g. {"temperature": "patch_max", "wind_speed": "nearest", "total_precipitation": "linear"}).
             patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
             first_date (Optional[Union[str, pd.Timestamp]]): First date to extract data for.
             last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
@@ -777,7 +977,7 @@ class MasharikiWeatherDataset:
 
         target_years = [years] if isinstance(years, int) else (years or self.years)
         
-        elev_col = next((c for c in ['dem', 'elevation', 'Elevation', 'z'] if c in self.stations_table.columns), None)
+        elev_col = next((c for c in ['DEM', 'dem', 'elevation', 'Elevation', 'z'] if c in self.stations_table.columns), None)
         has_dem = elev_col is not None
         if not has_dem:
             print("Warning: Station DEM/Elevation not found. Topographic corrections will be bypassed.")
@@ -790,6 +990,28 @@ class MasharikiWeatherDataset:
         extracted_dfs = {}
         for group in groups:
             yearly_dfs = []
+            
+            # Fast-fail: validate that requested variables exist in this group
+            # before entering the expensive per-year extraction loop.
+            if variables:
+                peek_ds = None
+                for peek_year in target_years:
+                    peek_ds = self._open_gridded_zarr(group, peek_year, lazy=True)
+                    if peek_ds is not None:
+                        break
+                if peek_ds is not None:
+                    available_vars = list(peek_ds.data_vars)
+                    missing_vars = [v for v in variables if v not in available_vars]
+                    if len(missing_vars) == len(variables):
+                        raise ValueError(
+                            f"None of the requested variables {variables} exist in "
+                            f"'{group}'. Available variables: {available_vars}"
+                        )
+                    if missing_vars:
+                        print(
+                            f"Warning: Variables {missing_vars} not found in '{group}'. "
+                            f"Proceeding with: {[v for v in variables if v in available_vars]}"
+                        )
             
             for year in tqdm(target_years, desc=f"Extracting {group}"):
                 ds = self._open_gridded_zarr(group, year, lazy=True)
@@ -870,9 +1092,20 @@ class MasharikiWeatherDataset:
                         lambda row: f"_{int(row['level'])}" if pd.notnull(row['level']) else "", axis=1
                     )
                     
+                    # Dynamically capture variables that were renamed during patch_flat (e.g. _px0, _px1)
+                    actual_val_vars = []
+                    for col in df.columns:
+                        if col in valid_vars:
+                            actual_val_vars.append(col)
+                        else:
+                            for base_var in valid_vars:
+                                if col.startswith(f"{base_var}_px"):
+                                    actual_val_vars.append(col)
+                                    break
+                                    
                     # Melt and reconstruct to combine variable name with level
-                    id_vars = [c for c in df.columns if c not in valid_vars and c != 'parameter_level']
-                    df_melt = df.melt(id_vars=id_vars + ['parameter_level'], value_vars=valid_vars, var_name='base_param')
+                    id_vars = [c for c in df.columns if c not in actual_val_vars and c != 'parameter_level']
+                    df_melt = df.melt(id_vars=id_vars + ['parameter_level'], value_vars=actual_val_vars, var_name='base_param')
                     df_melt['parameter'] = df_melt['base_param'] + df_melt['parameter_level']
                     df = df_melt.pivot_table(index=['time', 'station'], columns='parameter', values='value').reset_index()
 
@@ -898,6 +1131,9 @@ class MasharikiWeatherDataset:
             df = df.fillna(fill_value)
             
         if as_numpy:
+            # Enforce strict lexicographic ordering before numpy flatten
+            # to prevent station/parameter axis scrambling
+            df = df.sort_index(axis=1)
             stations = df.columns.unique(0)
             parameters = df.columns.unique(1)
             if len(stations) > 0 and len(parameters) > 0:
@@ -1114,7 +1350,11 @@ class MasharikiWeatherDataset:
         gridded_variables: Optional[List[str]] = None,
         method_overrides: Optional[Dict[str, str]] = None,
         patch_radius: int = 1,
-        ml_task: Literal["downscaling", "forecasting"] = "downscaling",
+        ml_task: Literal["downscaling", "forecasting", "correction"] = "downscaling",
+        spatial_mode: Literal["stations", "grid"] = "stations",
+        target_gridded_url: Optional[Union[str, List[str]]] = None,
+        target_gridded_variables: Optional[List[str]] = None,
+        target_temporal_freq: Optional[str] = None,
         as_xarray: bool = False,
     ) -> Windows:
         """
@@ -1123,25 +1363,36 @@ class MasharikiWeatherDataset:
         Args:
             window_size (int): Number of past time steps to use as input (x).
             horizon_size (int): Number of future time steps to predict (y).
-            stations (Optional[Union[str, List[str]]]): Station(s) to use. Can be a single ID, list of IDs, or None for all.
-            parameters (Optional[Union[str, List[str]]]): Variables to use. Can be a single variable name, list of names, or None for all.
+            stations (Optional[Union[str, List[str]]]): Station(s) to use.
+            parameters (Optional[Union[str, List[str]]]): Variables to use.
             first_date (Optional[Union[str, pd.Timestamp]]): Start date for the data.
             last_date (Optional[Union[str, pd.Timestamp]]): End date for the data.
-            split (Optional[Literal["train", "test"]]): Split the data into training and testing sets.
-            gridded_url (Optional[Union[str, List[str]]]): URL(s) to the gridded data.
-            gridded_variables (Optional[List[str]]): Variables to use from the gridded data.
+            split (Optional[Literal["train", "test"]]): Split the data into training and testing sets, or None for no split. 
+                If split is "train", the data will be split into training and validation sets using the `get_spatial_split` method.
+            gridded_url (Optional[Union[str, List[str]]]): HF group name(s) for the input gridded data (e.g. "era5").
+            gridded_variables (Optional[List[str]]): Variables to use from the input gridded data.
             method_overrides (Optional[Dict[str, str]]): Method overrides for specific variables.
             patch_radius (int): Radius to use for patch extraction.
-            ml_task (Literal["downscaling", "forecasting"]): Defines the tensor mapping.
-                - "downscaling": Includes future tensors in the output.
-                - "forecasting": Blocks future tensors in the output to prevent data leakage.
+            ml_task (Literal["downscaling", "forecasting", "correction"]): Defines the tensor mapping.
+                - "downscaling": gridded_x = past input grid, gridded_y = past input grid (same-res).
+                - "forecasting": gridded_x = past input grid, gridded_y = None (blocked).
+                - "correction": gridded_x = full window (past+future), station obs as sparse anchors.
+            spatial_mode (Literal["stations", "grid"]): The spatial array extraction logic.
+            target_gridded_url (Optional[Union[str, List[str]]]): HF group name(s) for the target grid
+                at a different resolution (e.g. "chirps", "tamsat", "imerg").
+            target_gridded_variables (Optional[List[str]]): Variables to extract from the target grid.
+            target_temporal_freq (Optional[str]): Temporal frequency of the target grid if different
+                from self.freq (e.g. "D" for daily CHIRPS vs hourly ERA5).
             as_xarray (bool): Whether to return the data as xarray.
         """
         if split is not None and split not in ["train", "test"]:
             raise ValueError(f"Invalid split value: {split}. Expected 'train' or 'test'.")
 
-        if ml_task not in ["downscaling", "forecasting"]:
-            raise ValueError("ml_task must be either 'downscaling' or 'forecasting'.")
+        if ml_task not in ["downscaling", "forecasting", "correction"]:
+            raise ValueError("ml_task must be 'downscaling', 'forecasting', or 'correction'.")
+
+        if spatial_mode not in ["stations", "grid"]:
+            raise ValueError("spatial_mode must be either 'stations' or 'grid'.")
 
         observations, mask = self.get_observations(
             stations=stations,
@@ -1155,28 +1406,104 @@ class MasharikiWeatherDataset:
         )
 
         gridded_df = None
+        gridded_2d_np = None
+        grid_lats = None
+        grid_lons = None
+        gridded_2d_features = None
+
         if gridded_url:
             groups = [gridded_url] if isinstance(gridded_url, str) else gridded_url
             valid_stations = self.validate_stations(stations) if stations else self.stations_table.index.tolist()
             target_years = list(set(observations.index.year)) if not observations.empty else self.years
             
-            extracted_dfs = self.get_gridded_for_stations(
-                groups=groups, 
-                stations=valid_stations, 
-                years=target_years,
-                variables=gridded_variables,
-                method_overrides=method_overrides,
-                patch_radius=patch_radius,
-                first_date=first_date,
-                last_date=last_date
-            )
-            
-            if extracted_dfs:
-                gridded_df = pd.concat(extracted_dfs.values(), axis=1)
+            if spatial_mode == "stations":
+                extracted_dfs = self.get_gridded_for_stations(
+                    groups=groups, 
+                    stations=valid_stations, 
+                    years=target_years,
+                    variables=gridded_variables,
+                    method_overrides=method_overrides,
+                    patch_radius=patch_radius,
+                    first_date=first_date,
+                    last_date=last_date
+                )
                 
-                # TEMPORAL ALIGNMENT: Inner join ensures we only keep hours where BOTH exist
-                observations, gridded_df = observations.align(gridded_df, join='inner', axis=0)
-                mask, _ = mask.align(gridded_df, join='inner', axis=0)
+                if extracted_dfs:
+                    gridded_df = pd.concat(extracted_dfs.values(), axis=1)
+                    
+                    # TEMPORAL ALIGNMENT: Inner join ensures we only keep hours where BOTH exist
+                    observations, gridded_df = observations.align(gridded_df, join='inner', axis=0)
+                    mask, _ = mask.align(gridded_df, join='inner', axis=0)
+                    
+            elif spatial_mode == "grid":
+                coords = self.stations_table.loc[valid_stations].dropna(subset=['latitude', 'longitude'])
+                if not coords.empty:
+                    min_lat, max_lat = coords['latitude'].min(), coords['latitude'].max()
+                    min_lon, max_lon = coords['longitude'].min(), coords['longitude'].max()
+                    
+                    group_datasets = []
+                    for group in groups:
+                        yearly_ds_list = []
+                        for year in target_years:
+                            ds = self._open_gridded_zarr(group, year, lazy=True)
+                            if ds is None: continue
+                            if first_date or last_date:
+                                f_dt = pd.to_datetime(first_date, utc=True).tz_localize(None) if first_date else None
+                                l_dt = pd.to_datetime(last_date, utc=True).tz_localize(None) if last_date else None
+                                ds = ds.sel(time=slice(f_dt, l_dt))
+                            if len(ds.time) == 0: continue
+                            
+                            requested_vars = gridded_variables if gridded_variables else list(ds.data_vars)
+                            valid_vars = [v for v in requested_vars if v in ds.data_vars]
+                            if not valid_vars: continue
+
+                            lat_dim = 'lat' if 'lat' in ds.coords else 'latitude'
+                            lon_dim = 'lon' if 'lon' in ds.coords else 'longitude'
+                            
+                            lats = ds[lat_dim].values
+                            lons = ds[lon_dim].values
+                            lat_idx_1 = np.abs(lats - min_lat).argmin()
+                            lat_idx_2 = np.abs(lats - max_lat).argmin()
+                            lon_idx_1 = np.abs(lons - min_lon).argmin()
+                            lon_idx_2 = np.abs(lons - max_lon).argmin()
+                            
+                            l_min, l_max = min(lat_idx_1, lat_idx_2), max(lat_idx_1, lat_idx_2)
+                            ln_min, ln_max = min(lon_idx_1, lon_idx_2), max(lon_idx_1, lon_idx_2)
+                            
+                            lat_slice = slice(max(0, l_min - patch_radius), min(len(lats), l_max + patch_radius + 1))
+                            lon_slice = slice(max(0, ln_min - patch_radius), min(len(lons), ln_max + patch_radius + 1))
+                            
+                            ds_sliced = ds[valid_vars].isel({lat_dim: lat_slice, lon_dim: lon_slice}).load()
+                            yearly_ds_list.append(ds_sliced)
+                            
+                        if yearly_ds_list:
+                            concat_ds = xr.concat(yearly_ds_list, dim="time", compat="override", coords="minimal")
+                            group_datasets.append(concat_ds)
+                    
+                    if group_datasets:
+                        merged_grid = xr.merge(group_datasets, compat="override")
+                        
+                        common_times = observations.index.intersection(merged_grid.time.values)
+                        observations = observations.loc[common_times]
+                        mask = mask.loc[common_times]
+                        merged_grid = merged_grid.sel(time=common_times)
+                        
+                        gridded_2d_features = list(merged_grid.data_vars)
+                        arr_list = []
+                        for var in gridded_2d_features:
+                            var_data = merged_grid[var].values
+                            if np.issubdtype(var_data.dtype, np.floating):
+                                var_data = var_data.astype(np.float32)
+                            if var_data.ndim == 3:
+                                arr_list.append(var_data[:, np.newaxis, ...])
+                        if arr_list:
+                            # Concatenate channel features mapping to exact index positions (Time, Channels, Lat, Lon)
+                            gridded_2d_np = np.concatenate(arr_list, axis=1)
+                            
+                        lat_dim = 'lat' if 'lat' in merged_grid.coords else 'latitude'
+                        lon_dim = 'lon' if 'lon' in merged_grid.coords else 'longitude'
+                        grid_lats = merged_grid[lat_dim].values
+                        grid_lons = merged_grid[lon_dim].values
 
         if len(observations) < window_size + horizon_size:
             empty_arr = np.array([])
@@ -1198,46 +1525,286 @@ class MasharikiWeatherDataset:
         windows = Windows(
             x=x, mask_x=mask_x, y=y, mask_y=mask_y, index_x=index_x, index_y=index_y
         )
+        
+        # Tensor Segregation: separate categorical (int64) from continuous (float32)
+        cat_cols = ['LandCover']
+        valid_stations_subset = self.validate_stations(stations) if stations else self.stations_table.index.tolist()
+        all_static = [c for c in self.stations_table.columns if c not in ['latitude', 'longitude', 'network']]
+        valid_cat = [c for c in cat_cols if c in all_static]
+        valid_cont = [c for c in all_static if c not in valid_cat]
 
-        if gridded_df is not None:
-            # 1. Strict Temporal Enforcement: Force ERA5 to match the contiguous TAHMO index.
-            # Any missing ERA5 hours will become NaNs, keeping the temporal sequence perfectly spaced.
-            gridded_df = gridded_df.reindex(observations.index)
-            
-            grid_np = self._export_df(gridded_df, as_numpy=True, copy=False)
-            if np.issubdtype(grid_np.dtype, np.floating): 
-                grid_np = grid_np.astype(np.float32, copy=False)
-            
-            # 2. Generate Sliding Windows (These will temporarily contain NaNs)
-            windows.gridded_x = sliding_window_view(grid_np[:-horizon_size], window_size)
-            windows.gridded_features = gridded_df.columns.unique(level=1).tolist()
-            
-            if ml_task == "downscaling":
-                windows.gridded_y = sliding_window_view(grid_np[window_size:], horizon_size)
-            elif ml_task == "forecasting":
-                windows.gridded_y = None
+        if spatial_mode == "stations":
+            # Continuous static features as float32 (DEM, Slope, Aspect_sin, Aspect_cos, TPI, ...)
+            if valid_cont:
+                cont_array = self.stations_table.loc[valid_stations_subset, valid_cont].values
+                windows.static_stations = cont_array.astype(np.float32, copy=False)
+            # Categorical static features as int64 (LandCover)
+            if valid_cat:
+                cat_array = self.stations_table.loc[valid_stations_subset, valid_cat].values
+                windows.static_stations_categorical = cat_array.astype(np.int64, copy=False)
 
-            # 3. PeakWeather Scientific Compliance: Window-Level Rejection
-            # We locate any batch index where a NaN breached the ERA5 tensors.
-            valid_batches = ~np.isnan(windows.gridded_x).any(axis=(1, 2, 3))
-            
-            if windows.gridded_y is not None:
-                valid_batches &= ~np.isnan(windows.gridded_y).any(axis=(1, 2, 3))
+            if gridded_df is not None:
+                # Temporal alignment was already enforced by inner join above (line 1281).
+                # No reindex needed here; both DataFrames share the same index.
                 
-            # 4. Purge Corrupted Sequences
-            # Slicing the numpy arrays via the boolean mask guarantees O(1) internal temporal spacing
-            windows.x = windows.x[valid_batches]
-            windows.y = windows.y[valid_batches]
-            windows.mask_x = windows.mask_x[valid_batches]
-            windows.mask_y = windows.mask_y[valid_batches]
-            windows.index_x = windows.index_x[valid_batches]
-            windows.index_y = windows.index_y[valid_batches]
-            windows.gridded_x = windows.gridded_x[valid_batches]
-            if windows.gridded_y is not None:
-                windows.gridded_y = windows.gridded_y[valid_batches]
+                grid_np = self._export_df(gridded_df, as_numpy=True, copy=False)
+                if np.issubdtype(grid_np.dtype, np.floating): 
+                    grid_np = grid_np.astype(np.float32, copy=False)
+                
+                # 2. Generate Sliding Windows (These will temporarily contain NaNs)
+                windows.gridded_x = sliding_window_view(grid_np[:-horizon_size], window_size)
+                windows.gridded_features = gridded_df.columns.unique(level=1).tolist()
+                
+                if ml_task == "downscaling":
+                    windows.gridded_y = sliding_window_view(grid_np[window_size:], horizon_size)
+                elif ml_task == "correction":
+                    # Correction: gridded_x gets the FULL temporal window (past + future)
+                    # so the model can see what ERA5 predicted and learn to correct it
+                    windows.gridded_y = sliding_window_view(grid_np[window_size:], horizon_size)
+                elif ml_task == "forecasting":
+                    windows.gridded_y = None
 
-        windows.station_labels = self.validate_stations(stations) if stations else self.stations_table.index.tolist()
-        windows.feature_labels = [parameters] if isinstance(parameters, str) else (parameters or self.parameters)
+                # 3. PeakWeather Scientific Compliance: Window-Level Rejection
+                # We locate any batch index where a NaN breached the gridded tensors.
+                valid_batches = ~np.isnan(windows.gridded_x).any(axis=(1, 2, 3))
+                
+                if windows.gridded_y is not None:
+                    valid_batches &= ~np.isnan(windows.gridded_y).any(axis=(1, 2, 3))
+                    
+                # 4. Purge Corrupted Sequences
+                # Slicing the numpy arrays via the boolean mask guarantees O(1) internal temporal spacing
+                windows.x = windows.x[valid_batches]
+                windows.y = windows.y[valid_batches]
+                windows.mask_x = windows.mask_x[valid_batches]
+                windows.mask_y = windows.mask_y[valid_batches]
+                windows.index_x = windows.index_x[valid_batches]
+                windows.index_y = windows.index_y[valid_batches]
+                windows.gridded_x = windows.gridded_x[valid_batches]
+                if windows.gridded_y is not None:
+                    windows.gridded_y = windows.gridded_y[valid_batches]
+                    
+        elif spatial_mode == "grid":
+            if gridded_2d_np is not None:
+                windows.gridded_features = gridded_2d_features
+                windows.grid_lats = grid_lats
+                windows.grid_lons = grid_lons
+                windows.gridded_x = sliding_window_view(gridded_2d_np[:-horizon_size], window_size)
+                
+                if ml_task == "downscaling":
+                    windows.gridded_y = sliding_window_view(gridded_2d_np[window_size:], horizon_size)
+                elif ml_task == "correction":
+                    windows.gridded_y = sliding_window_view(gridded_2d_np[window_size:], horizon_size)
+                elif ml_task == "forecasting":
+                    windows.gridded_y = None
+                    
+                valid_batches = ~np.isnan(windows.gridded_x).any(axis=(1, 2, 3, 4))
+                if windows.gridded_y is not None:
+                    valid_batches &= ~np.isnan(windows.gridded_y).any(axis=(1, 2, 3, 4))
+                    
+                windows.x = windows.x[valid_batches]
+                windows.y = windows.y[valid_batches]
+                windows.mask_x = windows.mask_x[valid_batches]
+                windows.mask_y = windows.mask_y[valid_batches]
+                windows.index_x = windows.index_x[valid_batches]
+                windows.index_y = windows.index_y[valid_batches]
+                windows.gridded_x = windows.gridded_x[valid_batches]
+                if windows.gridded_y is not None:
+                    windows.gridded_y = windows.gridded_y[valid_batches]
+
+                if self._topo_ds is not None and grid_lats is not None and grid_lons is not None:
+                    topo_vars = list(self._topo_ds.data_vars)
+                    t_lat_dim = 'lat' if 'lat' in self._topo_ds.coords else 'latitude'
+                    t_lon_dim = 'lon' if 'lon' in self._topo_ds.coords else 'longitude'
+                    
+                    glat_xr = xr.DataArray(grid_lats, dims="lat")
+                    glon_xr = xr.DataArray(grid_lons, dims="lon")
+                    
+                    topo_sliced = self._topo_ds.interp({t_lat_dim: glat_xr, t_lon_dim: glon_xr}, method="nearest").load()
+                    
+                    # Segregate continuous float32 from categorical int64
+                    grid_cat = [v for v in topo_vars if v in cat_cols]
+                    grid_cont = [v for v in topo_vars if v not in cat_cols]
+                    
+                    # Continuous static grid (DEM, Slope, Aspect_sin, Aspect_cos, TPI, ...)
+                    c_arr_list = []
+                    for tv in grid_cont:
+                        c_data = topo_sliced[tv].values.astype(np.float32)
+                        c_arr_list.append(c_data[np.newaxis, ...])
+                    if c_arr_list:
+                        windows.static_grid = np.concatenate(c_arr_list, axis=0)  # (Cont_Features, Lat, Lon)
+                    
+                    # Categorical static grid (LandCover)
+                    cat_arr_list = []
+                    for tv in grid_cat:
+                        cat_data = topo_sliced[tv].values.astype(np.int64)
+                        cat_arr_list.append(cat_data[np.newaxis, ...])
+                    if cat_arr_list:
+                        windows.static_grid_categorical = np.concatenate(cat_arr_list, axis=0)  # (Cat_Features, Lat, Lon)
+                
+                if grid_lats is not None and grid_lons is not None:
+                    mask_2d = np.zeros((len(grid_lats), len(grid_lons)), dtype=bool)
+                    coords = self.stations_table.loc[valid_stations_subset].dropna(subset=['latitude', 'longitude'])
+                    for _, row in coords.iterrows():
+                        lat_idx = np.abs(grid_lats - row['latitude']).argmin()
+                        lon_idx = np.abs(grid_lons - row['longitude']).argmin()
+                        mask_2d[lat_idx, lon_idx] = True
+                    windows.station_mask_2d = mask_2d
+
+            # --- TARGET GRID LOADING (Supervised Downscaling at Different Resolution) ---
+            if target_gridded_url and spatial_mode == "grid" and grid_lats is not None:
+                target_groups = [target_gridded_url] if isinstance(target_gridded_url, str) else target_gridded_url
+                min_lat, max_lat = grid_lats.min(), grid_lats.max()
+                min_lon, max_lon = grid_lons.min(), grid_lons.max()
+                
+                target_ds_list = []
+                for tgroup in target_groups:
+                    for year in target_years:
+                        tds = self._open_gridded_zarr(tgroup, year, lazy=True)
+                        if tds is None:
+                            continue
+                        if first_date or last_date:
+                            f_dt = pd.to_datetime(first_date, utc=True).tz_localize(None) if first_date else None
+                            l_dt = pd.to_datetime(last_date, utc=True).tz_localize(None) if last_date else None
+                            tds = tds.sel(time=slice(f_dt, l_dt))
+                        if len(tds.time) == 0:
+                            continue
+                        
+                        t_vars = target_gridded_variables if target_gridded_variables else list(tds.data_vars)
+                        valid_tvars = [v for v in t_vars if v in tds.data_vars]
+                        if not valid_tvars:
+                            continue
+                        
+                        t_lat_dim = 'lat' if 'lat' in tds.coords else 'latitude'
+                        t_lon_dim = 'lon' if 'lon' in tds.coords else 'longitude'
+                        t_lats = tds[t_lat_dim].values
+                        t_lons = tds[t_lon_dim].values
+                        
+                        # Bounding box at target resolution
+                        t_lat1 = np.abs(t_lats - min_lat).argmin()
+                        t_lat2 = np.abs(t_lats - max_lat).argmin()
+                        t_lon1 = np.abs(t_lons - min_lon).argmin()
+                        t_lon2 = np.abs(t_lons - max_lon).argmin()
+                        tl_min, tl_max = min(t_lat1, t_lat2), max(t_lat1, t_lat2)
+                        tln_min, tln_max = min(t_lon1, t_lon2), max(t_lon1, t_lon2)
+                        
+                        t_lat_slice = slice(max(0, tl_min), min(len(t_lats), tl_max + 1))
+                        t_lon_slice = slice(max(0, tln_min), min(len(t_lons), tln_max + 1))
+                        
+                        tds_sliced = tds[valid_tvars].isel({t_lat_dim: t_lat_slice, t_lon_dim: t_lon_slice}).load()
+                        target_ds_list.append(tds_sliced)
+                
+                if target_ds_list:
+                    target_merged = xr.concat(target_ds_list, dim="time", compat="override", coords="minimal")
+                    
+                    # Temporal alignment between target grid and observation index
+                    if target_temporal_freq and target_temporal_freq != self.freq:
+                        # Different temporal resolution (e.g. daily CHIRPS vs hourly ERA5)
+                        # Align by matching each target timestamp to the observation day
+                        target_times = pd.DatetimeIndex(target_merged.time.values)
+                        obs_dates = observations.index.normalize().unique()
+                        common_dates = target_times.normalize().intersection(obs_dates)
+                        target_merged = target_merged.sel(time=target_merged.time.dt.normalize().isin(common_dates))
+                        windows.target_temporal_freq = target_temporal_freq
+                    else:
+                        # Same temporal resolution: standard intersection
+                        common_target_times = observations.index.intersection(target_merged.time.values)
+                        target_merged = target_merged.sel(time=common_target_times)
+                    
+                    t_lat_dim = 'lat' if 'lat' in target_merged.coords else 'latitude'
+                    t_lon_dim = 'lon' if 'lon' in target_merged.coords else 'longitude'
+                    windows.target_grid_lats = target_merged[t_lat_dim].values
+                    windows.target_grid_lons = target_merged[t_lon_dim].values
+                    windows.target_gridded_features = list(target_merged.data_vars)
+                    
+                    # Pack target grid as numpy: (Time, Channels, Lat_hi, Lon_hi)
+                    t_arr_list = []
+                    for tvar in windows.target_gridded_features:
+                        tvar_data = target_merged[tvar].values
+                        if np.issubdtype(tvar_data.dtype, np.floating):
+                            tvar_data = tvar_data.astype(np.float32)
+                        if tvar_data.ndim == 3:
+                            t_arr_list.append(tvar_data[:, np.newaxis, ...])
+                    
+                    if t_arr_list:
+                        target_2d_np = np.concatenate(t_arr_list, axis=1)
+                        
+                        if target_temporal_freq and target_temporal_freq != self.freq:
+                            # For daily targets with hourly inputs: create windows by day index
+                            # Shape: (B, 1, C, Lat_hi, Lon_hi) -- one daily target per window
+                            n_target = len(target_2d_np)
+                            if n_target >= window_size + horizon_size:
+                                windows.target_gridded_y = sliding_window_view(
+                                    target_2d_np[window_size:], horizon_size
+                                )
+                            else:
+                                windows.target_gridded_y = target_2d_np[np.newaxis, ...]
+                        else:
+                            # Same freq: standard sliding window on horizon
+                            if len(target_2d_np) >= window_size + horizon_size:
+                                windows.target_gridded_y = sliding_window_view(
+                                    target_2d_np[window_size:], horizon_size
+                                )
+                        
+                        # NaN rejection on target grid
+                        if windows.target_gridded_y is not None:
+                            n_batches = min(len(windows.x), len(windows.target_gridded_y))
+                            target_valid = ~np.isnan(windows.target_gridded_y[:n_batches]).any(axis=(1, 2, 3, 4))
+                            
+                            # Intersect with existing valid_batches if applicable
+                            if 'valid_batches' in dir():
+                                combined = np.ones(n_batches, dtype=bool)
+                                combined[:len(valid_batches)] &= valid_batches[:n_batches]
+                                combined &= target_valid
+                            else:
+                                combined = target_valid
+                            
+                            windows.x = windows.x[:n_batches][combined]
+                            windows.y = windows.y[:n_batches][combined]
+                            windows.mask_x = windows.mask_x[:n_batches][combined]
+                            windows.mask_y = windows.mask_y[:n_batches][combined]
+                            windows.index_x = windows.index_x[:n_batches][combined]
+                            windows.index_y = windows.index_y[:n_batches][combined]
+                            if windows.gridded_x is not None:
+                                windows.gridded_x = windows.gridded_x[:n_batches][combined]
+                            if windows.gridded_y is not None:
+                                windows.gridded_y = windows.gridded_y[:n_batches][combined]
+                            windows.target_gridded_y = windows.target_gridded_y[:n_batches][combined]
+                    
+                    # Dual-Resolution Topo Priors: interpolate to target (high-res) grid
+                    # Move existing static_grid to static_grid_input (encoder-res)
+                    # and create new static_grid at target-res (decoder-res)
+                    if self._topo_ds is not None:
+                        windows.static_grid_input = windows.static_grid
+                        windows.static_grid_input_categorical = windows.static_grid_categorical
+                        
+                        topo_vars = list(self._topo_ds.data_vars)
+                        tp_lat_dim = 'lat' if 'lat' in self._topo_ds.coords else 'latitude'
+                        tp_lon_dim = 'lon' if 'lon' in self._topo_ds.coords else 'longitude'
+                        
+                        tg_lat_xr = xr.DataArray(windows.target_grid_lats, dims="lat")
+                        tg_lon_xr = xr.DataArray(windows.target_grid_lons, dims="lon")
+                        
+                        topo_target = self._topo_ds.interp(
+                            {tp_lat_dim: tg_lat_xr, tp_lon_dim: tg_lon_xr}, method="nearest"
+                        ).load()
+                        
+                        tg_cat = [v for v in topo_vars if v in cat_cols]
+                        tg_cont = [v for v in topo_vars if v not in cat_cols]
+                        
+                        tc_arr = []
+                        for tv in tg_cont:
+                            tc_arr.append(topo_target[tv].values.astype(np.float32)[np.newaxis, ...])
+                        if tc_arr:
+                            windows.static_grid = np.concatenate(tc_arr, axis=0)
+                        
+                        tcat_arr = []
+                        for tv in tg_cat:
+                            tcat_arr.append(topo_target[tv].values.astype(np.int64)[np.newaxis, ...])
+                        if tcat_arr:
+                            windows.static_grid_categorical = np.concatenate(tcat_arr, axis=0)
+
+        windows.station_labels = valid_stations_subset
+        windows.feature_labels = [parameters] if isinstance(parameters, str) else list(parameters or self.parameters)
 
         if as_xarray:
             return self.np_windows_as_xr(windows, stations, parameters)
@@ -1319,10 +1886,12 @@ class MasharikiWeatherDataset:
         window_size = windows.x.shape[1]
         horizon_size = windows.y.shape[1]
         
+        # Use the class-level frequency instead of hardcoded 1h fallback
+        parsed_freq = pd.tseries.frequencies.to_offset(self.freq) if self.freq else pd.Timedelta("1h")
         if self.observations.empty:
-            freq = pd.Timedelta("1h")
+            freq = parsed_freq
         else:
-            freq = self.observations.index.freq if self.observations.index.freq else pd.Timedelta("1h")
+            freq = self.observations.index.freq if self.observations.index.freq else parsed_freq
             
         leadtime = pd.timedelta_range(start=1 * freq, periods=horizon_size, freq=freq)
         lagtime = pd.timedelta_range(start=-(window_size - 1) * freq, end=0, freq=freq)
@@ -1348,37 +1917,67 @@ class MasharikiWeatherDataset:
         stations: Union[pd.Index, np.ndarray],
     ) -> Windows:
         
-        def get_data_vars(data, feature_names, x_or_y: str) -> dict:
+        def get_data_vars(data, feature_names, x_or_y: str, is_grid: bool = False):
             if data is None:
                 return {}
-            if data.ndim == 3:
-                data = np.expand_dims(data, axis=-1)
             second_dim = "lag" if x_or_y == "x" else "lead"
-            return {
-                str(f): (["reftime", second_dim, "station"], data[..., i])
-                for i, f in enumerate(feature_names)
-            }
+            
+            if is_grid:
+                # Shape: (Batch, Time, Channels, Lat, Lon)
+                return {
+                    str(f): (["reftime", second_dim, "lat", "lon"], data[:, :, i, :, :])
+                    for i, f in enumerate(feature_names)
+                }
+            else:
+                # Shape: (Batch, Time, Station, Features)
+                if data.ndim == 3:
+                    data = np.expand_dims(data, axis=-1)
+                return {
+                    str(f): (["reftime", second_dim, "station"], data[..., i])
+                    for i, f in enumerate(feature_names)
+                }
 
         coords_x = {
             "reftime": ("reftime", reftime.values if hasattr(reftime, 'values') else np.array(reftime)),
             "lag": ("lag", lagtime.values if hasattr(lagtime, 'values') else np.array(lagtime)),
             "station": ("station", stations.values if hasattr(stations, 'values') else np.array(stations))
         }
-        coords_y = {
-            "reftime": ("reftime", reftime.values if hasattr(reftime, 'values') else np.array(reftime)),
-            "lead": ("lead", leadtime.values if hasattr(leadtime, 'values') else np.array(leadtime)),
-            "station": ("station", stations.values if hasattr(stations, 'values') else np.array(stations))
-        }
+        
+        # Base coords for stations
+        coords_y = coords_x.copy()
+        del coords_y["lag"]
+        coords_y["lead"] = ("lead", leadtime.values if hasattr(leadtime, 'values') else np.array(leadtime))
 
-        # Pack Ground Truth
-        windows.x = xr.Dataset(get_data_vars(windows.x, feature, "x"), coords=coords_x)
-        windows.mask_x = xr.Dataset(get_data_vars(windows.mask_x, feature, "x"), coords=coords_x)
-        windows.y = xr.Dataset(get_data_vars(windows.y, feature, "y"), coords=coords_y)
-        windows.mask_y = xr.Dataset(get_data_vars(windows.mask_y, feature, "y"), coords=coords_y)
+        # Pack Ground Truth (Always Station-based)
+        windows.x = xr.Dataset(get_data_vars(windows.x, feature, "x", is_grid=False), coords=coords_x)
+        windows.mask_x = xr.Dataset(get_data_vars(windows.mask_x, feature, "x", is_grid=False), coords=coords_x)
+        windows.y = xr.Dataset(get_data_vars(windows.y, feature, "y", is_grid=False), coords=coords_y)
+        windows.mask_y = xr.Dataset(get_data_vars(windows.mask_y, feature, "y", is_grid=False), coords=coords_y)
         
         # Pack Gridded Tensors if they exist
         if windows.gridded_x is not None:
-            windows.gridded_x = xr.Dataset(get_data_vars(windows.gridded_x, windows.gridded_features, "x"), coords=coords_x)
-            windows.gridded_y = xr.Dataset(get_data_vars(windows.gridded_y, windows.gridded_features, "y"), coords=coords_y)
+            is_grid_mode = windows.gridded_x.ndim == 5
+            
+            if is_grid_mode:
+                # Build spatial coordinate dictionaries
+                grid_coords_x = {
+                    "reftime": coords_x["reftime"],
+                    "lag": coords_x["lag"],
+                    "lat": ("lat", windows.grid_lats),
+                    "lon": ("lon", windows.grid_lons)
+                }
+                grid_coords_y = {
+                    "reftime": coords_y["reftime"],
+                    "lead": coords_y["lead"],
+                    "lat": ("lat", windows.grid_lats),
+                    "lon": ("lon", windows.grid_lons)
+                }
+                windows.gridded_x = xr.Dataset(get_data_vars(windows.gridded_x, windows.gridded_features, "x", is_grid=True), coords=grid_coords_x)
+                if windows.gridded_y is not None:
+                    windows.gridded_y = xr.Dataset(get_data_vars(windows.gridded_y, windows.gridded_features, "y", is_grid=True), coords=grid_coords_y)
+            else:
+                windows.gridded_x = xr.Dataset(get_data_vars(windows.gridded_x, windows.gridded_features, "x", is_grid=False), coords=coords_x)
+                if windows.gridded_y is not None:
+                    windows.gridded_y = xr.Dataset(get_data_vars(windows.gridded_y, windows.gridded_features, "y", is_grid=False), coords=coords_y)
 
         return windows
