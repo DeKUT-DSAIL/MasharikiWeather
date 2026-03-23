@@ -47,6 +47,8 @@ class Windows:
     # Mathematical Coordinates
     station_labels: Optional[Sequence[str]] = None
     feature_labels: Optional[Sequence[str]] = None
+    static_feature_labels: Optional[Sequence[str]] = None
+    static_categorical_labels: Optional[Sequence[str]] = None
     grid_lats: Optional[np.ndarray] = None
     grid_lons: Optional[np.ndarray] = None
 
@@ -84,7 +86,7 @@ class MasharikiWeatherDataset:
     providing seamless access to historical weather observations and 
     topographical data for the East Africa region.
     """ 
-    __version__ = "0.1.0"
+    __version__ = "0.1.1"
     
     # Hardcoded Test Set Split Anchor
     test_set_start = pd.Timestamp("2023-01-01", tz="UTC")
@@ -1088,24 +1090,35 @@ class MasharikiWeatherDataset:
                 
                 # If 'level' exists, we merge it into the parameter string (e.g., 'temperature_850')
                 if 'level' in df.columns:
-                    df['parameter_level'] = df.apply(
-                        lambda row: f"_{int(row['level'])}" if pd.notnull(row['level']) else "", axis=1
-                    )
-                    
                     # Dynamically capture variables that were renamed during patch_flat (e.g. _px0, _px1)
                     actual_val_vars = []
+                    level_vars = []
                     for col in df.columns:
                         if col in valid_vars:
                             actual_val_vars.append(col)
+                            if 'level' in merged_yearly_ds[col].dims:
+                                level_vars.append(col)
                         else:
                             for base_var in valid_vars:
                                 if col.startswith(f"{base_var}_px"):
                                     actual_val_vars.append(col)
+                                    if 'level' in merged_yearly_ds[col].dims:
+                                        level_vars.append(col)
                                     break
                                     
                     # Melt and reconstruct to combine variable name with level
-                    id_vars = [c for c in df.columns if c not in actual_val_vars and c != 'parameter_level']
-                    df_melt = df.melt(id_vars=id_vars + ['parameter_level'], value_vars=actual_val_vars, var_name='base_param')
+                    id_vars = [c for c in df.columns if c not in actual_val_vars and c != 'level']
+                    df_melt = df.melt(id_vars=id_vars + ['level'], value_vars=actual_val_vars, var_name='base_param')
+                    
+                    # Physically separate 3D variables from erroneously broadcasted 2D surface variables
+                    is_level_var = df_melt['base_param'].isin(level_vars)
+                    df_3d = df_melt[is_level_var].copy()
+                    df_2d = df_melt[~is_level_var].drop_duplicates(subset=['time', 'station', 'base_param']).copy()
+                    df_melt = pd.concat([df_3d, df_2d])
+                    
+                    df_melt['parameter_level'] = df_melt.apply(
+                        lambda row: f"_{int(row['level'])}" if pd.notnull(row['level']) and row['base_param'] in level_vars else "", axis=1
+                    )
                     df_melt['parameter'] = df_melt['base_param'] + df_melt['parameter_level']
                     df = df_melt.pivot_table(index=['time', 'station'], columns='parameter', values='value').reset_index()
 
@@ -1350,6 +1363,7 @@ class MasharikiWeatherDataset:
         gridded_variables: Optional[List[str]] = None,
         method_overrides: Optional[Dict[str, str]] = None,
         patch_radius: int = 1,
+        crop_to_stations: bool = False,
         ml_task: Literal["downscaling", "forecasting", "correction"] = "downscaling",
         spatial_mode: Literal["stations", "grid"] = "stations",
         target_gridded_url: Optional[Union[str, List[str]]] = None,
@@ -1373,6 +1387,7 @@ class MasharikiWeatherDataset:
             gridded_variables (Optional[List[str]]): Variables to use from the input gridded data.
             method_overrides (Optional[Dict[str, str]]): Method overrides for specific variables.
             patch_radius (int): Radius to use for patch extraction.
+            crop_to_stations (bool): Whether to crop the gridded data to the (max_lat, min_lat) x (max_lon, min_lon) bounding box of the stations.
             ml_task (Literal["downscaling", "forecasting", "correction"]): Defines the tensor mapping.
                 - "downscaling": gridded_x = past input grid, gridded_y = past input grid (same-res).
                 - "forecasting": gridded_x = past input grid, gridded_y = None (blocked).
@@ -1462,18 +1477,21 @@ class MasharikiWeatherDataset:
                             
                             lats = ds[lat_dim].values
                             lons = ds[lon_dim].values
-                            lat_idx_1 = np.abs(lats - min_lat).argmin()
-                            lat_idx_2 = np.abs(lats - max_lat).argmin()
-                            lon_idx_1 = np.abs(lons - min_lon).argmin()
-                            lon_idx_2 = np.abs(lons - max_lon).argmin()
-                            
-                            l_min, l_max = min(lat_idx_1, lat_idx_2), max(lat_idx_1, lat_idx_2)
-                            ln_min, ln_max = min(lon_idx_1, lon_idx_2), max(lon_idx_1, lon_idx_2)
-                            
-                            lat_slice = slice(max(0, l_min - patch_radius), min(len(lats), l_max + patch_radius + 1))
-                            lon_slice = slice(max(0, ln_min - patch_radius), min(len(lons), ln_max + patch_radius + 1))
-                            
-                            ds_sliced = ds[valid_vars].isel({lat_dim: lat_slice, lon_dim: lon_slice}).load()
+                            if crop_to_stations:
+                                lat_idx_1 = np.abs(lats - min_lat).argmin()
+                                lat_idx_2 = np.abs(lats - max_lat).argmin()
+                                lon_idx_1 = np.abs(lons - min_lon).argmin()
+                                lon_idx_2 = np.abs(lons - max_lon).argmin()
+                                
+                                l_min, l_max = min(lat_idx_1, lat_idx_2), max(lat_idx_1, lat_idx_2)
+                                ln_min, ln_max = min(lon_idx_1, lon_idx_2), max(lon_idx_1, lon_idx_2)
+                                
+                                lat_slice = slice(max(0, l_min - patch_radius), min(len(lats), l_max + patch_radius + 1))
+                                lon_slice = slice(max(0, ln_min - patch_radius), min(len(lons), ln_max + patch_radius + 1))
+                                
+                                ds_sliced = ds[valid_vars].isel({lat_dim: lat_slice, lon_dim: lon_slice}).load()
+                            else:
+                                ds_sliced = ds[valid_vars].load()
                             yearly_ds_list.append(ds_sliced)
                             
                         if yearly_ds_list:
@@ -1488,14 +1506,26 @@ class MasharikiWeatherDataset:
                         mask = mask.loc[common_times]
                         merged_grid = merged_grid.sel(time=common_times)
                         
-                        gridded_2d_features = list(merged_grid.data_vars)
+                        gridded_2d_features = []
                         arr_list = []
-                        for var in gridded_2d_features:
-                            var_data = merged_grid[var].values
+                        for var in list(merged_grid.data_vars):
+                            var_da = merged_grid[var]
+                            var_data = var_da.values
                             if np.issubdtype(var_data.dtype, np.floating):
                                 var_data = var_data.astype(np.float32)
+                                
                             if var_data.ndim == 3:
+                                gridded_2d_features.append(var)
                                 arr_list.append(var_data[:, np.newaxis, ...])
+                            elif var_data.ndim == 4:
+                                # Natively unroll the 3D vertical pressure profile into the ML Channel Axis (C)
+                                if 'level' in var_da.coords:
+                                    for lvl in var_da.coords['level'].values:
+                                        gridded_2d_features.append(f"{var}_{int(lvl)}")
+                                else:
+                                    for idx in range(var_data.shape[1]):
+                                        gridded_2d_features.append(f"{var}_z{idx}")
+                                arr_list.append(var_data)
                         if arr_list:
                             # Concatenate channel features mapping to exact index positions (Time, Channels, Lat, Lon)
                             gridded_2d_np = np.concatenate(arr_list, axis=1)
@@ -1562,7 +1592,7 @@ class MasharikiWeatherDataset:
                     # so the model can see what ERA5 predicted and learn to correct it
                     windows.gridded_y = sliding_window_view(grid_np[window_size:], horizon_size)
                 elif ml_task == "forecasting":
-                    windows.gridded_y = None
+                    windows.gridded_y = sliding_window_view(grid_np[window_size:], horizon_size)
 
                 # 3. PeakWeather Scientific Compliance: Window-Level Rejection
                 # We locate any batch index where a NaN breached the gridded tensors.
@@ -1595,7 +1625,7 @@ class MasharikiWeatherDataset:
                 elif ml_task == "correction":
                     windows.gridded_y = sliding_window_view(gridded_2d_np[window_size:], horizon_size)
                 elif ml_task == "forecasting":
-                    windows.gridded_y = None
+                    windows.gridded_y = sliding_window_view(gridded_2d_np[window_size:], horizon_size)
                     
                 valid_batches = ~np.isnan(windows.gridded_x).any(axis=(1, 2, 3, 4))
                 if windows.gridded_y is not None:
@@ -1680,17 +1710,20 @@ class MasharikiWeatherDataset:
                         t_lons = tds[t_lon_dim].values
                         
                         # Bounding box at target resolution
-                        t_lat1 = np.abs(t_lats - min_lat).argmin()
-                        t_lat2 = np.abs(t_lats - max_lat).argmin()
-                        t_lon1 = np.abs(t_lons - min_lon).argmin()
-                        t_lon2 = np.abs(t_lons - max_lon).argmin()
-                        tl_min, tl_max = min(t_lat1, t_lat2), max(t_lat1, t_lat2)
-                        tln_min, tln_max = min(t_lon1, t_lon2), max(t_lon1, t_lon2)
-                        
-                        t_lat_slice = slice(max(0, tl_min), min(len(t_lats), tl_max + 1))
-                        t_lon_slice = slice(max(0, tln_min), min(len(t_lons), tln_max + 1))
-                        
-                        tds_sliced = tds[valid_tvars].isel({t_lat_dim: t_lat_slice, t_lon_dim: t_lon_slice}).load()
+                        if crop_to_stations:
+                            t_lat1 = np.abs(t_lats - min_lat).argmin()
+                            t_lat2 = np.abs(t_lats - max_lat).argmin()
+                            t_lon1 = np.abs(t_lons - min_lon).argmin()
+                            t_lon2 = np.abs(t_lons - max_lon).argmin()
+                            tl_min, tl_max = min(t_lat1, t_lat2), max(t_lat1, t_lat2)
+                            tln_min, tln_max = min(t_lon1, t_lon2), max(t_lon1, t_lon2)
+                            
+                            t_lat_slice = slice(max(0, tl_min), min(len(t_lats), tl_max + 1))
+                            t_lon_slice = slice(max(0, tln_min), min(len(t_lons), tln_max + 1))
+                            
+                            tds_sliced = tds[valid_tvars].isel({t_lat_dim: t_lat_slice, t_lon_dim: t_lon_slice}).load()
+                        else:
+                            tds_sliced = tds[valid_tvars].load()
                         target_ds_list.append(tds_sliced)
                 
                 if target_ds_list:
@@ -1805,6 +1838,8 @@ class MasharikiWeatherDataset:
 
         windows.station_labels = valid_stations_subset
         windows.feature_labels = [parameters] if isinstance(parameters, str) else list(parameters or self.parameters)
+        windows.static_feature_labels = valid_cont
+        windows.static_categorical_labels = valid_cat
 
         if as_xarray:
             return self.np_windows_as_xr(windows, stations, parameters)

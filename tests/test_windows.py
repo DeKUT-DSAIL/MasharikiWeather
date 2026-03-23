@@ -69,7 +69,8 @@ def main():
     win = ds.get_windows(
         window_size=2, horizon_size=1, stations=test_stations,
         first_date=first_date, last_date=last_date,
-        gridded_url="era5", spatial_mode="stations", ml_task="downscaling"
+        gridded_url="era5", spatial_mode="stations", ml_task="downscaling",
+        crop_to_stations=False
     )
     _print_windows(win)
 
@@ -78,7 +79,8 @@ def main():
     win = ds.get_windows(
         window_size=2, horizon_size=1, stations=test_stations,
         first_date=first_date, last_date=last_date,
-        gridded_url="era5", spatial_mode="grid", ml_task="forecasting"
+        gridded_url="era5", spatial_mode="grid", ml_task="forecasting",
+        crop_to_stations=False
     )
     _print_windows(win)
 
@@ -87,7 +89,8 @@ def main():
     win = ds.get_windows(
         window_size=2, horizon_size=1, stations=test_stations,
         first_date=first_date, last_date=last_date,
-        gridded_url="era5", spatial_mode="grid", ml_task="correction"
+        gridded_url="era5", spatial_mode="grid", ml_task="correction",
+        crop_to_stations=False
     )
     _print_windows(win)
 
@@ -96,7 +99,8 @@ def main():
     win = ds.get_windows(
         window_size=2, horizon_size=1, stations=test_stations,
         first_date=first_date, last_date=last_date,
-        gridded_url="era5", spatial_mode="stations", ml_task="forecasting"
+        gridded_url="era5", spatial_mode="stations", ml_task="forecasting",
+        crop_to_stations=False
     )
     _print_windows(win)
 
@@ -109,7 +113,8 @@ def main():
             gridded_url="era5", spatial_mode="grid", ml_task="downscaling",
             target_gridded_url=args.target_url,
             target_gridded_variables=["precipitation"],
-            target_temporal_freq="D"
+            target_temporal_freq="D",
+            crop_to_stations=False
         )
         _print_windows(win)
     else:
