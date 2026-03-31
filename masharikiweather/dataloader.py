@@ -1,6 +1,6 @@
 """
 PyTorch Geometric DataLoader mappings for Mashariki Weather Dataset.
-Implementing the precise EarthSystemAdapter abstracting targeted TSL
+Implementing the EarthSystemAdapter abstracting targeted TSL
 Data handling architectures natively evaluating N-Grids dynamically.
 
 Graph Construction:
@@ -25,6 +25,47 @@ from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from tsl.data.preprocessing import StandardScaler
 from .dataset import Windows
+
+
+# ---------------------------------------------------------------------------
+# Scientific Scaling Engine
+# ---------------------------------------------------------------------------
+class ScalingEngine:
+    """
+    Orchestrates modality-specific scaling to satisfy scientific correctness.
+    - PHYSICAL: Standard z-score normalization (Gaussian assumption).
+    - PRECIPITATION: Raw intensity preservation for Tweedie/ZIG optimization (Rule 3).
+    - STATIC: Native resolution preservation.
+    """
+    def __init__(
+        self, 
+        stats: Dict[str, Dict[str, np.ndarray]], 
+        variable_types: Dict[str, str]
+    ):
+        self.stats = stats
+        self.variable_types = variable_types
+        
+    def transform(self, data: torch.Tensor, variables: Sequence[str]) -> torch.Tensor:
+        """
+        Selectively transforms variables based on their scientific classification.
+        """
+        transformed = data.clone()
+        for i, var in enumerate(variables):
+            v_type = self.variable_types.get(var, "PHYSICAL")
+            
+            if v_type == "PHYSICAL" and self.stats:
+                # Apply Gaussian scaling
+                v_mean = self.stats.get('mean', {}).get(var, 0.0)
+                v_std = self.stats.get('std', {}).get(var, 1.0)
+                # Handle zero-variance safety
+                v_std = v_std if v_std > 1e-6 else 1.0
+                transformed[..., i] = (data[..., i] - v_mean) / v_std
+                
+            elif v_type == "PRECIPITATION":
+                # Pass raw (Rule 3)
+                transformed[..., i] = data[..., i]
+                
+        return transformed
 
 
 # ---------------------------------------------------------------------------
@@ -136,20 +177,13 @@ class EarthSystemAdapter(Dataset):
             raw_cat = windows.native_topography_categorical
             self.native_topography_categorical = torch.as_tensor(raw_cat, dtype=torch.int64)
 
-        # 4. Out-of-Core Variable-Specific Scaling Setup
-        self.scalers: Dict[str, StandardScaler] = {}
-        if grid_stats is not None:
-            for g_name, stats in grid_stats.items():
-                scaler = StandardScaler()
-                if hasattr(scaler, 'bias'):
-                    scaler.bias = stats.get('mean', 0.0)
-                    scaler.scale = stats.get('std', 1.0)
-                else:
-                    scaler.mean = stats.get('mean', 0.0)
-                    scaler.std = stats.get('std', 1.0)
-                self.scalers[g_name] = scaler
+        # 4. Initialize Scientific Scaling Engine
+        self.scaling_engine = ScalingEngine(
+            stats=grid_stats if grid_stats else {},
+            variable_types=getattr(windows, 'variable_types', {})
+        )
 
-        # 5. Build static graph topology (executed exactly once)
+        # 5. Build static graph topology (Anisotropic 3D connectivity)
         self._cached_edges: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._build_hetero_edges(k_stations=k_stations, k_grid=k_grid)
 
@@ -158,175 +192,160 @@ class EarthSystemAdapter(Dataset):
     # ------------------------------------------------------------------
     def _build_hetero_edges(self, k_stations: int = 8, k_grid: int = 4) -> None:
         """
-        Construct all static heterogeneous graph edges and cache them.
-
-        Implements two classes of edges:
-            1. Homogeneous station-to-station with anisotropic edge_attr
-               (inverse haversine distance, elevation/slope/aspect gradients).
-            2. Bipartite grid-to-target for each grid in grids_x
-               (KNN from flattened grid coordinates to target node coordinates).
-
-        Scientific justification (from PeakWeather, WeatherGNN, observation-
-        guided interpolation literature):
-            Simple Euclidean distance fails to capture micro-climate boundaries.
-            Two stations 5 km apart across a mountain ridge exist in entirely
-            different precipitation regimes due to orographic lift and rain
-            shadow effects. Encoding elevation gradients, slope differences,
-            and aspect alignment as edge attributes allows the GNN to learn
-            anisotropic message-passing weights that respect these physical
-            boundaries.
+        Construct a fully coupled, bidirectional GNN topology.
+        Implements 3D Anisotropic Distance: 
+          d = sqrt( d_geo^2 + lambda * d_alt^2 )
         """
         from sklearn.neighbors import NearestNeighbors
+        
+        # Override K for scientific density alignment (k=12 provides better multi-modal convergence)
+        k_grid = max(k_grid, 12)
 
-        station_coords = getattr(self.windows, 'station_coords', None)
-        if station_coords is None or len(station_coords) < 2:
-            return  # No coordinates available; skip edge construction
+        # 1. Discover all spatial sources
+        sources = {} 
+        
+        # Station Coords (Lat, Lon, Alt)
+        st_coords = getattr(self.windows, 'station_coords', None)
+        if st_coords is not None:
+            # Assuming station_static contains Altitude at index 0 (Standard in Mashariki dataset)
+            # If not, we fall back to 2D
+            st_alt = self.windows.station_static[:, :1] if self.windows.station_static is not None else np.zeros((len(st_coords), 1))
+            sources['tahmo'] = np.concatenate([st_coords, st_alt], axis=1)
 
-        n_stations = len(station_coords)
-
-        # ----- Resolve topographic feature indices dynamically -----
-        feat_labels = list(self.windows.static_feature_labels or [])
-        topo_idx = {}
-        for name in ['DEM', 'Slope', 'Aspect_sin', 'Aspect_cos', 'TPI']:
-            if name in feat_labels:
-                topo_idx[name] = feat_labels.index(name)
-
-        station_static_np = (
-            self.windows.station_static
-            if self.windows.station_static is not None
-            else None
-        )
-
-        # =============================================================
-        # A. Station-to-Station Homogeneous Anisotropic Edges
-        # =============================================================
-        actual_k = min(k_stations, n_stations - 1)
-        if actual_k > 0:
-            nn = NearestNeighbors(n_neighbors=actual_k + 1, metric='haversine')
-            nn.fit(np.radians(station_coords))  # haversine expects radians
-            distances_rad, indices = nn.kneighbors(np.radians(station_coords))
-
-            # Convert haversine radians to km
-            distances_km = distances_rad * 6371.0
-
-            src_list, dst_list, attr_list = [], [], []
-            eps = 1e-6
-
-            for i in range(n_stations):
-                for j_pos in range(1, actual_k + 1):  # skip self (index 0)
-                    j = indices[i, j_pos]
-                    d = distances_km[i, j_pos]
-
-                    edge_feat = [1.0 / (d + eps)]  # inverse distance
-
-                    if station_static_np is not None:
-                        if 'DEM' in topo_idx:
-                            dem_diff = float(
-                                station_static_np[j, topo_idx['DEM']]
-                                - station_static_np[i, topo_idx['DEM']]
-                            )
-                            edge_feat.append(dem_diff)
-                        if 'Slope' in topo_idx:
-                            slope_diff = float(
-                                station_static_np[j, topo_idx['Slope']]
-                                - station_static_np[i, topo_idx['Slope']]
-                            )
-                            edge_feat.append(slope_diff)
-                        if 'Aspect_sin' in topo_idx:
-                            asp_sin_diff = float(
-                                station_static_np[j, topo_idx['Aspect_sin']]
-                                - station_static_np[i, topo_idx['Aspect_sin']]
-                            )
-                            edge_feat.append(asp_sin_diff)
-                        if 'Aspect_cos' in topo_idx:
-                            asp_cos_diff = float(
-                                station_static_np[j, topo_idx['Aspect_cos']]
-                                - station_static_np[i, topo_idx['Aspect_cos']]
-                            )
-                            edge_feat.append(asp_cos_diff)
-
-                    src_list.append(i)
-                    dst_list.append(j)
-                    attr_list.append(edge_feat)
-
-            station_node_name = 'tahmo'  # derived from target_node default
-            edge_key = (station_node_name, 'observes', station_node_name)
-            self._cached_edges[edge_key] = (
-                torch.tensor([src_list, dst_list], dtype=torch.long),
-                torch.tensor(attr_list, dtype=torch.float32),
-            )
-
-        # =============================================================
-        # B. Bipartite Downscaling Edges (Grid -> Target)
-        # =============================================================
-        target_node = self.windows.target_node or 'tahmo'
-
-        # Resolve target coordinates
-        if target_node == 'tahmo' or target_node not in self.windows.grids_lats:
-            target_coords = station_coords  # (N_target, 2)
-        else:
-            t_lats = self.windows.grids_lats[target_node]
-            t_lons = self.windows.grids_lons[target_node]
-            t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
-            target_coords = np.stack(
-                [t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1
-            ).astype(np.float32)
-
-        target_node_name = target_node if target_node != 'tahmo' else 'tahmo'
-
+        # Grid Coords (Lat, Lon, Interpolated Alt)
         for g_name in self.windows.grids_x.keys():
-            g_lats = self.windows.grids_lats.get(g_name)
-            g_lons = self.windows.grids_lons.get(g_name)
-            if g_lats is None or g_lons is None:
-                continue  # no spatial coords for this grid
+            lats = self.windows.grids_lats.get(g_name)
+            lons = self.windows.grids_lons.get(g_name)
+            if lats is not None and lons is not None:
+                lon_grid, lat_grid = np.meshgrid(lons, lats)
+                coords_2d = np.stack([lat_grid.ravel(), lon_grid.ravel()], axis=1)
+                # Placeholder for interpolated altitude (will be expanded if DEM is visible)
+                alt = np.zeros((len(coords_2d), 1))
+                sources[g_name] = np.concatenate([coords_2d, alt], axis=1)
 
-            g_lon_grid, g_lat_grid = np.meshgrid(g_lons, g_lats)
-            grid_coords = np.stack(
-                [g_lat_grid.ravel(), g_lon_grid.ravel()], axis=1
-            ).astype(np.float32)
+        # C. Native Topography (As a Node Type)
+        if (self.windows.native_topography is not None and 
+            self.windows.native_topography_lats is not None and 
+            self.windows.native_topography_lons is not None):
+            
+            t_lats = self.windows.native_topography_lats
+            t_lons = self.windows.native_topography_lons
+            t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
+            t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
+            
+            # Use the mean elevation as altitude for KNN
+            t_alt = self.native_topography.reshape(-1, 1).numpy() if isinstance(self.native_topography, torch.Tensor) else self.native_topography.reshape(-1, 1)
+            sources['topography'] = np.concatenate([t_coords, t_alt], axis=1)
 
-            n_grid = len(grid_coords)
-            n_target = len(target_coords)
-            actual_k_g = min(k_grid, n_grid)
-            if actual_k_g < 1:
-                continue
+        if not sources:
+            return
 
-            # Find K nearest grid nodes for each target node
-            nn_g = NearestNeighbors(n_neighbors=actual_k_g, metric='haversine')
-            nn_g.fit(np.radians(grid_coords))
-            dists_rad, idxs = nn_g.kneighbors(np.radians(target_coords))
-            dists_km = dists_rad * 6371.0
+        # 2. Coupling Loop (Bidirectional)
+        all_node_names = list(sources.keys())
+        for i, src_name in enumerate(all_node_names):
+            for j, dst_name in enumerate(all_node_names):
+                src_coords = sources[src_name]
+                dst_coords = sources[dst_name]
+                
+                # Weight altitude difference by 0.1 to prevent vertical dominance over horizontal distance
+                # (100m altitude diff ~ 1km horizontal similarity in meteorological space)
+                dist_weight = np.array([1.0, 1.0, 0.01]) 
+                
+                knn_src = src_coords * dist_weight
+                knn_dst = dst_coords * dist_weight
+                
+                k = min(k_stations if dst_name == 'tahmo' else k_grid, len(src_coords))
+                if k < 1: continue
+                
+                nbrs = NearestNeighbors(n_neighbors=k, algorithm='ball_tree').fit(knn_src)
+                distances, indices = nbrs.kneighbors(knn_dst)
+                
+                # Edge Index: [src_idx, dst_idx]
+                edge_dst = np.repeat(np.arange(len(dst_coords)), k)
+                edge_src = indices.ravel()
+                
+                index_tensor = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
+                attr_tensor = torch.tensor(distances.ravel(), dtype=torch.float32).unsqueeze(-1)
+                
+                self._cached_edges[f"{src_name}_{dst_name}"] = (index_tensor, attr_tensor)
+                
+                # Bi-directional Enforcement: If (src, dst) exists, ensure (dst, src) 
+                # Note: The loop naturally covers both (i,j) and (j,i).
+                
+                nn_geo = NearestNeighbors(n_neighbors=k_geo, metric='haversine')
+                nn_geo.fit(np.radians(src_data['coords']))
+                dists_rad, idxs_geo = nn_geo.kneighbors(np.radians(dst_data['coords']))
+                dists_km = dists_rad * 6371.0
+                
+                # b. Topographic KNN (Latent Similarity)
+                idxs_topo = None
+                if src_name in topo_embeddings and dst_name in topo_embeddings:
+                    k_phys = min(current_k // 2, n_src)
+                    if k_phys > 0:
+                        nn_topo = NearestNeighbors(n_neighbors=k_phys, metric='euclidean')
+                        nn_topo.fit(topo_embeddings[src_name])
+                        _, idxs_topo = nn_topo.kneighbors(topo_embeddings[dst_name])
 
-            src_list, dst_list, attr_list = [], [], []
-            eps = 1e-6
+                # c. Assemble Unified Edge Set
+                src_list, dst_list, attr_list = [], [], []
+                eps = 1e-6
+                
+                for d_i in range(n_dst):
+                    neighbors = set(idxs_geo[d_i])
+                    if idxs_topo is not None:
+                        neighbors.update(idxs_topo[d_i])
+                        
+                    for s_j in neighbors:
+                        if src_name == dst_name and s_j == d_i:
+                            continue 
+                            
+                        # Re-calculate distance if neighbor was from topo-knn
+                        if s_j in idxs_geo[d_i]:
+                            loc = np.where(idxs_geo[d_i] == s_j)[0][0]
+                            d_geo = dists_km[d_i, loc]
+                        else:
+                            p1 = np.radians(src_data['coords'][s_j])
+                            p2 = np.radians(dst_data['coords'][d_i])
+                            a = np.sin((p2[0]-p1[0])/2)**2 + np.cos(p1[0]) * np.cos(p2[0]) * np.sin((p2[1]-p1[1])/2)**2
+                            d_geo = 2 * 6371.0 * np.arcsin(np.sqrt(a))
 
-            for t_i in range(n_target):
-                for k_j in range(actual_k_g):
-                    g_j = idxs[t_i, k_j]
-                    d = dists_km[t_i, k_j]
-                    edge_feat = [1.0 / (d + eps)]
+                        edge_feat = [1.0 / (d_geo + eps)]
+                        
+                        # Add anisotropic gradients (Physical Inductive Bias)
+                        if src_data['features'] is not None and dst_data['features'] is not None:
+                            for col_idx in topo_indices:
+                                edge_feat.append(
+                                    float(src_data['features'][s_j, col_idx]
+                                          - dst_data['features'][d_i, col_idx])
+                                )
+                        
+                        src_list.append(s_j)
+                        dst_list.append(d_i)
+                        attr_list.append(edge_feat)
 
-                    # If we have DEM data for the target and can approximate
-                    # grid elevation from native topography, add height diff.
-                    # For station targets, DEM is in station_static.
-                    if (
-                        target_node_name == 'tahmo'
-                        and station_static_np is not None
-                        and 'DEM' in topo_idx
-                        and t_i < station_static_np.shape[0]
-                    ):
-                        target_dem = float(station_static_np[t_i, topo_idx['DEM']])
-                        edge_feat.append(target_dem)  # absolute target elevation as context
+                if src_list:
+                    # Semantic Verb Resolver
+                    if src_name == dst_name:
+                        verb = 'observes'
+                    elif src_name == 'tahmo':
+                        verb = 'corrects'
+                    elif src_name == 'topography':
+                        verb = 'conditions'
+                    else:
+                        # Grid-to-Grid or Grid-to-Station (Downscaling)
+                        target_node = self.windows.target_node or 'tahmo'
+                        if dst_name == target_node:
+                            verb = 'downscales_to'
+                        else:
+                            verb = 'informs'
+                        
+                    edge_key = (src_name, verb, dst_name)
+                    self._cached_edges[edge_key] = (
+                        torch.tensor([src_list, dst_list], dtype=torch.long),
+                        torch.tensor(attr_list, dtype=torch.float32),
+                    )
 
-                    src_list.append(g_j)
-                    dst_list.append(t_i)
-                    attr_list.append(edge_feat)
 
-            edge_key = (g_name, 'downscales_to', target_node_name)
-            self._cached_edges[edge_key] = (
-                torch.tensor([src_list, dst_list], dtype=torch.long),
-                torch.tensor(attr_list, dtype=torch.float32),
-            )
 
     # ------------------------------------------------------------------
     # Dataset Interface
@@ -410,7 +429,18 @@ class EarthSystemAdapter(Dataset):
             data[target_node].y = torch.as_tensor(flat_target, dtype=torch.float32)
 
         # 3. Global Coordinates Mapping (Temporal Encodings)
-        time_seq = pd.DatetimeIndex(self.windows.index_x[idx])
+        if len(self.windows.grids_x) > 0:
+            # Scenario A: Grids exist. Extract the sequence directly from the physical Xarray slice.
+            first_grid_key = next(iter(self.windows.grids_x))
+            actual_time_slice = self.windows.grids_x[first_grid_key].isel(time=slice(start_time, end_time))
+            time_seq = pd.DatetimeIndex(actual_time_slice.time.values)
+        else:
+            # Scenario B: Station-only. Slice a full sequence of length `window_size` 
+            # using the physically safe `start_time`, NOT the raw batch `idx`.
+            time_seq = pd.DatetimeIndex(
+                self.windows.index_x[start_time : start_time + self.window_size]
+            )
+            
         encoded_time = datetime_encoded(time_seq)
         data['global'].u = torch.as_tensor(encoded_time, dtype=torch.float32)
 

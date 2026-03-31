@@ -146,3 +146,19 @@ if __name__ == "__main__":
         print(f"Demo failed: {e}")
         import traceback
         traceback.print_exc()
+
+
+# pipeline flexibility
+# Example: Rift Valley correction with per-grid variable selection
+# win = ds.get_windows(
+#     gridded_url=["era5", "imerg"],
+#     gridded_variables={
+#         "era5": ["2m_temperature", "total_precipitation"],
+#         "imerg": ["total_precipitation", "randomError"],
+#     },
+#     target_node="era5",
+#     ml_task="correction",
+#     bbox=(-1.5, 35.0, 0.5, 37.5),   # Rift Valley
+#     window_size=24, horizon_size=0
+# )
+

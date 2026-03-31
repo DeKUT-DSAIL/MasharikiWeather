@@ -57,6 +57,9 @@ class Windows:
     grid_lons: Optional[np.ndarray] = None
     valid_batch_indices: Optional[np.ndarray] = None
 
+    # Scientific Metadata
+    variable_types: Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC"]] = field(default_factory=dict)
+
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
     """
     Create a sliding window view of an array.
@@ -527,14 +530,19 @@ class MasharikiWeatherDataset:
                 print(f"Warning: Could not fetch topography data from Hugging Face. {e}")
                 return None
 
-        # Cyclical Encoding: Aspect (degrees) -> sin/cos pair
-        # This maps the circular variable onto a 2D unit circle so that
+        # Cyclical Encoding: ALL Aspect variables (degrees) -> sin/cos pairs
+        # This maps circular angular variables onto a 2D unit circle so that
         # 359 deg and 1 deg are correctly adjacent in feature space.
-        if 'Aspect' in ds.data_vars:
-            aspect_rad = ds['Aspect'] * (np.pi / 180.0)
-            ds['Aspect_sin'] = np.sin(aspect_rad)
-            ds['Aspect_cos'] = np.cos(aspect_rad)
-            ds = ds.drop_vars('Aspect')
+        # Handles: 'Aspect', 'ASPECT_2000M_SIGRATIO1', 'ASPECT_10000M_SIGRATIO1', etc.
+        aspect_vars = [
+            v for v in list(ds.data_vars)
+            if 'aspect' in v.lower() and '_sin' not in v and '_cos' not in v
+        ]
+        for var_name in aspect_vars:
+            aspect_rad = ds[var_name] * (np.pi / 180.0)
+            ds[f'{var_name}_sin'] = np.sin(aspect_rad)
+            ds[f'{var_name}_cos'] = np.cos(aspect_rad)
+            ds = ds.drop_vars(var_name)
 
         return ds
 
@@ -580,16 +588,18 @@ class MasharikiWeatherDataset:
         # Combine and Join
         df_topo = pd.concat([df_nearest, df_bilinear], axis=1)
         
-        # Physically sound defaults for ocean/coastal-masked terrain
-        # DEM/Slope/TPI = 0 (sea level, flat), Aspect_cos = 1 (undefined direction defaults
-        # to unit vector on cos axis), LandCover = 0 (water/ocean class)
-        fill_map = {
-            'DEM': 0, 'Slope': 0, 'TPI': 0,
-            'Aspect_sin': 0, 'Aspect_cos': 1,
-            'LandCover': 0,
-        }
+        # Physically sound defaults for ocean/coastal-masked terrain.
+        # Pattern-based to handle all multi-scale variables dynamically:
+        #   *_cos -> 1 (undefined direction defaults to unit vector on cos axis)
+        #   LandCover -> 0 (water/ocean class)
+        #   Everything else -> 0 (sea level, flat, no gradient)
         for col in df_topo.columns:
-            default_val = fill_map.get(col, 0)
+            if col == 'LandCover':
+                default_val = 0
+            elif col.endswith('_cos'):
+                default_val = 1
+            else:
+                default_val = 0
             df_topo[col] = df_topo[col].fillna(default_val)
 
         self.stations_table = self.stations_table.join(df_topo)
@@ -801,6 +811,34 @@ class MasharikiWeatherDataset:
             return "linear"
             
         return "nearest"
+
+    @staticmethod
+    def infer_variable_types(
+        variables: Sequence[str]
+    ) -> Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC"]]:
+        """
+        Classifies variables into physical (Gaussian), precipitation (Tweedie), 
+        or static (Topography) based on standard meteorological nomenclature.
+        
+        Args:
+            variables: List of variable names to classify.
+            
+        Returns:
+            Dictionary mapping variable name to its scientific type.
+        """
+        types = {}
+        for var in variables:
+            v_lower = var.lower()
+            # 1. Precipitation (Non-Gaussian, zero-inflated)
+            if any(kw in v_lower for kw in ['precip', 'rain', 'tp', 'pr', 'convective', 'snow']):
+                types[var] = "PRECIPITATION"
+            # 2. Static / Categorical variables
+            elif any(kw in v_lower for kw in ['dem', 'slope', 'aspect', 'mask', 'soil', 'veg', 'topo']):
+                types[var] = "STATIC"
+            # 3. Physical / Thermodynamic variables (Gaussian-like)
+            else:
+                types[var] = "PHYSICAL"
+        return types
 
     def _extract_continuous_fields_xr(self, ds, coords, continuous_methods, method_groups, grid_lats, grid_lons, lat_dim, lon_dim, has_dem):
         c_vars = []
@@ -1382,6 +1420,7 @@ class MasharikiWeatherDataset:
         ml_task: Literal["downscaling", "forecasting", "correction"] = "downscaling",
         spatial_mode: Literal["stations", "grid"] = "stations",
         target_node: Optional[str] = None,
+        bbox: Optional[Tuple[float, float, float, float]] = None,
         as_xarray: bool = False,
     ) -> Windows:
         """
@@ -1413,6 +1452,33 @@ class MasharikiWeatherDataset:
         )
 
         valid_stations_subset = self.validate_stations(stations) if stations else self.stations_table.index.tolist()
+
+        # Geographic bounding box filtering: filter stations to those within bbox
+        if bbox is not None:
+            lat_min, lon_min, lat_max, lon_max = bbox
+            st = self.stations_table.loc[valid_stations_subset]
+            in_bbox = (
+                (st['latitude'] >= lat_min) & (st['latitude'] <= lat_max) &
+                (st['longitude'] >= lon_min) & (st['longitude'] <= lon_max)
+            )
+            valid_stations_subset = st[in_bbox].index.tolist()
+            if not valid_stations_subset:
+                raise ValueError(
+                    f"No stations found within bbox={bbox}. "
+                    f"Expand the region or check coordinate order (lat_min, lon_min, lat_max, lon_max)."
+                )
+            # Re-extract observations for the bbox-filtered stations only
+            observations, mask = self.get_observations(
+                stations=valid_stations_subset,
+                parameters=parameters,
+                first_date=first_date,
+                last_date=last_date,
+                split=split,
+                as_numpy=False,
+                return_mask=True,
+                copy=True,
+            )
+
         cat_cols = ['LandCover']
         all_static = [c for c in self.stations_table.columns if c not in ['latitude', 'longitude', 'network']]
         valid_cat = [c for c in cat_cols if c in all_static]
@@ -1485,15 +1551,25 @@ class MasharikiWeatherDataset:
                            valid_vars = [v for v in req_vars if v in ds.data_vars]
                            if not valid_vars: continue
                            
-                           if crop_to_stations:
+                           # Determine spatial crop bounds
+                           should_crop = crop_to_stations or (bbox is not None)
+                           if should_crop:
                                 lat_dim = 'lat' if 'lat' in ds.coords else 'latitude'
                                 lon_dim = 'lon' if 'lon' in ds.coords else 'longitude'
-                                latitudes = self.stations_table.loc[valid_stations_subset, 'latitude']
-                                longitudes = self.stations_table.loc[valid_stations_subset, 'longitude']
-                                
-                                min_lat, max_lat = latitudes.min(), latitudes.max()
-                                min_lon, max_lon = longitudes.min(), longitudes.max()
-                                
+
+                                if bbox is not None:
+                                    # Explicit bbox supersedes crop_to_stations
+                                    # Add 0.25-degree buffer per LAM best practice
+                                    buf = 0.25
+                                    min_lat, min_lon = bbox[0] - buf, bbox[1] - buf
+                                    max_lat, max_lon = bbox[2] + buf, bbox[3] + buf
+                                else:
+                                    # Fall back to station-extent cropping
+                                    latitudes = self.stations_table.loc[valid_stations_subset, 'latitude']
+                                    longitudes = self.stations_table.loc[valid_stations_subset, 'longitude']
+                                    min_lat, max_lat = latitudes.min(), latitudes.max()
+                                    min_lon, max_lon = longitudes.min(), longitudes.max()
+
                                 lats = ds[lat_dim].values
                                 lons = ds[lon_dim].values
                                 
