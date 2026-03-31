@@ -232,26 +232,24 @@ class EarthSystemAdapter(Dataset):
                 sources[g_name] = np.concatenate([coords_2d, alt], axis=1)
 
         # C. Native Topography (As a Node Type)
-        if (self.windows.native_topography is not None and 
-            self.windows.native_topography_lats is not None and 
-            self.windows.native_topography_lons is not None):
+        if (getattr(self.windows, 'native_topography', None) is not None and 
+            getattr(self.windows, 'native_topography_lats', None) is not None and 
+            getattr(self.windows, 'native_topography_lons', None) is not None):
             
             t_lats = self.windows.native_topography_lats
             t_lons = self.windows.native_topography_lons
             t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
             t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
             
-            # Extract only the elevation channel (index 0) for KNN altitude.
-            # native_topography shape: (n_vars, n_lat, n_lon) from dataset.py L1675-1676.
-            # Flattening all n_vars would produce n_vars*n_lat*n_lon elements vs
-            # n_lat*n_lon coords -- a fatal dimension mismatch.
-            if isinstance(self.native_topography, torch.Tensor) and self.native_topography.dim() == 3:
-                topo_elev = self.native_topography[0]  # (n_lat, n_lon)
-            elif isinstance(self.native_topography, np.ndarray) and self.native_topography.ndim == 3:
-                topo_elev = self.native_topography[0]
-            else:
-                topo_elev = self.native_topography
-            t_alt = topo_elev.reshape(-1, 1).numpy() if isinstance(topo_elev, torch.Tensor) else topo_elev.reshape(-1, 1)
+            # FIX 1: Safely isolate the 0th channel (DEM) to prevent shape mismatch 
+            # if the topography tensor contains multiple features (Slope, Aspect, etc.)
+            topo_tensor = self.native_topography[0] if self.native_topography.ndim == 3 else self.native_topography
+            
+            # FIX 2: Apply nan_to_num directly to the grid array. 
+            # Ocean and Lake pixels in raw NetCDF DEMs inherently contain NaNs.
+            t_alt_raw = topo_tensor.reshape(-1, 1).numpy() if isinstance(topo_tensor, torch.Tensor) else topo_tensor.reshape(-1, 1)
+            t_alt = np.nan_to_num(t_alt_raw, nan=0.0)
+            
             sources['topography'] = np.concatenate([t_coords, t_alt], axis=1)
 
         if not sources:
