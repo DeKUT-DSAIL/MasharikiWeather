@@ -223,3 +223,6 @@ mashariki_data/
 
 # Agents
 .agents/
+
+# log
+agent_interaction_log.json
