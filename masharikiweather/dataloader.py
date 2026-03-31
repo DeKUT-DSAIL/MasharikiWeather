@@ -220,16 +220,14 @@ class EarthSystemAdapter(Dataset):
             st_alt = self.windows.station_static[:, :1] if self.windows.station_static is not None else np.zeros((len(st_coords), 1))
             sources['tahmo'] = np.concatenate([st_coords, st_alt], axis=1)
 
-        # Grid Coords (Lat, Lon, Interpolated Alt)
-        for g_name in self.windows.grids_x.keys():
+        # Grid Coords (Lat, Lon) - No altitude interpolation for coarse grids
+        for g_name in getattr(self.windows, 'grids_x', {}).keys():
             lats = self.windows.grids_lats.get(g_name)
             lons = self.windows.grids_lons.get(g_name)
             if lats is not None and lons is not None:
                 lon_grid, lat_grid = np.meshgrid(lons, lats)
                 coords_2d = np.stack([lat_grid.ravel(), lon_grid.ravel()], axis=1)
-                # Placeholder for interpolated altitude (will be expanded if DEM is visible)
-                alt = np.zeros((len(coords_2d), 1))
-                sources[g_name] = np.concatenate([coords_2d, alt], axis=1)
+                sources[g_name] = coords_2d
 
         # C. Native Topography (As a Node Type)
         if (getattr(self.windows, 'native_topography', None) is not None and 
@@ -255,32 +253,84 @@ class EarthSystemAdapter(Dataset):
         if not sources:
             return
 
-        # 2. Coupling Loop (Bidirectional)
+        # 2. Coupling Loop (Hybrid Unidirectional Topology)
         all_node_names = list(sources.keys())
         for i, src_name in enumerate(all_node_names):
             for j, dst_name in enumerate(all_node_names):
+                # Rule B: Unidirectional Fastpass (Topography cannot receive messages)
+                if dst_name == 'topography':
+                    continue
+                
                 src_coords = sources[src_name]
                 dst_coords = sources[dst_name]
                 
-                # Weight altitude difference by 0.1 to prevent vertical dominance over horizontal distance
-                # (100m altitude diff ~ 1km horizontal similarity in meteorological space)
-                dist_weight = np.array([1.0, 1.0, 0.01]) 
+                # Rule A: Mathematically Sound Local Cartesian Projection
+                # Convert source and destination coordinates to Kilometers to prevent Metric Space Collision
+                ref_lat = src_coords[:, 0].mean()
+                r_earth = 111.32  # km per degree of latitude
                 
-                knn_src = src_coords * dist_weight
-                knn_dst = dst_coords * dist_weight
+                def _project_cartesian(coords):
+                    cart = np.zeros_like(coords, dtype=np.float32)
+                    cart[:, 0] = coords[:, 0] * r_earth  # Y [km]
+                    cart[:, 1] = coords[:, 1] * r_earth * np.cos(np.radians(ref_lat))  # X [km]
+                    if coords.shape[1] == 3:
+                        cart[:, 2] = coords[:, 2] / 1000.0  # Z [km]
+                    return cart
                 
-                k = min(k_stations if dst_name == 'tahmo' else k_grid, len(src_coords))
+                cart_src = _project_cartesian(src_coords)
+                cart_dst = _project_cartesian(dst_coords)
+                
+                use_3d = (dst_name == 'tahmo' and src_coords.shape[1] == 3 and dst_coords.shape[1] == 3)
+                
+                if use_3d:
+                    # WeatherGNN Anisotropy: λ_alt = 10.0 enforces strong terrain adherence
+                    # 1 km of vertical distance is punished equivalently to 10 km horizontally
+                    dist_weight = np.array([1.0, 1.0, 10.0])
+                    knn_src = cart_src * dist_weight
+                    knn_dst = cart_dst * dist_weight
+                else:
+                    # Strictly 2D physical kilometric topology
+                    knn_src = cart_src[:, :2]
+                    knn_dst = cart_dst[:, :2]
+                
+                k_target = k_stations if dst_name == 'tahmo' else k_grid
+                k = min(k_target, len(src_coords))
                 if k < 1: continue
                 
                 nbrs = NearestNeighbors(n_neighbors=k, algorithm='ball_tree').fit(knn_src)
-                distances, indices = nbrs.kneighbors(knn_dst)
+                distances_scaled, indices = nbrs.kneighbors(knn_dst)
+                
+                # Re-compute mathematical physical distance without the λ_alt penalty for Edge Attributes
+                true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k, axis=0), axis=1)
                 
                 # Edge Index: [src_idx, dst_idx]
                 edge_dst = np.repeat(np.arange(len(dst_coords)), k)
                 edge_src = indices.ravel()
-                
                 index_tensor = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
-                attr_tensor = torch.tensor(distances.ravel(), dtype=torch.float32).unsqueeze(-1)
+                
+                # Rule C: Anisotropic Edge Attributes [Normalized]
+                # To prevent MLP saturation from raw km (>1.0), we normalize per-bipartite-edge-type.
+                # Distance: Divide by max distance in this edge set to bound [0, 1]
+                max_dist = true_dist_km.max() if len(true_dist_km) > 0 and true_dist_km.max() > 0 else 1.0
+                dist_norm = true_dist_km / max_dist
+                
+                if src_name == 'topography':
+                    dist_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
+                    src_alt_km = cart_src[indices.ravel(), 2]
+                    # If dst is 3D, use dst_alt_km. Otherwise assume surface level 0 for grid boundaries.
+                    dst_alt_km = np.repeat(cart_dst[:, 2], k) if dst_coords.shape[1] == 3 else np.zeros(k * len(dst_coords))
+                    
+                    # Delta Elevation (km). Uphill is positive, Downhill is negative.
+                    # We use tanh(delta / 2.0) to smoothly squash topological extremes (±4km) into [-1.0, 1.0]
+                    delta_elev_km = (dst_alt_km - src_alt_km)
+                    delta_signed = np.tanh(delta_elev_km / 2.0)
+                    delta_elev_tensor = torch.tensor(delta_signed, dtype=torch.float32).unsqueeze(-1)
+                    
+                    # We pass the full, dimensionally-consistent physical vector into PyG
+                    attr_tensor = torch.cat([dist_tensor, delta_elev_tensor], dim=-1)
+                else:
+                    # Fluid flow atmospheric edges are scalar lengths bounded [0, 1]
+                    attr_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
                 
                 # Semantic Verb Resolver for PyG-compliant (src, relation, dst) tuple keys
                 if src_name == dst_name:
@@ -290,7 +340,7 @@ class EarthSystemAdapter(Dataset):
                 elif src_name == 'topography':
                     verb = 'conditions'
                 else:
-                    target_node = self.windows.target_node or 'tahmo'
+                    target_node = getattr(self.windows, 'target_node', 'tahmo')
                     if dst_name == target_node:
                         verb = 'downscales_to'
                     else:
@@ -368,7 +418,14 @@ class EarthSystemAdapter(Dataset):
             # (Time, Channels, Lat, Lon) prevents channel bleed indexing errors.
             grid_vars = list(grid_ds.data_vars)
             if grid_vars and self.scaling_engine.stats:
+                # FIX: Permute tensor to (Time, Lat, Lon, Channels) so the 
+                # ScalingEngine [..., i] indexing modifies the correct axis.
+                tensor_x = tensor_x.permute(0, 2, 3, 1)
+                
                 tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+                
+                # Permute back to (Time, Channels, Lat, Lon) for the PyG reshape step
+                tensor_x = tensor_x.permute(0, 3, 1, 2)
 
             # Step 2: Reshape to PyG node-feature format AFTER scaling.
             # (Time, Channels, Lat, Lon) -> (Lat*Lon, Time*Channels)
