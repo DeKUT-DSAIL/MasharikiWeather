@@ -404,32 +404,39 @@ class EarthSystemAdapter(Dataset):
         )
         end_time = start_time + self.window_size
 
-        # 1. Dynamic Grid Loop (Lazy Materialization)
+        # 1. Dynamic Grid Loop (Lazy & Eager Routing)
         for g_name, grid_ds in self.windows.grids_x.items():
-            grid_slice = grid_ds.isel(time=slice(start_time, end_time))
-            # Explicitly triggering safe Zarr read into worker RAM
-            raw_numpy = grid_slice.compute().to_array().values
-            flat_numpy = self._safe_flatten_grid(raw_numpy)
-
-            tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
-
-            # Step 1: Apply variable-specific scaling in grid-space BEFORE flatten.
-            # Per Aurora, GraphCast, Building ML LAMs: normalization in native
-            # (Time, Channels, Lat, Lon) prevents channel bleed indexing errors.
-            grid_vars = list(grid_ds.data_vars)
-            if grid_vars and self.scaling_engine.stats:
-                # FIX: Permute tensor to (Time, Lat, Lon, Channels) so the 
-                # ScalingEngine [..., i] indexing modifies the correct axis.
-                tensor_x = tensor_x.permute(0, 2, 3, 1)
+            
+            # ROUTE A: Eager Mode (spatial_mode="stations")
+            if isinstance(grid_ds, np.ndarray):
+                # Extract pre-sliced numpy array: (window_size, n_stations, n_params)
+                raw_numpy = grid_ds[idx]
+                tensor_x = torch.as_tensor(raw_numpy, dtype=torch.float32)
                 
-                tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+                grid_vars = self.windows.grids_features.get(g_name, [])
+                if grid_vars and self.scaling_engine.stats:
+                    tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
                 
-                # Permute back to (Time, Channels, Lat, Lon) for the PyG reshape step
-                tensor_x = tensor_x.permute(0, 3, 1, 2)
+                # Permute to PyG node-feature standard: (Stations, Time, Params)
+                if tensor_x.dim() == 3:
+                    tensor_x = tensor_x.permute(1, 0, 2)
+                    
+            # ROUTE B: Lazy Mode (spatial_mode="grid")
+            else:
+                grid_slice = grid_ds.isel(time=slice(start_time, end_time))
+                raw_numpy = grid_slice.compute().to_array().values
+                flat_numpy = self._safe_flatten_grid(raw_numpy)
 
-            # Step 2: Reshape to PyG node-feature format AFTER scaling.
-            # (Time, Channels, Lat, Lon) -> (Lat*Lon, Time*Channels)
-            tensor_x = self._reshape_grid_for_pyg(tensor_x)
+                tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
+
+                grid_vars = list(grid_ds.data_vars)
+                if grid_vars and self.scaling_engine.stats:
+                    tensor_x = tensor_x.permute(0, 2, 3, 1)
+                    tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+                    tensor_x = tensor_x.permute(0, 3, 1, 2)
+
+                # Reshape (Time, Channels, Lat, Lon) -> (Lat*Lon, Time*Channels)
+                tensor_x = self._reshape_grid_for_pyg(tensor_x)
 
             data[g_name].x = tensor_x
 
