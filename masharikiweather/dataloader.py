@@ -19,7 +19,7 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import pandas as pd
-from typing import Optional, Literal, Dict, Tuple
+from typing import Optional, Literal, Dict, Tuple, Sequence
 
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -267,83 +267,22 @@ class EarthSystemAdapter(Dataset):
                 index_tensor = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
                 attr_tensor = torch.tensor(distances.ravel(), dtype=torch.float32).unsqueeze(-1)
                 
-                self._cached_edges[f"{src_name}_{dst_name}"] = (index_tensor, attr_tensor)
-                
-                # Bi-directional Enforcement: If (src, dst) exists, ensure (dst, src) 
-                # Note: The loop naturally covers both (i,j) and (j,i).
-                
-                nn_geo = NearestNeighbors(n_neighbors=k_geo, metric='haversine')
-                nn_geo.fit(np.radians(src_data['coords']))
-                dists_rad, idxs_geo = nn_geo.kneighbors(np.radians(dst_data['coords']))
-                dists_km = dists_rad * 6371.0
-                
-                # b. Topographic KNN (Latent Similarity)
-                idxs_topo = None
-                if src_name in topo_embeddings and dst_name in topo_embeddings:
-                    k_phys = min(current_k // 2, n_src)
-                    if k_phys > 0:
-                        nn_topo = NearestNeighbors(n_neighbors=k_phys, metric='euclidean')
-                        nn_topo.fit(topo_embeddings[src_name])
-                        _, idxs_topo = nn_topo.kneighbors(topo_embeddings[dst_name])
-
-                # c. Assemble Unified Edge Set
-                src_list, dst_list, attr_list = [], [], []
-                eps = 1e-6
-                
-                for d_i in range(n_dst):
-                    neighbors = set(idxs_geo[d_i])
-                    if idxs_topo is not None:
-                        neighbors.update(idxs_topo[d_i])
-                        
-                    for s_j in neighbors:
-                        if src_name == dst_name and s_j == d_i:
-                            continue 
-                            
-                        # Re-calculate distance if neighbor was from topo-knn
-                        if s_j in idxs_geo[d_i]:
-                            loc = np.where(idxs_geo[d_i] == s_j)[0][0]
-                            d_geo = dists_km[d_i, loc]
-                        else:
-                            p1 = np.radians(src_data['coords'][s_j])
-                            p2 = np.radians(dst_data['coords'][d_i])
-                            a = np.sin((p2[0]-p1[0])/2)**2 + np.cos(p1[0]) * np.cos(p2[0]) * np.sin((p2[1]-p1[1])/2)**2
-                            d_geo = 2 * 6371.0 * np.arcsin(np.sqrt(a))
-
-                        edge_feat = [1.0 / (d_geo + eps)]
-                        
-                        # Add anisotropic gradients (Physical Inductive Bias)
-                        if src_data['features'] is not None and dst_data['features'] is not None:
-                            for col_idx in topo_indices:
-                                edge_feat.append(
-                                    float(src_data['features'][s_j, col_idx]
-                                          - dst_data['features'][d_i, col_idx])
-                                )
-                        
-                        src_list.append(s_j)
-                        dst_list.append(d_i)
-                        attr_list.append(edge_feat)
-
-                if src_list:
-                    # Semantic Verb Resolver
-                    if src_name == dst_name:
-                        verb = 'observes'
-                    elif src_name == 'tahmo':
-                        verb = 'corrects'
-                    elif src_name == 'topography':
-                        verb = 'conditions'
+                # Semantic Verb Resolver for PyG-compliant (src, relation, dst) tuple keys
+                if src_name == dst_name:
+                    verb = 'observes'
+                elif src_name == 'tahmo':
+                    verb = 'corrects'
+                elif src_name == 'topography':
+                    verb = 'conditions'
+                else:
+                    target_node = self.windows.target_node or 'tahmo'
+                    if dst_name == target_node:
+                        verb = 'downscales_to'
                     else:
-                        # Grid-to-Grid or Grid-to-Station (Downscaling)
-                        target_node = self.windows.target_node or 'tahmo'
-                        if dst_name == target_node:
-                            verb = 'downscales_to'
-                        else:
-                            verb = 'informs'
-                        
-                    edge_key = (src_name, verb, dst_name)
-                    self._cached_edges[edge_key] = (
-                        torch.tensor([src_list, dst_list], dtype=torch.long),
-                        torch.tensor(attr_list, dtype=torch.float32),
-                    )
+                        verb = 'informs'
+                
+                edge_key = (src_name, verb, dst_name)
+                self._cached_edges[edge_key] = (index_tensor, attr_tensor)
 
 
 
@@ -390,20 +329,10 @@ class EarthSystemAdapter(Dataset):
 
             tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
 
-            # Apply variable-specific scaling if defined
-            if g_name in self.scalers:
-                try:
-                    tensor_x = self.scalers[g_name].transform(tensor_x)
-                except AttributeError:
-                    bias = getattr(
-                        self.scalers[g_name], 'bias',
-                        getattr(self.scalers[g_name], 'mean', 0.0)
-                    )
-                    scale = getattr(
-                        self.scalers[g_name], 'scale',
-                        getattr(self.scalers[g_name], 'std', 1.0)
-                    )
-                    tensor_x = (tensor_x - bias) / scale
+            # Apply variable-specific scaling via ScalingEngine
+            grid_vars = list(grid_ds.data_vars)
+            if grid_vars and self.scaling_engine.stats:
+                tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
 
             data[g_name].x = tensor_x
 
