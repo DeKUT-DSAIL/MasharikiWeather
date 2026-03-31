@@ -156,6 +156,14 @@ class EarthSystemAdapter(Dataset):
         self.window_size = self.station_x.shape[1]
         self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
 
+        # Station-graph geometry: n_stations and n_params for PyG reshape.
+        # station_x shape from sliding_window_view: (n_windows, window_size, n_stations * n_params)
+        # PeakWeather standard: per-sample node features are (n_stations, window_size, n_params)
+        station_labels = getattr(windows, 'station_labels', None)
+        feature_labels = getattr(windows, 'feature_labels', None)
+        self.n_stations = len(station_labels) if station_labels else 0
+        self.n_params = len(feature_labels) if feature_labels else 0
+
         # 2. Pre-cast Topographic Priors: Stations
         self.station_static = None
         if windows.station_static is not None:
@@ -233,8 +241,17 @@ class EarthSystemAdapter(Dataset):
             t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
             t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
             
-            # Use the mean elevation as altitude for KNN
-            t_alt = self.native_topography.reshape(-1, 1).numpy() if isinstance(self.native_topography, torch.Tensor) else self.native_topography.reshape(-1, 1)
+            # Extract only the elevation channel (index 0) for KNN altitude.
+            # native_topography shape: (n_vars, n_lat, n_lon) from dataset.py L1675-1676.
+            # Flattening all n_vars would produce n_vars*n_lat*n_lon elements vs
+            # n_lat*n_lon coords -- a fatal dimension mismatch.
+            if isinstance(self.native_topography, torch.Tensor) and self.native_topography.dim() == 3:
+                topo_elev = self.native_topography[0]  # (n_lat, n_lon)
+            elif isinstance(self.native_topography, np.ndarray) and self.native_topography.ndim == 3:
+                topo_elev = self.native_topography[0]
+            else:
+                topo_elev = self.native_topography
+            t_alt = topo_elev.reshape(-1, 1).numpy() if isinstance(topo_elev, torch.Tensor) else topo_elev.reshape(-1, 1)
             sources['topography'] = np.concatenate([t_coords, t_alt], axis=1)
 
         if not sources:
@@ -309,6 +326,25 @@ class EarthSystemAdapter(Dataset):
             return raw_numpy.reshape(time, c * p, lat, lon)
         return raw_numpy
 
+    @staticmethod
+    def _reshape_grid_for_pyg(tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Reshape grid tensor from (Time, Channels, Lat, Lon) to PyG node-feature
+        format (Lat*Lon, Time*Channels) where each spatial pixel is a graph node.
+
+        Scientific justification (Aurora, Building ML LAMs, GraphCast):
+        Per-variable normalization must occur BEFORE this reshape while the
+        channel dimension is cleanly separated, preventing channel bleed.
+        This method is called AFTER scaling.
+        """
+        if tensor.dim() == 4:
+            T, C, H, W = tensor.shape
+            # (T, C, H, W) -> (H, W, T, C) -> (H*W, T*C)
+            return tensor.permute(2, 3, 0, 1).reshape(H * W, T * C)
+        elif tensor.dim() == 2:
+            return tensor  # Already (n_nodes, n_features)
+        return tensor.reshape(-1, tensor.shape[-1]) if tensor.dim() > 2 else tensor
+
     def __getitem__(self, idx: int) -> HeteroData:
         data = HeteroData()
 
@@ -329,10 +365,16 @@ class EarthSystemAdapter(Dataset):
 
             tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
 
-            # Apply variable-specific scaling via ScalingEngine
+            # Step 1: Apply variable-specific scaling in grid-space BEFORE flatten.
+            # Per Aurora, GraphCast, Building ML LAMs: normalization in native
+            # (Time, Channels, Lat, Lon) prevents channel bleed indexing errors.
             grid_vars = list(grid_ds.data_vars)
             if grid_vars and self.scaling_engine.stats:
                 tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+
+            # Step 2: Reshape to PyG node-feature format AFTER scaling.
+            # (Time, Channels, Lat, Lon) -> (Lat*Lon, Time*Channels)
+            tensor_x = self._reshape_grid_for_pyg(tensor_x)
 
             data[g_name].x = tensor_x
 
@@ -341,8 +383,18 @@ class EarthSystemAdapter(Dataset):
 
         if target_node == "tahmo" or target_node is None:
             if self.station_y is not None:
-                data["tahmo"].y = self.station_y[idx]
-                data["tahmo"].mask_y = self.station_mask_y[idx]
+                raw_y = self.station_y[idx]       # (horizon_size, n_stations * n_params)
+                raw_mask_y = self.station_mask_y[idx]
+                if self.n_stations > 0 and self.n_params > 0 and self.horizon_size > 0:
+                    data["tahmo"].y = raw_y.reshape(
+                        self.horizon_size, self.n_stations, self.n_params
+                    ).permute(1, 0, 2)  # (n_stations, horizon_size, n_params)
+                    data["tahmo"].mask_y = raw_mask_y.reshape(
+                        self.horizon_size, self.n_stations, self.n_params
+                    ).permute(1, 0, 2)
+                else:
+                    data["tahmo"].y = raw_y
+                    data["tahmo"].mask_y = raw_mask_y
         elif target_node in self.windows.grids_y:
             delay = getattr(self.windows, 'delay', 0)
             target_start = start_time + self.window_size + delay
@@ -356,6 +408,8 @@ class EarthSystemAdapter(Dataset):
             flat_target = self._safe_flatten_grid(target_numpy)
 
             data[target_node].y = torch.as_tensor(flat_target, dtype=torch.float32)
+            # Reshape grid target to PyG node-feature format
+            data[target_node].y = self._reshape_grid_for_pyg(data[target_node].y)
 
         # 3. Global Coordinates Mapping (Temporal Encodings)
         if len(self.windows.grids_x) > 0:
@@ -374,16 +428,43 @@ class EarthSystemAdapter(Dataset):
         data['global'].u = torch.as_tensor(encoded_time, dtype=torch.float32)
 
         # 4. Point-Station Nodes
-        data['tahmo'].x = self.station_x[idx]
-        data['tahmo'].mask = self.station_mask_x[idx]
+        # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
+        # WeatherGNN: R^{N x F_e x T} (stations, params, time)
+        # sliding_window_view produces: (window_size, n_stations * n_params)
+        # Reshape to: (n_stations, window_size, n_params) -- PeakWeather convention.
+        raw_x = self.station_x[idx]      # (window_size, n_stations * n_params)
+        raw_mask = self.station_mask_x[idx]
+        if self.n_stations > 0 and self.n_params > 0:
+            # Unflatten the joint station-parameter axis, then permute to (N, T, D)
+            data['tahmo'].x = raw_x.reshape(
+                self.window_size, self.n_stations, self.n_params
+            ).permute(1, 0, 2)  # (n_stations, window_size, n_params)
+            data['tahmo'].mask = raw_mask.reshape(
+                self.window_size, self.n_stations, self.n_params
+            ).permute(1, 0, 2)
+        else:
+            # Fallback: cannot determine decomposition
+            data['tahmo'].x = raw_x
+            data['tahmo'].mask = raw_mask
         if self.station_static is not None:
             data['tahmo'].static_u = self.station_static
 
         # 5. Native Topography Nodes
+        # Reshape from (n_vars, n_lat, n_lon) -> (n_lat*n_lon, n_vars)
+        # Each spatial pixel becomes a graph node with n_vars features.
         if self.native_topography is not None:
-            data['topography'].x = self.native_topography
+            if self.native_topography.dim() == 3:
+                n_v, n_h, n_w = self.native_topography.shape
+                data['topography'].x = self.native_topography.reshape(n_v, -1).T
+            else:
+                data['topography'].x = self.native_topography.reshape(-1, 1)
         if self.native_topography_categorical is not None:
-            data['topography'].x_categorical = self.native_topography_categorical
+            if self.native_topography_categorical.dim() == 3:
+                data['topography'].x_categorical = self.native_topography_categorical.reshape(
+                    self.native_topography_categorical.shape[0], -1
+                ).T
+            else:
+                data['topography'].x_categorical = self.native_topography_categorical.reshape(-1, 1)
 
         # 6. Attach Cached Graph Edges
         for edge_key, (edge_index, edge_attr) in self._cached_edges.items():
