@@ -24,6 +24,7 @@ from typing import Optional, Literal, Dict, Tuple, Sequence
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from tsl.data.preprocessing import StandardScaler
+import dask
 from .dataset import Windows
 
 
@@ -294,45 +295,70 @@ class EarthSystemAdapter(Dataset):
                     knn_dst = cart_dst[:, :2]
                 
                 k_target = k_stations if dst_name == 'tahmo' else k_grid
-                k = min(k_target, len(src_coords))
-                if k < 1: continue
+                # HYBRID TOPOLOGY: Target density alignment
+                # 1. Local/Topo: K=8, threshold=0.7 (PeakWeather standard)
+                # 2. Regional/Moisture: K=32, no hard threshold (Aurora/WeatherGNN standard)
+                if src_name == 'topography' or src_name == dst_name:
+                    k_final = min(8, len(src_coords))
+                    threshold = 0.7
+                else:
+                    k_final = min(32, len(src_coords))
+                    threshold = 0.1 # Keep weak connections for teleconnections
+
+                if k_final < 1: continue
                 
-                nbrs = NearestNeighbors(n_neighbors=k, algorithm='ball_tree').fit(knn_src)
+                nbrs = NearestNeighbors(n_neighbors=k_final, algorithm='ball_tree').fit(knn_src)
                 distances_scaled, indices = nbrs.kneighbors(knn_dst)
                 
+                # Rule A: Dynamic Sigma calculation for Gaussian Kernel
+                # To ensure the similarity weights [0, 1] are scientifically meaningful
+                sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
+                similarities = np.exp(-(distances_scaled**2) / (sigma**2))
+                
+                # Apply Thresholding
+                mask = similarities >= threshold
+                
                 # Re-compute mathematical physical distance without the λ_alt penalty for Edge Attributes
-                true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k, axis=0), axis=1)
+                true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k_final, axis=0), axis=1)
                 
                 # Edge Index: [src_idx, dst_idx]
-                edge_dst = np.repeat(np.arange(len(dst_coords)), k)
-                edge_src = indices.ravel()
+                edge_dst_all = np.repeat(np.arange(len(dst_coords)), k_final)
+                edge_src_all = indices.ravel()
+                weights_all = similarities.ravel()
+                
+                # Apply Mask to everything
+                edge_src = edge_src_all[mask.ravel()]
+                edge_dst = edge_dst_all[mask.ravel()]
+                dist_km = true_dist_km[mask.ravel()]
+                weights = weights_all[mask.ravel()]
+                
+                if len(edge_src) == 0: continue
+                
                 index_tensor = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
                 
                 # Rule C: Anisotropic Edge Attributes [Normalized]
                 # To prevent MLP saturation from raw km (>1.0), we normalize per-bipartite-edge-type.
-                # Distance: Divide by max distance in this edge set to bound [0, 1]
-                max_dist = true_dist_km.max() if len(true_dist_km) > 0 and true_dist_km.max() > 0 else 1.0
-                dist_norm = true_dist_km / max_dist
+                max_dist = dist_km.max() if len(dist_km) > 0 and dist_km.max() > 0 else 1.0
+                dist_norm = dist_km / max_dist
+                
+                # Combine physical distance with Gaussian Similarity weight
+                dist_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
+                weight_tensor = torch.tensor(weights, dtype=torch.float32).unsqueeze(-1)
                 
                 if src_name == 'topography':
-                    dist_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
-                    src_alt_km = cart_src[indices.ravel(), 2]
-                    # If dst is 3D, use dst_alt_km. Otherwise assume surface level 0 for grid boundaries.
-                    dst_alt_km = np.repeat(cart_dst[:, 2], k) if dst_coords.shape[1] == 3 else np.zeros(k * len(dst_coords))
+                    src_alt_km = cart_src[edge_src, 2]
+                    dst_alt_km = cart_dst[edge_dst, 2] if dst_coords.shape[1] == 3 else np.zeros(len(edge_dst))
                     
                     # Delta Elevation (km). Uphill is positive, Downhill is negative.
-                    # We use tanh(delta / 2.0) to smoothly squash topological extremes (±4km) into [-1.0, 1.0]
                     delta_elev_km = (dst_alt_km - src_alt_km)
                     delta_signed = np.tanh(delta_elev_km / 2.0)
                     delta_elev_tensor = torch.tensor(delta_signed, dtype=torch.float32).unsqueeze(-1)
                     
-                    # We pass the full, dimensionally-consistent physical vector into PyG
-                    attr_tensor = torch.cat([dist_tensor, delta_elev_tensor], dim=-1)
+                    attr_tensor = torch.cat([dist_tensor, weight_tensor, delta_elev_tensor], dim=-1)
                 else:
-                    # Fluid flow atmospheric edges are scalar lengths bounded [0, 1]
-                    attr_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
+                    attr_tensor = torch.cat([dist_tensor, weight_tensor], dim=-1)
                 
-                # Semantic Verb Resolver for PyG-compliant (src, relation, dst) tuple keys
+                # Semantic Verb Resolver
                 if src_name == dst_name:
                     verb = 'observes'
                 elif src_name == 'tahmo':
@@ -404,32 +430,61 @@ class EarthSystemAdapter(Dataset):
         )
         end_time = start_time + self.window_size
 
-        # 1. Dynamic Grid Loop (Lazy Materialization)
+        # 0. Global Coordinates Mapping (Temporal Encodings)
+        if len(self.windows.grids_x) > 0:
+            first_grid_key = next(iter(self.windows.grids_x))
+            actual_time_slice = self.windows.grids_x[first_grid_key].isel(time=slice(start_time, end_time))
+            time_seq = pd.DatetimeIndex(actual_time_slice.time.values)
+        else:
+            time_seq = pd.DatetimeIndex(
+                self.windows.index_x[start_time : start_time + self.window_size]
+            )
+        encoded_time = torch.as_tensor(datetime_encoded(time_seq), dtype=torch.float32)
+        data['global'].u = encoded_time  # Retain as global metadata
+
+        # 1. Dynamic Grid Loop (Lazy & Eager Routing)
         for g_name, grid_ds in self.windows.grids_x.items():
-            grid_slice = grid_ds.isel(time=slice(start_time, end_time))
-            # Explicitly triggering safe Zarr read into worker RAM
-            raw_numpy = grid_slice.compute().to_array().values
-            flat_numpy = self._safe_flatten_grid(raw_numpy)
-
-            tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
-
-            # Step 1: Apply variable-specific scaling in grid-space BEFORE flatten.
-            # Per Aurora, GraphCast, Building ML LAMs: normalization in native
-            # (Time, Channels, Lat, Lon) prevents channel bleed indexing errors.
-            grid_vars = list(grid_ds.data_vars)
-            if grid_vars and self.scaling_engine.stats:
-                # FIX: Permute tensor to (Time, Lat, Lon, Channels) so the 
-                # ScalingEngine [..., i] indexing modifies the correct axis.
-                tensor_x = tensor_x.permute(0, 2, 3, 1)
+            
+            # ROUTE A: Eager Mode (spatial_mode="stations")
+            if isinstance(grid_ds, np.ndarray):
+                # Extract pre-sliced numpy array: (window_size, n_stations, n_params)
+                raw_numpy = grid_ds[idx]
+                tensor_x = torch.as_tensor(raw_numpy, dtype=torch.float32)
                 
-                tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+                grid_vars = self.windows.grids_features.get(g_name, [])
+                if grid_vars and self.scaling_engine.stats:
+                    tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
                 
-                # Permute back to (Time, Channels, Lat, Lon) for the PyG reshape step
-                tensor_x = tensor_x.permute(0, 3, 1, 2)
+                # Permute to PyG node-feature standard: (Stations, Time, Params)
+                if tensor_x.dim() == 3:
+                    tensor_x = tensor_x.permute(1, 0, 2)
+                    # INJECT TEMPORAL ENCODINGS
+                    S, T, P = tensor_x.shape
+                    time_expanded = encoded_time.view(1, T, 6).expand(S, T, 6)
+                    tensor_x = torch.cat([tensor_x, time_expanded], dim=2)
+            # ROUTE B: Lazy Mode (spatial_mode="grid")
+            else:
+                with dask.config.set(scheduler='single-threaded'):
+                    grid_slice = grid_ds.isel(time=slice(start_time, end_time))
+                    raw_numpy = grid_slice.compute().to_array().values
+                    
+                flat_numpy = self._safe_flatten_grid(raw_numpy)
 
-            # Step 2: Reshape to PyG node-feature format AFTER scaling.
-            # (Time, Channels, Lat, Lon) -> (Lat*Lon, Time*Channels)
-            tensor_x = self._reshape_grid_for_pyg(tensor_x)
+                tensor_x = torch.as_tensor(flat_numpy, dtype=torch.float32)
+
+                grid_vars = list(grid_ds.data_vars)
+                if grid_vars and self.scaling_engine.stats:
+                    tensor_x = tensor_x.permute(0, 2, 3, 1)
+                    tensor_x = self.scaling_engine.transform(tensor_x, grid_vars)
+                    tensor_x = tensor_x.permute(0, 3, 1, 2)
+
+                # INJECT TEMPORAL ENCODINGS (Broadcasting to entire Spatial Grid)
+                T, C, H, W = tensor_x.shape
+                time_expanded = encoded_time.view(T, 6, 1, 1).expand(T, 6, H, W)
+                tensor_x = torch.cat([tensor_x, time_expanded], dim=1)
+
+                # Reshape (Time, Channels+6, Lat, Lon) -> (Lat*Lon, Time*(Channels+6))
+                tensor_x = self._reshape_grid_for_pyg(tensor_x)
 
             data[g_name].x = tensor_x
 
@@ -455,11 +510,13 @@ class EarthSystemAdapter(Dataset):
             target_start = start_time + self.window_size + delay
             target_end = target_start + self.horizon_size
 
-            target_grid_slice = self.windows.grids_y[target_node].isel(
-                time=slice(target_start, target_end)
-            )
-            # Explicit JIT compute
-            target_numpy = target_grid_slice.compute().to_array().values
+            with dask.config.set(scheduler='single-threaded'):
+                target_grid_slice = self.windows.grids_y[target_node].isel(
+                    time=slice(target_start, target_end)
+                )
+                # Explicit JIT compute
+                target_numpy = target_grid_slice.compute().to_array().values
+                
             flat_target = self._safe_flatten_grid(target_numpy)
 
             data[target_node].y = torch.as_tensor(flat_target, dtype=torch.float32)
@@ -467,20 +524,7 @@ class EarthSystemAdapter(Dataset):
             data[target_node].y = self._reshape_grid_for_pyg(data[target_node].y)
 
         # 3. Global Coordinates Mapping (Temporal Encodings)
-        if len(self.windows.grids_x) > 0:
-            # Scenario A: Grids exist. Extract the sequence directly from the physical Xarray slice.
-            first_grid_key = next(iter(self.windows.grids_x))
-            actual_time_slice = self.windows.grids_x[first_grid_key].isel(time=slice(start_time, end_time))
-            time_seq = pd.DatetimeIndex(actual_time_slice.time.values)
-        else:
-            # Scenario B: Station-only. Slice a full sequence of length `window_size` 
-            # using the physically safe `start_time`, NOT the raw batch `idx`.
-            time_seq = pd.DatetimeIndex(
-                self.windows.index_x[start_time : start_time + self.window_size]
-            )
-            
-        encoded_time = datetime_encoded(time_seq)
-        data['global'].u = torch.as_tensor(encoded_time, dtype=torch.float32)
+        # Moved to Step 0 to physically inject time into all PyG Spatial Nodes natively.
 
         # 4. Point-Station Nodes
         # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
@@ -491,9 +535,15 @@ class EarthSystemAdapter(Dataset):
         raw_mask = self.station_mask_x[idx]
         if self.n_stations > 0 and self.n_params > 0:
             # Unflatten the joint station-parameter axis, then permute to (N, T, D)
-            data['tahmo'].x = raw_x.reshape(
+            tahmo_x = raw_x.reshape(
                 self.window_size, self.n_stations, self.n_params
             ).permute(1, 0, 2)  # (n_stations, window_size, n_params)
+            
+            # INJECT TEMPORAL ENCODINGS
+            S, T, P = tahmo_x.shape
+            time_expanded = encoded_time.view(1, T, 6).expand(S, T, 6)
+            data['tahmo'].x = torch.cat([tahmo_x, time_expanded], dim=2)
+            
             data['tahmo'].mask = raw_mask.reshape(
                 self.window_size, self.n_stations, self.n_params
             ).permute(1, 0, 2)
