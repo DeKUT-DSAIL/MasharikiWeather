@@ -6,6 +6,7 @@ import pandas as pd
 import xarray as xr
 import fsspec
 from tqdm import tqdm
+from .rechunker import rechunk_dataset
 
 FrameArray = Union[pd.DataFrame, np.ndarray]
 
@@ -30,7 +31,7 @@ class Windows:
     grids_lats: Dict[str, np.ndarray] = field(default_factory=dict)
     grids_lons: Dict[str, np.ndarray] = field(default_factory=dict)
 
-    # 3. Static Topological Priors (Mapped strictly at native resolutions per-layer)
+    # 3. Static Priors (Mapped strictly at native resolutions per-layer)
     station_static: Optional[np.ndarray] = None
     station_static_categorical: Optional[np.ndarray] = None
     native_topography: Optional[np.ndarray] = None
@@ -94,7 +95,7 @@ class MasharikiWeatherDataset:
     providing seamless access to historical weather observations and 
     topographical data for the East Africa region.
     """ 
-    __version__ = "0.1.3"
+    __version__ = "0.1.4"
     
     # Hardcoded Test Set Split Anchor
     test_set_start = pd.Timestamp("2023-01-01", tz="UTC")
@@ -113,7 +114,9 @@ class MasharikiWeatherDataset:
         imputation_limit: Optional[int] = None,
         pad_missing_values: bool = True,
         aggregation_methods: Optional[Dict[str, str]] = None,
-        tabular_parquet_path: Optional[str] = None
+        tabular_parquet_path: Optional[str] = None,
+        rechunk: bool = False,
+        swap: bool = False
     ):
         """
         Args:
@@ -152,6 +155,8 @@ class MasharikiWeatherDataset:
         self.requested_parameters = parameters
         self.imputation_method = imputation_method
         self.imputation_limit = imputation_limit
+        self.rechunk = rechunk
+        self.swap = swap
         
         try:
             self.freq = pd.tseries.frequencies.to_offset(freq).freqstr
@@ -288,27 +293,48 @@ class MasharikiWeatherDataset:
 
     def _open_gridded_zarr(self, group: str, year: int, lazy: bool = True) -> Optional[xr.Dataset]:
         """
-        Dynamically fallback to native local disk C-reads if the Zarr directory was 
-        previously comprehensively downloaded, masking 100% of HTTP Latency.
+        Traffic Controller: Dynamically resolves I/O paths based on optimization tier.
+        Supports Automated Daily Re-chunking if self.rechunk=True.
         """
+        optimized_path = f"{self.root_dir}/optimized/{group}/{year}.zarr"
         local_path = f"{self.root_dir}/gridded/{group}/{year}.zarr"
         
-        if os.path.exists(local_path) and (os.path.exists(f"{local_path}/.zmetadata") or os.path.exists(f"{local_path}/.zgroup")):
+        # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
+        if os.path.exists(optimized_path):
+            try:
+                return xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
+                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
+            except Exception:
+                return xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
+                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
+        
+        # 2. Check Raw Download Tier
+        if os.path.exists(local_path):
+            # Automated Optimization Hook
+            if self.rechunk:
+                rechunk_dataset(local_path, optimized_path, time_chunks=24, swap=self.swap)
+                return self._open_gridded_zarr(group, year, lazy) # Recurse once to return optimized handle
+                
             chunks = {} if lazy else None
             try:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
+                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
+                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
                 
-        # If not cached locally, fallback to Hugging Face lazy streaming pipeline natively
+        # 3. Fallback to Hugging Face lazy streaming pipeline
         return self._open_zipped_zarr(f"data/{group}/{year}.zarr.zip", lazy)
         
-    def download_gridded_datasets(self, groups: List[str], years: Optional[Union[int, List[int]]] = None, force: bool = False):
+    def download_gridded_datasets(self, groups: List[str], years: Optional[Union[int, List[int]]] = None, 
+                                 force: bool = False, optimize: bool = True, swap: Optional[bool] = None):
         """
         Force-downloads the 100+ GB Hugging Face Zarr arrays physically onto the local hard drive 
         exactly mirroring the `mashariki_data/obs/` caching behavior for infinite offline ML loading.
         """
         target_years = [years] if isinstance(years, int) else (years or self.years)
+        # Use class preference if caller doesn't specify swap
+        should_swap = swap if swap is not None else self.swap
         
         if not force:
             print(f"WARNING: You are about to statically download dense Zarr arrays for {len(groups)} groups across {len(target_years)} years.")
@@ -332,6 +358,10 @@ class MasharikiWeatherDataset:
                     # Trigger massive bulk native file dump converting Zipped HTTP into Native Folder Zarr hierarchy
                     ds.to_zarr(local_path, consolidated=True, compute=True)
                     print(f"Successfully cached {group} {year} at {local_path}!")
+                    
+                    if optimize:
+                        optimized_path = f"{self.root_dir}/optimized/{group}/{year}.zarr"
+                        rechunk_dataset(local_path, optimized_path, time_chunks=24, swap=should_swap)
 
     def _load_registries(self):
         # Merge coordinates and parameter meta across all networks from Hugging Face
@@ -1333,6 +1363,8 @@ class MasharikiWeatherDataset:
         self,
         window_size: int,
         horizon_size: int,
+        delay: int = 0,
+        stride: int = 1,
         stations: Optional[Union[str, List[str]]] = None,
         parameters: Optional[Union[str, List[str]]] = None,
         first_date: Optional[Union[str, pd.Timestamp]] = None,
@@ -1346,6 +1378,8 @@ class MasharikiWeatherDataset:
         Args:
             window_size: Size of the observation window.
             horizon_size: Size of the horizon window.
+            delay: Number of steps between the end of the input window and start of the horizon.
+            stride: Number of steps to advance the sliding window at each extraction.
             stations: List of stations to get observations for.
             parameters: List of parameters to get observations for.
             first_date: First date to get observations for.
@@ -1371,27 +1405,38 @@ class MasharikiWeatherDataset:
             copy=True,
         )
 
-        if len(observations) < window_size + horizon_size:
+        sample_span = window_size + delay + horizon_size
+        if len(observations) < sample_span:
             empty_arr = np.array([])
             return Windows(
-                x=empty_arr, mask_x=empty_arr,
-                y=empty_arr, mask_y=empty_arr
+                station_x=empty_arr, station_mask_x=empty_arr,
+                station_y=empty_arr, station_mask_y=empty_arr,
+                delay=delay
             )
 
+        from numpy.lib.stride_tricks import sliding_window_view
         index = observations.index
         obs_np = self._export_df(observations, as_numpy=True, copy=False)
         mask_np = self._export_df(mask, as_numpy=True, copy=False, fill_value=False)
 
-        x = sliding_window_view(obs_np[:-horizon_size], window_size)
-        mask_x = sliding_window_view(mask_np[:-horizon_size], window_size)
-        index_x = sliding_window_view(index[:-horizon_size], window_size)
+        x_slice = slice(None) if (horizon_size + delay == 0) else slice(None, len(obs_np) - horizon_size - delay)
+        x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
+        mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
+        index_x = sliding_window_view(index[x_slice].values, window_size, axis=0)[::stride]
         
-        y = sliding_window_view(obs_np[window_size:], horizon_size)
-        mask_y = sliding_window_view(mask_np[window_size:], horizon_size)
-        index_y = sliding_window_view(index[window_size:], horizon_size)
+        y_start = window_size + delay
+        if horizon_size > 0:
+            y = sliding_window_view(obs_np[y_start:], horizon_size, axis=0)[::stride]
+            mask_y = sliding_window_view(mask_np[y_start:], horizon_size, axis=0)[::stride]
+            index_y = sliding_window_view(index[y_start:].values, horizon_size, axis=0)[::stride]
+        else:
+            y, mask_y, index_y = np.array([]), np.array([]), np.array([])
 
         windows = Windows(
-            x=x, mask_x=mask_x, y=y, mask_y=mask_y, index_x=index_x, index_y=index_y
+            station_x=x, station_mask_x=mask_x, 
+            station_y=y, station_mask_y=mask_y, 
+            index_x=index_x, index_y=index_y,
+            delay=delay
         )
 
         if not as_xarray:
@@ -1425,6 +1470,33 @@ class MasharikiWeatherDataset:
     ) -> Windows:
         """
         N-Grid Heterogeneous Extraction mapping native resolutions organically.
+
+        Args:
+            window_size (int): The number of time steps to include in the input sequence.
+            horizon_size (int): The number of time steps to predict.
+            delay (int): The number of time steps to delay the input sequence.
+            stride (int): The number of time steps to skip between windows.
+            lazy (bool): Whether to use lazy loading.
+            stations (Optional[Union[str, List[str]]]): List of station IDs to extract data for.
+            parameters (Optional[Union[str, List[str]]]): List of variables to extract.
+            first_date (Optional[Union[str, pd.Timestamp]]): First date to extract data for.
+            last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
+            split (Optional[Literal["train", "test"]]): Split to extract data for.
+            gridded_url (Optional[Union[str, List[str]]]): List of gridded URLs to extract data for.
+            gridded_variables (Optional[Union[List[str], Dict[str, List[str]]]]): List of gridded variables to extract.
+            method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides e.g
+            {"temperature": "patch_max", "wind_speed": "nearest", "total_precipitation": "linear"}.
+            patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
+            crop_to_stations (bool): Whether to crop the gridded data to the stations.
+            pressure_levels (Optional[List[int]]): List of pressure levels to extract data for.
+            ml_task (Literal["downscaling", "forecasting", "correction"]): Machine learning task to perform.
+            spatial_mode (Literal["stations", "grid"]): Spatial mode to use for the data.
+            target_node (Optional[str]): Target node to extract data for.
+            bbox (Optional[Tuple[float, float, float, float]]): Bounding box to extract data for.
+            as_xarray (bool): Whether to return the data as xarray datasets.
+            
+        Returns:
+            Windows: Windows of data.
         """
         if split is not None and split not in ["train", "test"]:
             raise ValueError(f"Invalid split value: {split}. Expected 'train' or 'test'.")
