@@ -137,34 +137,42 @@ class EarthSystemAdapter(Dataset):
         self.windows = windows
         self.ml_task = ml_task
 
-        # 1. Pre-cast Point Station Variables
-        self.station_x = torch.as_tensor(
-            np.ascontiguousarray(windows.station_x), dtype=torch.float32
-        )
-        self.station_mask_x = torch.as_tensor(
-            np.ascontiguousarray(windows.station_mask_x), dtype=torch.bool
-        )
-
-        self.station_y = None
-        self.station_mask_y = None
-        if windows.station_y is not None and len(windows.station_y) > 0:
-            self.station_y = torch.as_tensor(
-                np.ascontiguousarray(windows.station_y), dtype=torch.float32
-            )
-            self.station_mask_y = torch.as_tensor(
-                np.ascontiguousarray(windows.station_mask_y), dtype=torch.bool
-            )
-
-        self.window_size = self.station_x.shape[1]
-        self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
-
         # Station-graph geometry: n_stations and n_params for PyG reshape.
-        # station_x shape from sliding_window_view: (n_windows, window_size, n_stations * n_params)
-        # PeakWeather standard: per-sample node features are (n_stations, window_size, n_params)
         station_labels = getattr(windows, 'station_labels', None)
         feature_labels = getattr(windows, 'feature_labels', None)
         self.n_stations = len(station_labels) if station_labels else 0
         self.n_params = len(feature_labels) if feature_labels else 0
+
+        # 1. Pre-cast Point Station Variables (Robust Shape Parsing)
+        def _format_station_tensor(arr, dtype):
+            if arr is None or len(arr) == 0:
+                return None
+            t = torch.as_tensor(np.ascontiguousarray(arr), dtype=dtype)
+            
+            # Dimensions logic:
+            # Native NumPy sliding_window_view: (Batch, Stations, Params, Time)
+            # Custom wrapper / Flattened: (Batch, Time, Stations * Params)
+            # Target Standard: (Batch, Time, Stations, Params)
+            if t.dim() == 4:
+                if t.shape[1] == self.n_stations and t.shape[2] == self.n_params:
+                    t = t.permute(0, 3, 1, 2) 
+            elif t.dim() == 3:
+                # Handle flattened (Batch, Time, N*P)
+                if t.shape[2] == self.n_stations * self.n_params:
+                    t = t.reshape(t.shape[0], t.shape[1], self.n_stations, self.n_params)
+            return t
+
+        self.station_x = _format_station_tensor(windows.station_x, torch.float32)
+        self.station_mask_x = _format_station_tensor(windows.station_mask_x, torch.bool)
+        
+        self.station_y = None
+        self.station_mask_y = None
+        if windows.station_y is not None and len(windows.station_y) > 0:
+            self.station_y = _format_station_tensor(windows.station_y, torch.float32)
+            self.station_mask_y = _format_station_tensor(windows.station_mask_y, torch.bool)
+
+        self.window_size = self.station_x.shape[1] if self.station_x is not None else 0
+        self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
 
         # 2. Pre-cast Topographic Priors: Stations
         self.station_static = None
@@ -504,18 +512,10 @@ class EarthSystemAdapter(Dataset):
 
         if target_node == "tahmo" or target_node is None:
             if self.station_y is not None:
-                raw_y = self.station_y[idx]       # (horizon_size, n_stations * n_params)
-                raw_mask_y = self.station_mask_y[idx]
-                if self.n_stations > 0 and self.n_params > 0 and self.horizon_size > 0:
-                    data["tahmo"].y = raw_y.reshape(
-                        self.horizon_size, self.n_stations, self.n_params
-                    ).permute(1, 0, 2)  # (n_stations, horizon_size, n_params)
-                    data["tahmo"].mask_y = raw_mask_y.reshape(
-                        self.horizon_size, self.n_stations, self.n_params
-                    ).permute(1, 0, 2)
-                else:
-                    data["tahmo"].y = raw_y
-                    data["tahmo"].mask_y = raw_mask_y
+                # Pre-formatted as [Time, Stations, Params]
+                # Permute to [Stations, Time, Params] (PeakWeather Spatial Node Convention)
+                data["tahmo"].y = self.station_y[idx].permute(1, 0, 2)
+                data["tahmo"].mask_y = self.station_mask_y[idx].permute(1, 0, 2)
         elif target_node in self.windows.grids_y:
             delay = getattr(self.windows, 'delay', 0)
             target_start = start_time + self.window_size + delay
@@ -561,24 +561,14 @@ class EarthSystemAdapter(Dataset):
 
         # 4. Point-Station Nodes
         # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
-        # WeatherGNN: R^{N x F_e x T} (stations, params, time)
-        # sliding_window_view produces: (window_size, n_stations * n_params)
-        # Reshape to: (n_stations, window_size, n_params) -- PeakWeather convention.
-        raw_x = self.station_x[idx]      # (window_size, n_stations * n_params)
-        raw_mask = self.station_mask_x[idx]
-        if self.n_stations > 0 and self.n_params > 0:
-            # Unflatten the joint station-parameter axis, then permute to (N, T, D)
-            tahmo_x = raw_x.reshape(
-                self.window_size, self.n_stations, self.n_params
-            ).permute(1, 0, 2)  # (n_stations, window_size, n_params)
+        if self.station_x is not None:
+            # Pre-formatted as [Time, Stations, Params]
+            # Permute to [Stations, Time, Params] (O(1) View transformation)
+            tahmo_x = self.station_x[idx].permute(1, 0, 2)
+            tahmo_mask = self.station_mask_x[idx].permute(1, 0, 2)
             
             # FIX Gap 2: PeakWeather-compliant mask concatenation.
-            # PeakWeather mandates: "A binary mask is explicitly concatenated with the 
-            # input features to inform the network of data availability." The mask 
-            # m_i^t in {0,1}^{D_x} is cast to float and appended as additional channels.
-            mask_reshaped = raw_mask.reshape(
-                self.window_size, self.n_stations, self.n_params
-            ).permute(1, 0, 2).float()  # (n_stations, window_size, n_params)
+            mask_reshaped = tahmo_mask.float()
             
             # INJECT TEMPORAL ENCODINGS
             S, T, P = tahmo_x.shape
@@ -589,13 +579,7 @@ class EarthSystemAdapter(Dataset):
             data['tahmo'].x = torch.cat([tahmo_x, time_expanded, mask_reshaped], dim=2)
             
             # Retain separate mask for loss computation (sparse boolean masking)
-            data['tahmo'].mask = raw_mask.reshape(
-                self.window_size, self.n_stations, self.n_params
-            ).permute(1, 0, 2)
-        else:
-            # Fallback: cannot determine decomposition
-            data['tahmo'].x = raw_x
-            data['tahmo'].mask = raw_mask
+            data['tahmo'].mask = tahmo_mask
         if self.station_static is not None:
             data['tahmo'].static_u = self.station_static
 
