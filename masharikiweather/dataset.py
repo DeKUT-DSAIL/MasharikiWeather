@@ -379,7 +379,12 @@ class MasharikiWeatherDataset:
 
                     # 1. Apply Daily Re-chunking lazily IF optimizing
                     if optimize:
-                        ds = ds.chunk({'time': DEFAULT_TIME_CHUNKS})
+                        # Dimension-agnostic: chunk 'time' at step 24; collocate everything else
+                        chunks_dict = {
+                            dim: (DEFAULT_TIME_CHUNKS if dim == 'time' else -1) 
+                            for dim in ds.dims
+                        }
+                        ds = ds.chunk(chunks_dict)
                     
                     # 2. Get high-performance encoding settings
                     # (Uses Daily-aligned chunks even for raw if we're feeling bold, 
