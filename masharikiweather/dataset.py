@@ -97,7 +97,7 @@ class MasharikiWeatherDataset:
     providing seamless access to historical weather observations and 
     topographical data for the East Africa region.
     """ 
-    __version__ = "0.1.4"
+    __version__ = "0.1.5"
     
     # Hardcoded Test Set Split Anchor
     test_set_start = pd.Timestamp("2023-01-01", tz="UTC")
