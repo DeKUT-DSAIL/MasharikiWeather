@@ -3,7 +3,32 @@ import os
 import shutil
 from dask.diagnostics import ProgressBar
 
-def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = 24, swap: bool = False):
+DEFAULT_TIME_CHUNKS = 24
+
+def get_zarr_encoding(ds: xr.Dataset, time_chunks: int = DEFAULT_TIME_CHUNKS):
+    """
+    Standardizes encoding for High-Performance Mashariki Zarrs.
+    Ensures correct chunk alignment for O(1) Daily temporal fetches.
+    
+    Builds per-variable chunk tuples based on the variable's actual
+    dimensions, not a hardcoded assumption of (time, lat, lon).
+    ERA5 variables may include 'level', and some may lack 'time'.
+    """
+    encoding = {}
+    for var in ds.data_vars:
+        var_dims = ds[var].dims
+        var_shape = ds[var].shape
+        # Build chunk tuple: use time_chunks for 'time', full size for everything else
+        var_chunks = tuple(
+            time_chunks if dim == 'time' else size
+            for dim, size in zip(var_dims, var_shape)
+        )
+        encoding[var] = {
+            'chunks': var_chunks,
+        }
+    return encoding
+
+def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAULT_TIME_CHUNKS, swap: bool = False):
     """
     Physically re-chunks a local Zarr dataset to Daily (24-step) blocks.
     
@@ -17,31 +42,49 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = 24, sw
         raise FileNotFoundError(f"Input Zarr not found: {input_path}")
         
     print(f"Optimizing Mashariki I/O: {input_path} -> {output_path}")
-    ds = xr.open_zarr(input_path)
+    ds = xr.open_zarr(input_path, decode_timedelta=False)
     
-    # Define new chunks: All spatial dimensions as full (None), time as 24
-    chunks = {'time': time_chunks}
-    for coord in ds.coords:
-        if coord not in ['time']:
-            chunks[coord] = -1 # Full scale for spatial dims
+    # Define new chunks using ONLY actual dimensions (ds.dims),
+    # not ds.coords which includes scalar metadata like 'number', 'step', 'surface'.
+    chunks = {}
+    for dim in ds.dims:
+        if dim == 'time':
+            chunks[dim] = time_chunks
+        else:
+            chunks[dim] = -1  # Full scale for spatial dims
             
-    # Apply re-chunking
+    # Apply re-chunking lazily
     ds_rechunked = ds.chunk(chunks)
     
     # Configure encoding for Zarr (compression + alignment)
-    encoding = {v: {'chunks': (time_chunks, *ds[v].shape[1:])} for v in ds.data_vars}
+    encoding = get_zarr_encoding(ds, time_chunks)
     
     # Ensure parent directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
-    with ProgressBar():
-        ds_rechunked.to_zarr(output_path, mode='w', encoding=encoding, consolidated=True)
+    # Atomic Write Pattern: Ensure we don't leave partial Zarrs
+    temp_path = f"{output_path}.tmp"
+    if os.path.exists(temp_path):
+        shutil.rmtree(temp_path)
         
-    print(f"Optimization complete: {output_path}")
-    
-    if swap:
-        print(f"Swapping storage: Deleting original {input_path}...")
-        shutil.rmtree(input_path)
-        print("Swap complete. Storage space recovered.")
-
-    return True
+    try:
+        with ProgressBar():
+            ds_rechunked.to_zarr(temp_path, mode='w', encoding=encoding, consolidated=True)
+        
+        # Rename tmp to final
+        if os.path.exists(output_path):
+            shutil.rmtree(output_path)
+        os.rename(temp_path, output_path)
+        print(f"Optimization complete: {output_path}")
+        
+        if swap:
+            print(f"Swapping storage: Deleting original {input_path}...")
+            shutil.rmtree(input_path)
+            print("Swap complete. Storage space recovered.")
+        return True
+        
+    except Exception as e:
+        if os.path.exists(temp_path):
+            shutil.rmtree(temp_path)
+        print(f"Optimization FAILED: {e}")
+        return False
