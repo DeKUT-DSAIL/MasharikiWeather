@@ -8,6 +8,7 @@ import fsspec
 from tqdm import tqdm
 from .rechunker import rechunk_dataset, get_zarr_encoding, DEFAULT_TIME_CHUNKS
 import dask
+from dask.diagnostics import ProgressBar
 from multiprocessing.pool import ThreadPool
 
 FrameArray = Union[pd.DataFrame, np.ndarray]
