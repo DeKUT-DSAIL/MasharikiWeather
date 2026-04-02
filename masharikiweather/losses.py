@@ -18,19 +18,29 @@ class TweedieDevianceLoss(nn.Module):
         self.p = p
         self.eps = eps
 
-    def forward(self, mu: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def forward(self, mu: torch.Tensor, y: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
         mu: The predicted mean (emitted strictly post-SoftplusLink), must be > 0.
         y: The true raw observation, bounding at 0.0.
+        mask: Boolean mask indicating physical valid sensors vs hardware outages.
         """
         # Clamp bounds strictly preventing exponential `NaN` logic crashes
         mu = torch.clamp(mu, min=self.eps)
+        
+        # Guard against unpadded NaNs bypassing dataloader
+        y = torch.nan_to_num(y, nan=0.0)
         y = torch.clamp(y, min=0.0)
 
         a = y * (torch.pow(y + self.eps, 1 - self.p) - torch.pow(mu, 1 - self.p)) / (1 - self.p)
         b = (torch.pow(y + self.eps, 2 - self.p) - torch.pow(mu, 2 - self.p)) / (2 - self.p)
         
         deviance = 2 * (a - b)
+        
+        # Apply sparse valid sensor boolean mask
+        if mask is not None:
+            deviance = deviance * mask.float()
+            return deviance.sum() / (mask.float().sum() + self.eps)
+            
         return deviance.mean()
 
 

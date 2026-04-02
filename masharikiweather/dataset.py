@@ -6,7 +6,10 @@ import pandas as pd
 import xarray as xr
 import fsspec
 from tqdm import tqdm
-from .rechunker import rechunk_dataset
+from .rechunker import rechunk_dataset, get_zarr_encoding, DEFAULT_TIME_CHUNKS
+import dask
+from dask.diagnostics import ProgressBar
+from multiprocessing.pool import ThreadPool
 
 FrameArray = Union[pd.DataFrame, np.ndarray]
 
@@ -95,7 +98,7 @@ class MasharikiWeatherDataset:
     providing seamless access to historical weather observations and 
     topographical data for the East Africa region.
     """ 
-    __version__ = "0.1.4"
+    __version__ = "0.1.5"
     
     # Hardcoded Test Set Split Anchor
     test_set_start = pd.Timestamp("2023-01-01", tz="UTC")
@@ -327,10 +330,14 @@ class MasharikiWeatherDataset:
         return self._open_zipped_zarr(f"data/{group}/{year}.zarr.zip", lazy)
         
     def download_gridded_datasets(self, groups: List[str], years: Optional[Union[int, List[int]]] = None, 
-                                 force: bool = False, optimize: bool = True, swap: Optional[bool] = None):
+                                 force: bool = False, optimize: bool = True, swap: Optional[bool] = None,
+                                 num_workers: int = 16):
         """
-        Force-downloads the 100+ GB Hugging Face Zarr arrays physically onto the local hard drive 
-        exactly mirroring the `mashariki_data/obs/` caching behavior for infinite offline ML loading.
+        High-Performance Single-Pass Ingest: Downloads Hugging Face Zarr arrays 
+        and streams them into training-optimized Daily (24-step) format in one pass.
+        
+        Args:
+            num_workers (int): Number of parallel HTTP streams for the download.
         """
         target_years = [years] if isinstance(years, int) else (years or self.years)
         # Use class preference if caller doesn't specify swap
@@ -338,30 +345,68 @@ class MasharikiWeatherDataset:
         
         if not force:
             print(f"WARNING: You are about to statically download dense Zarr arrays for {len(groups)} groups across {len(target_years)} years.")
-            print("This native backup operation could consume anywhere from 10 GB to well over 100 GB of your local SSD space depending on the array sizes.")
+            print(f"This operation will use {num_workers} parallel streams to saturate your connection.")
             user_input = input("Are you absolutely sure you want to proceed with the native C-dump? [y/N]: ")
-            if user_input.lower() not in ['y', 'yes']:
+            if user_input.lower() not in ['y', 'yes', '']:
                 print("Download securely aborted by user.")
                 return
         
         for group in groups:
             for year in target_years:
                 local_path = f"{self.root_dir}/gridded/{group}/{year}.zarr"
-                if os.path.exists(local_path):
-                    print(f"Skipping {group} {year}: Already cached locally.")
+                optimized_path = f"{self.root_dir}/optimized/{group}/{year}.zarr"
+                
+                # Check for existing data based on tier
+                if os.path.exists(optimized_path):
+                    print(f"Skipping {group} {year}: Optimized tier already present.")
+                    continue
+                if not optimize and os.path.exists(local_path):
+                    print(f"Skipping {group} {year}: Raw tier already present.")
                     continue
                     
-                print(f"Downloading dense physics for {group} {year} directly to disk (this may take a while)...")
+                target_write_path = optimized_path if optimize else local_path
+                temp_target = f"{target_write_path}.tmp"
+                
+                print(f"Streaming {group} {year} directly into {'Optimized' if optimize else 'Raw'} format...")
+                
+                # Open remote lazy stream
                 ds = self._open_zipped_zarr(f"data/{group}/{year}.zarr.zip", lazy=True)
                 if ds is not None:
-                    os.makedirs(f"{self.root_dir}/gridded/{group}", exist_ok=True)
-                    # Trigger massive bulk native file dump converting Zipped HTTP into Native Folder Zarr hierarchy
-                    ds.to_zarr(local_path, consolidated=True, compute=True)
-                    print(f"Successfully cached {group} {year} at {local_path}!")
+                    os.makedirs(os.path.dirname(target_write_path), exist_ok=True)
                     
+                    if os.path.exists(temp_target):
+                        shutil.rmtree(temp_target)
+
+                    # 1. Apply Daily Re-chunking lazily IF optimizing
                     if optimize:
-                        optimized_path = f"{self.root_dir}/optimized/{group}/{year}.zarr"
-                        rechunk_dataset(local_path, optimized_path, time_chunks=24, swap=should_swap)
+                        # Dimension-agnostic: chunk 'time' at step 24; collocate everything else
+                        chunks_dict = {
+                            dim: (DEFAULT_TIME_CHUNKS if dim == 'time' else -1) 
+                            for dim in ds.dims
+                        }
+                        ds = ds.chunk(chunks_dict)
+                    
+                    # 2. Get high-performance encoding settings
+                    # (Uses Daily-aligned chunks even for raw if we're feeling bold, 
+                    # but here we follow the optimize flag).
+                    encoding = get_zarr_encoding(ds, DEFAULT_TIME_CHUNKS if optimize else 1)
+
+                    # 3. Trigger Parallel Single-Pass Write
+                    with dask.config.set(scheduler='threads', num_workers=num_workers):
+                        with ProgressBar():
+                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True)
+                    
+                    # 4. Atomic Swap
+                    if os.path.exists(target_write_path):
+                        shutil.rmtree(target_write_path)
+                    os.rename(temp_target, target_write_path)
+                    
+                    print(f"Successfully ingested {group} {year} at {target_write_path}!")
+                    
+                    # Optional: Cleanup raw if we just optimized it from HF directly (not needed here 
+                    # as we wrote to a single file, but logic preserved for 'swap' users).
+                    if optimize and should_swap and os.path.exists(local_path):
+                        shutil.rmtree(local_path)
 
     def _load_registries(self):
         # Merge coordinates and parameter meta across all networks from Hugging Face
@@ -569,9 +614,14 @@ class MasharikiWeatherDataset:
             if 'aspect' in v.lower() and '_sin' not in v and '_cos' not in v
         ]
         for var_name in aspect_vars:
+            # convert to radians
             aspect_rad = ds[var_name] * (np.pi / 180.0)
+            
+            # compute sin and cos
             ds[f'{var_name}_sin'] = np.sin(aspect_rad)
             ds[f'{var_name}_cos'] = np.cos(aspect_rad)
+            
+            # drop the original variable
             ds = ds.drop_vars(var_name)
 
         return ds

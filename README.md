@@ -50,7 +50,7 @@ ds = MasharikiWeatherDataset(
     years=[2023, 2024]
 )
 
-# 2. Extract Gridded Satellite/Reanalysis Context
+# 2. Extract Gridded Satellite/Reanalysis Context at the station level (interpolation)
 gridded_data = ds.get_gridded_for_stations(
     groups=["era5"], 
     stations=['TA00001', 'TA00283'], 
@@ -64,7 +64,7 @@ ml_tensors = ds.get_windows(
     horizon_size=6,  # 6 hours of prediction
     stations=['TA00001', 'TA00283'],
     gridded_url=["era5"],
-    as_xarray=True
+    spatial_mode="grid"
 )
 
 print(ml_tensors.x) # Your aligned features

@@ -15,11 +15,15 @@ Graph Construction:
     All edge tensors are constructed once in __init__ via _build_hetero_edges()
     and cached for O(1) attachment in __getitem__.
 """
+import os
+import random
 import torch
-from torch.utils.data import Dataset
+import torch.distributed as dist
+from torch.utils.data import Dataset, DistributedSampler
 import numpy as np
 import pandas as pd
-from typing import Optional, Literal, Dict, Tuple, Sequence
+from typing import Optional, Literal, Dict, Tuple, Sequence, List
+from dataclasses import dataclass, field
 
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -136,34 +140,46 @@ class EarthSystemAdapter(Dataset):
         self.windows = windows
         self.ml_task = ml_task
 
-        # 1. Pre-cast Point Station Variables
-        self.station_x = torch.as_tensor(
-            np.ascontiguousarray(windows.station_x), dtype=torch.float32
-        )
-        self.station_mask_x = torch.as_tensor(
-            np.ascontiguousarray(windows.station_mask_x), dtype=torch.bool
-        )
-
-        self.station_y = None
-        self.station_mask_y = None
-        if windows.station_y is not None and len(windows.station_y) > 0:
-            self.station_y = torch.as_tensor(
-                np.ascontiguousarray(windows.station_y), dtype=torch.float32
-            )
-            self.station_mask_y = torch.as_tensor(
-                np.ascontiguousarray(windows.station_mask_y), dtype=torch.bool
-            )
-
-        self.window_size = self.station_x.shape[1]
-        self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
-
         # Station-graph geometry: n_stations and n_params for PyG reshape.
-        # station_x shape from sliding_window_view: (n_windows, window_size, n_stations * n_params)
-        # PeakWeather standard: per-sample node features are (n_stations, window_size, n_params)
         station_labels = getattr(windows, 'station_labels', None)
         feature_labels = getattr(windows, 'feature_labels', None)
         self.n_stations = len(station_labels) if station_labels else 0
         self.n_params = len(feature_labels) if feature_labels else 0
+
+        # 1. Pre-cast Point Station Variables (Robust Shape Parsing)
+        def _format_station_tensor(arr, dtype, pad_nans=False):
+            if arr is None or len(arr) == 0:
+                return None
+            t = torch.as_tensor(np.ascontiguousarray(arr), dtype=dtype)
+            
+            # Pad NaN gaps to strictly maintain geometric lengths before any forward pass
+            if pad_nans and dtype == torch.float32:
+                t = torch.nan_to_num(t, nan=0.0)
+                
+            # Dimensions logic:
+            # Native NumPy sliding_window_view: (Batch, Stations, Params, Time)
+            # Custom wrapper / Flattened: (Batch, Time, Stations * Params)
+            # Target Standard: (Batch, Time, Stations, Params)
+            if t.dim() == 4:
+                if t.shape[1] == self.n_stations and t.shape[2] == self.n_params:
+                    t = t.permute(0, 3, 1, 2) 
+            elif t.dim() == 3:
+                # Handle flattened (Batch, Time, N*P)
+                if t.shape[2] == self.n_stations * self.n_params:
+                    t = t.reshape(t.shape[0], t.shape[1], self.n_stations, self.n_params)
+            return t
+
+        self.station_x = _format_station_tensor(windows.station_x, torch.float32, pad_nans=True)
+        self.station_mask_x = _format_station_tensor(windows.station_mask_x, torch.bool)
+        
+        self.station_y = None
+        self.station_mask_y = None
+        if windows.station_y is not None and len(windows.station_y) > 0:
+            self.station_y = _format_station_tensor(windows.station_y, torch.float32, pad_nans=True)
+            self.station_mask_y = _format_station_tensor(windows.station_mask_y, torch.bool)
+
+        self.window_size = self.station_x.shape[1] if self.station_x is not None else 0
+        self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
 
         # 2. Pre-cast Topographic Priors: Stations
         self.station_static = None
@@ -240,11 +256,11 @@ class EarthSystemAdapter(Dataset):
             t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
             t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
             
-            # FIX 1: Safely isolate the 0th channel (DEM) to prevent shape mismatch 
+            # Safely isolate the 0th channel (DEM) to prevent shape mismatch 
             # if the topography tensor contains multiple features (Slope, Aspect, etc.)
             topo_tensor = self.native_topography[0] if self.native_topography.ndim == 3 else self.native_topography
             
-            # FIX 2: Apply nan_to_num directly to the grid array. 
+            # Apply nan_to_num directly to the grid array. 
             # Ocean and Lake pixels in raw NetCDF DEMs inherently contain NaNs.
             t_alt_raw = topo_tensor.reshape(-1, 1).numpy() if isinstance(topo_tensor, torch.Tensor) else topo_tensor.reshape(-1, 1)
             t_alt = np.nan_to_num(t_alt_raw, nan=0.0)
@@ -345,18 +361,28 @@ class EarthSystemAdapter(Dataset):
                 dist_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
                 weight_tensor = torch.tensor(weights, dtype=torch.float32).unsqueeze(-1)
                 
-                if src_name == 'topography':
-                    src_alt_km = cart_src[edge_src, 2]
-                    dst_alt_km = cart_dst[edge_dst, 2] if dst_coords.shape[1] == 3 else np.zeros(len(edge_dst))
-                    
-                    # Delta Elevation (km). Uphill is positive, Downhill is negative.
-                    delta_elev_km = (dst_alt_km - src_alt_km)
-                    delta_signed = np.tanh(delta_elev_km / 2.0)
-                    delta_elev_tensor = torch.tensor(delta_signed, dtype=torch.float32).unsqueeze(-1)
-                    
-                    attr_tensor = torch.cat([dist_tensor, weight_tensor, delta_elev_tensor], dim=-1)
+                # Rule C: Uniform Dimension Edge Attributes [dist_norm, weight, delta_elev]
+                # To support Data-Dependent Message Passing (Swiss Anemoi standard), all edge 
+                # types must output exactly [E, 3] features so MLPs can route flow dynamically.
+                # Delta Elevation (km) is signed: Uphill is positive, Downhill is negative.
+                if src_coords.shape[1] == 3 and dst_coords.shape[1] == 3:
+                    # 3D to 3D (Station -> Station, Topo -> Station)
+                    delta_elev_km = cart_dst[edge_dst, 2] - cart_src[edge_src, 2]
+                elif src_coords.shape[1] == 3 and dst_coords.shape[1] == 2:
+                    # 3D to 2D (Station/Topo -> Grid). Assume Grid is relative 0.
+                    delta_elev_km = 0.0 - cart_src[edge_src, 2]
+                elif src_coords.shape[1] == 2 and dst_coords.shape[1] == 3:
+                    # 2D to 3D (Grid -> Station). Assume Grid is relative 0.
+                    delta_elev_km = cart_dst[edge_dst, 2] - 0.0
                 else:
-                    attr_tensor = torch.cat([dist_tensor, weight_tensor], dim=-1)
+                    # 2D to 2D (Grid -> Grid)
+                    delta_elev_km = np.zeros(len(edge_src), dtype=np.float32)
+                    
+                # Gracefully map steep differentials into [-1, 1] while preserving sign
+                delta_signed = np.tanh(delta_elev_km / 2.0)
+                delta_elev_tensor = torch.tensor(delta_signed, dtype=torch.float32).unsqueeze(-1)
+                
+                attr_tensor = torch.cat([dist_tensor, weight_tensor, delta_elev_tensor], dim=-1)
                 
                 # Semantic Verb Resolver
                 if src_name == dst_name:
@@ -493,18 +519,10 @@ class EarthSystemAdapter(Dataset):
 
         if target_node == "tahmo" or target_node is None:
             if self.station_y is not None:
-                raw_y = self.station_y[idx]       # (horizon_size, n_stations * n_params)
-                raw_mask_y = self.station_mask_y[idx]
-                if self.n_stations > 0 and self.n_params > 0 and self.horizon_size > 0:
-                    data["tahmo"].y = raw_y.reshape(
-                        self.horizon_size, self.n_stations, self.n_params
-                    ).permute(1, 0, 2)  # (n_stations, horizon_size, n_params)
-                    data["tahmo"].mask_y = raw_mask_y.reshape(
-                        self.horizon_size, self.n_stations, self.n_params
-                    ).permute(1, 0, 2)
-                else:
-                    data["tahmo"].y = raw_y
-                    data["tahmo"].mask_y = raw_mask_y
+                # Pre-formatted as [Time, Stations, Params]
+                # Permute to [Stations, Time, Params] (PeakWeather Spatial Node Convention)
+                data["tahmo"].y = self.station_y[idx].permute(1, 0, 2)
+                data["tahmo"].mask_y = self.station_mask_y[idx].permute(1, 0, 2)
         elif target_node in self.windows.grids_y:
             delay = getattr(self.windows, 'delay', 0)
             target_start = start_time + self.window_size + delay
@@ -519,38 +537,56 @@ class EarthSystemAdapter(Dataset):
                 
             flat_target = self._safe_flatten_grid(target_numpy)
 
-            data[target_node].y = torch.as_tensor(flat_target, dtype=torch.float32)
-            # Reshape grid target to PyG node-feature format
-            data[target_node].y = self._reshape_grid_for_pyg(data[target_node].y)
+            target_tensor = torch.as_tensor(flat_target, dtype=torch.float32)
+
+            # Inject temporal encoding into grid target for autoregressive consistency.
+            # When y becomes the next x in rollout, missing temporal features create distributional shift.
+            T_y, C_y, H_y, W_y = target_tensor.shape
+            # Compute target time sequence for the horizon window
+            target_time_start = start_time + self.window_size + delay
+            if len(self.windows.grids_x) > 0:
+                first_grid_key = next(iter(self.windows.grids_x))
+                target_time_slice = self.windows.grids_x[first_grid_key].isel(
+                    time=slice(target_time_start, target_time_start + self.horizon_size)
+                )
+                target_time_seq = pd.DatetimeIndex(target_time_slice.time.values)
+            else:
+                target_time_seq = pd.DatetimeIndex(
+                    self.windows.index_y[idx] if self.windows.index_y is not None
+                    else self.windows.index_x[idx][-self.horizon_size:]
+                )
+            encoded_target_time = torch.as_tensor(
+                datetime_encoded(target_time_seq), dtype=torch.float32
+            )
+            time_y_expanded = encoded_target_time.view(T_y, 6, 1, 1).expand(T_y, 6, H_y, W_y)
+            target_tensor = torch.cat([target_tensor, time_y_expanded], dim=1)
+
+            data[target_node].y = self._reshape_grid_for_pyg(target_tensor)
 
         # 3. Global Coordinates Mapping (Temporal Encodings)
         # Moved to Step 0 to physically inject time into all PyG Spatial Nodes natively.
 
         # 4. Point-Station Nodes
         # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
-        # WeatherGNN: R^{N x F_e x T} (stations, params, time)
-        # sliding_window_view produces: (window_size, n_stations * n_params)
-        # Reshape to: (n_stations, window_size, n_params) -- PeakWeather convention.
-        raw_x = self.station_x[idx]      # (window_size, n_stations * n_params)
-        raw_mask = self.station_mask_x[idx]
-        if self.n_stations > 0 and self.n_params > 0:
-            # Unflatten the joint station-parameter axis, then permute to (N, T, D)
-            tahmo_x = raw_x.reshape(
-                self.window_size, self.n_stations, self.n_params
-            ).permute(1, 0, 2)  # (n_stations, window_size, n_params)
+        if self.station_x is not None:
+            # Pre-formatted as [Time, Stations, Params]
+            # Permute to [Stations, Time, Params] (O(1) View transformation)
+            tahmo_x = self.station_x[idx].permute(1, 0, 2)
+            tahmo_mask = self.station_mask_x[idx].permute(1, 0, 2)
+            
+            # FIX Gap 2: PeakWeather-compliant mask concatenation.
+            mask_reshaped = tahmo_mask.float()
             
             # INJECT TEMPORAL ENCODINGS
             S, T, P = tahmo_x.shape
             time_expanded = encoded_time.view(1, T, 6).expand(S, T, 6)
-            data['tahmo'].x = torch.cat([tahmo_x, time_expanded], dim=2)
             
-            data['tahmo'].mask = raw_mask.reshape(
-                self.window_size, self.n_stations, self.n_params
-            ).permute(1, 0, 2)
-        else:
-            # Fallback: cannot determine decomposition
-            data['tahmo'].x = raw_x
-            data['tahmo'].mask = raw_mask
+            # Concatenate: [weather_params | temporal_encodings | binary_mask]
+            # Final shape: (n_stations, window_size, n_params + 6 + n_params)
+            data['tahmo'].x = torch.cat([tahmo_x, time_expanded, mask_reshaped], dim=2)
+            
+            # Retain separate mask for loss computation (sparse boolean masking)
+            data['tahmo'].mask = tahmo_mask
         if self.station_static is not None:
             data['tahmo'].static_u = self.station_static
 
@@ -580,6 +616,178 @@ class EarthSystemAdapter(Dataset):
 
 
 # ---------------------------------------------------------------------------
+# 2D CRS Local Cartesian Projection Utility (ML LAMs Standard)
+# For regional models, ML LAMs recommends 2D CRS map projections over
+# 3D Cartesian or icosahedral decomposition. At equatorial East Africa,
+# lat-lon grids have near-uniform spacing, but this utility provides
+# a formal projection framework for future extensibility.
+# ---------------------------------------------------------------------------
+def project_to_local_crs(
+    coords: np.ndarray,
+    ref_lat: Optional[float] = None,
+    ref_lon: Optional[float] = None,
+) -> np.ndarray:
+    """
+    Project geographic coordinates to a local 2D Cartesian CRS (km).
+    
+    Uses the ML LAMs rectangular mesh standard: a equirectangular projection
+    centered on the domain centroid. This avoids the 3D Cartesian training
+    failures documented in ML LAMs DANRA experiments.
+    
+    For East Africa (equatorial), cos(lat) ~ 1.0, so distortion is minimal.
+    This becomes critical if the domain extends to higher latitudes.
+    
+    Mathematical formulation:
+        x_km = (lon - ref_lon) * 111.32 * cos(ref_lat)
+        y_km = (lat - ref_lat) * 111.32
+    
+    Args:
+        coords: (N, 2+) array with [lat, lon, ...] in degrees.
+        ref_lat: Reference latitude for projection center (default: centroid).
+        ref_lon: Reference longitude for projection center (default: centroid).
+    
+    Returns:
+        (N, 2) array of [x_km, y_km] in local Cartesian coordinates.
+    """
+    if ref_lat is None:
+        ref_lat = coords[:, 0].mean()
+    if ref_lon is None:
+        ref_lon = coords[:, 1].mean()
+    
+    km_per_deg = 111.32
+    x_km = (coords[:, 1] - ref_lon) * km_per_deg * np.cos(np.radians(ref_lat))
+    y_km = (coords[:, 0] - ref_lat) * km_per_deg
+    
+    return np.stack([x_km, y_km], axis=1).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Distributed Initialization & RNG Seeding Utilities
+# ---------------------------------------------------------------------------
+def _seed_worker(worker_id):
+    """
+    Ensures parallel PyTorch DataLoader workers have mathematically independent 
+    NumPy and Random states, preventing identical stochastic data pipelines.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def setup_ddp():
+    """
+    Initializes the DistributedDataParallel environment following Aurora standards.
+    Requirements:
+        1. NCCL backend for collective GPU synchronization.
+        2. Strict CUDA device binding to the local rank to prevent VRAM overflow.
+    """
+    dist.init_process_group("nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+
+def cleanup_ddp():
+    """Safely destroys the PyTorch DDP process group."""
+    dist.destroy_process_group()
+
+
+# ---------------------------------------------------------------------------
+# Aurora-style BatchGenerator for Multi-GPU DDP Training
+# Implements the delayed-execution pattern from Aurora Appendix E:
+# lightweight metadata objects are generated, shuffled, and sharded
+# across GPUs. Expensive I/O is deferred until unpacking on the target worker.
+# ---------------------------------------------------------------------------
+@dataclass
+class BatchDescriptor:
+    """
+    Lightweight metadata object following the Aurora BatchGenerator pattern.
+    Contains only the information needed to reconstruct a batch -- no tensors.
+    
+    Aurora mandates: "Each dataset generates a stream of lightweight
+    BatchGenerator objects containing only metadata and file paths.
+    Expensive operations are deferred until unpacking on the target GPU."
+    """
+    sample_indices: List[int] = field(default_factory=list)
+    grid_name: Optional[str] = None
+    zarr_path: Optional[str] = None
+    time_slice: Optional[Tuple[int, int]] = None
+
+
+def create_distributed_dataloader(
+    windows: Windows,
+    ml_task: Literal["downscaling", "forecasting", "correction"],
+    batch_size: int = 32,
+    num_workers: int = 4,
+    grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
+    k_stations: int = 8,
+    k_grid: int = 4,
+    world_size: int = 1,
+    rank: int = 0,
+    drop_last: bool = True,
+    global_seed: int = 42,
+) -> PyGDataLoader:
+    """
+    Aurora-pattern distributed dataloader for multi-GPU DDP training.
+    
+    Uses DistributedSampler for deterministic cross-GPU sharding,
+    persistent_workers for edge cache amortization, and batch_size
+    balancing following Aurora's workload distribution strategy.
+    
+    For multi-GPU training with torch.distributed:
+        torch.distributed.init_process_group('nccl')
+        dataloader = create_distributed_dataloader(
+            windows, ml_task, batch_size=32,
+            world_size=torch.distributed.get_world_size(),
+            rank=torch.distributed.get_rank(),
+        )
+    
+    Args:
+        windows: Windows dataclass from MasharikiWeatherDataset.get_windows()
+        ml_task: Task type for the EarthSystemAdapter.
+        batch_size: Per-GPU batch size.
+        num_workers: DataLoader workers per GPU.
+        grid_stats: Optional scaling statistics.
+        k_stations: KNN for station edges.
+        k_grid: KNN for grid edges.
+        world_size: Total number of GPUs (from torch.distributed).
+        rank: Current GPU rank (from torch.distributed).
+        drop_last: Drop incomplete final batch (recommended for training).
+    
+    Returns:
+        PyGDataLoader with DDP-aware sampling and persistent workers.
+    """
+    dataset = EarthSystemAdapter(
+        windows, ml_task, grid_stats=grid_stats,
+        k_stations=k_stations, k_grid=k_grid,
+    )
+    
+    sampler = DistributedSampler(
+        dataset,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,
+        drop_last=drop_last,
+        seed=global_seed,
+    )
+    
+    # Establish root mathematical seed for parallel fork delegation
+    g = torch.Generator()
+    g.manual_seed(global_seed)
+    
+    return PyGDataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        shuffle=False,  # DistributedSampler handles shuffling
+        num_workers=num_workers,
+        pin_memory=True,
+        worker_init_fn=_seed_worker,
+        generator=g,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
+        drop_last=drop_last,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def create_dataloader(
@@ -591,12 +799,47 @@ def create_dataloader(
     grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
     k_stations: int = 8,
     k_grid: int = 4,
+    drop_last: bool = False,
+    global_seed: int = 42,
 ) -> PyGDataLoader:
+    """
+    Create a single-GPU PyG DataLoader with optimized worker management.
+    
+    Fixes applied:
+        - persistent_workers=True: Keeps workers alive between batches,
+          amortizing the cost of _cached_edges reconstruction per worker.
+        - prefetch_factor=2: Enables double-buffered prefetching for 
+          overlapping I/O and compute.
+        - drop_last: Prevents gradient noise spikes from undersized final batch.
+    
+    Args:
+        windows: Windows dataclass from MasharikiWeatherDataset.get_windows()
+        ml_task: Task type for the EarthSystemAdapter.
+        batch_size: Batch size.
+        shuffle: Whether to shuffle samples.
+        num_workers: Number of DataLoader workers.
+        grid_stats: Optional scaling statistics.
+        k_stations: KNN for station edges.
+        k_grid: KNN for grid edges.
+        drop_last: Drop incomplete final batch (default: False).
+    
+    Returns:
+        PyGDataLoader with persistent workers and optimized prefetching.
+    """
     dataset = EarthSystemAdapter(
         windows, ml_task, grid_stats=grid_stats,
         k_stations=k_stations, k_grid=k_grid,
     )
+    
+    g = torch.Generator()
+    g.manual_seed(global_seed)
+    
     return PyGDataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle,
         num_workers=num_workers, pin_memory=True,
+        worker_init_fn=_seed_worker,
+        generator=g,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
+        drop_last=drop_last,
     )
