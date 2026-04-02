@@ -12,11 +12,12 @@ class TweedieDevianceLoss(nn.Module):
     Computes the Tweedie deviance loss exactly suited for compound Poisson-Gamma distributions (1 < p < 2).
     Mathematically optimal for zero-inflated, heavy-tailed precipitation data natively bounding variance.
     """
-    def __init__(self, p: float = 1.5, eps: float = 1e-8):
+    def __init__(self, p: float = 1.5, eps: float = 1e-8, reduction: str = 'mean'):
         super().__init__()
         assert 1.0 < p < 2.0, "Tweedie variance power `p` must be strictly bounded between 1 (Poisson) and 2 (Gamma)."
         self.p = p
         self.eps = eps
+        self.reduction = reduction
 
     def forward(self, mu: torch.Tensor, y: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -40,9 +41,13 @@ class TweedieDevianceLoss(nn.Module):
         if mask is not None:
             deviance = deviance * mask.float()
             return deviance.sum() / (mask.float().sum() + self.eps)
-            
-        return deviance.mean()
-
+        
+        if self.reduction == 'mean':
+            return deviance.mean()
+        elif self.reduction == 'sum':
+            return deviance.sum()
+        else:
+            return deviance
 
 class DifferentiableFSSLoss(nn.Module):
     """

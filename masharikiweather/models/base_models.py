@@ -69,7 +69,7 @@ class PrecipAnomalyDetector(torch.nn.Module):
         # 3. The Decoder
         # -----------------------------------------------------
         # Maps the latent representation back to the original physical target (TAHMO precipitation)
-        self.decoder = Linear(hidden_channels, in_channels_dict.get('tahmo', tahmo_params * window_size))
+        self.decoder = Linear(hidden_channels, self.tahmo_params * self.window_size)
 
     def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict):
         """

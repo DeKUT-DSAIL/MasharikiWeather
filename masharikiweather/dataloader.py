@@ -585,8 +585,8 @@ class EarthSystemAdapter(Dataset):
             # Final shape: (n_stations, window_size, n_params + 6 + n_params)
             data['tahmo'].x = torch.cat([tahmo_x, time_expanded, mask_reshaped], dim=2)
             
-            # Retain separate mask for loss computation (sparse boolean masking)
-            data['tahmo'].mask = tahmo_mask
+            # Retain separate mask for loss computation (sparse node-level feature mask)
+            data['tahmo'].x_mask = tahmo_mask
         if self.station_static is not None:
             data['tahmo'].static_u = self.station_static
 
