@@ -15,7 +15,10 @@ Graph Construction:
     All edge tensors are constructed once in __init__ via _build_hetero_edges()
     and cached for O(1) attachment in __getitem__.
 """
+import os
+import random
 import torch
+import torch.distributed as dist
 from torch.utils.data import Dataset, DistributedSampler
 import numpy as np
 import pandas as pd
@@ -144,11 +147,15 @@ class EarthSystemAdapter(Dataset):
         self.n_params = len(feature_labels) if feature_labels else 0
 
         # 1. Pre-cast Point Station Variables (Robust Shape Parsing)
-        def _format_station_tensor(arr, dtype):
+        def _format_station_tensor(arr, dtype, pad_nans=False):
             if arr is None or len(arr) == 0:
                 return None
             t = torch.as_tensor(np.ascontiguousarray(arr), dtype=dtype)
             
+            # Pad NaN gaps to strictly maintain geometric lengths before any forward pass
+            if pad_nans and dtype == torch.float32:
+                t = torch.nan_to_num(t, nan=0.0)
+                
             # Dimensions logic:
             # Native NumPy sliding_window_view: (Batch, Stations, Params, Time)
             # Custom wrapper / Flattened: (Batch, Time, Stations * Params)
@@ -162,13 +169,13 @@ class EarthSystemAdapter(Dataset):
                     t = t.reshape(t.shape[0], t.shape[1], self.n_stations, self.n_params)
             return t
 
-        self.station_x = _format_station_tensor(windows.station_x, torch.float32)
+        self.station_x = _format_station_tensor(windows.station_x, torch.float32, pad_nans=True)
         self.station_mask_x = _format_station_tensor(windows.station_mask_x, torch.bool)
         
         self.station_y = None
         self.station_mask_y = None
         if windows.station_y is not None and len(windows.station_y) > 0:
-            self.station_y = _format_station_tensor(windows.station_y, torch.float32)
+            self.station_y = _format_station_tensor(windows.station_y, torch.float32, pad_nans=True)
             self.station_mask_y = _format_station_tensor(windows.station_mask_y, torch.bool)
 
         self.window_size = self.station_x.shape[1] if self.station_x is not None else 0
@@ -249,11 +256,11 @@ class EarthSystemAdapter(Dataset):
             t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
             t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
             
-            # FIX 1: Safely isolate the 0th channel (DEM) to prevent shape mismatch 
+            # Safely isolate the 0th channel (DEM) to prevent shape mismatch 
             # if the topography tensor contains multiple features (Slope, Aspect, etc.)
             topo_tensor = self.native_topography[0] if self.native_topography.ndim == 3 else self.native_topography
             
-            # FIX 2: Apply nan_to_num directly to the grid array. 
+            # Apply nan_to_num directly to the grid array. 
             # Ocean and Lake pixels in raw NetCDF DEMs inherently contain NaNs.
             t_alt_raw = topo_tensor.reshape(-1, 1).numpy() if isinstance(topo_tensor, torch.Tensor) else topo_tensor.reshape(-1, 1)
             t_alt = np.nan_to_num(t_alt_raw, nan=0.0)
@@ -532,7 +539,7 @@ class EarthSystemAdapter(Dataset):
 
             target_tensor = torch.as_tensor(flat_target, dtype=torch.float32)
 
-            # FIX Gap 3: Inject temporal encoding into grid target for autoregressive consistency.
+            # Inject temporal encoding into grid target for autoregressive consistency.
             # When y becomes the next x in rollout, missing temporal features create distributional shift.
             T_y, C_y, H_y, W_y = target_tensor.shape
             # Compute target time sequence for the horizon window
@@ -609,7 +616,7 @@ class EarthSystemAdapter(Dataset):
 
 
 # ---------------------------------------------------------------------------
-# Gap 5 Fix: 2D CRS Local Cartesian Projection Utility (ML LAMs Standard)
+# 2D CRS Local Cartesian Projection Utility (ML LAMs Standard)
 # For regional models, ML LAMs recommends 2D CRS map projections over
 # 3D Cartesian or icosahedral decomposition. At equatorial East Africa,
 # lat-lon grids have near-uniform spacing, but this utility provides
@@ -655,7 +662,35 @@ def project_to_local_crs(
 
 
 # ---------------------------------------------------------------------------
-# Gap 6 Fix: Aurora-style BatchGenerator for Multi-GPU DDP Training
+# Distributed Initialization & RNG Seeding Utilities
+# ---------------------------------------------------------------------------
+def _seed_worker(worker_id):
+    """
+    Ensures parallel PyTorch DataLoader workers have mathematically independent 
+    NumPy and Random states, preventing identical stochastic data pipelines.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def setup_ddp():
+    """
+    Initializes the DistributedDataParallel environment following Aurora standards.
+    Requirements:
+        1. NCCL backend for collective GPU synchronization.
+        2. Strict CUDA device binding to the local rank to prevent VRAM overflow.
+    """
+    dist.init_process_group("nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+
+def cleanup_ddp():
+    """Safely destroys the PyTorch DDP process group."""
+    dist.destroy_process_group()
+
+
+# ---------------------------------------------------------------------------
+# Aurora-style BatchGenerator for Multi-GPU DDP Training
 # Implements the delayed-execution pattern from Aurora Appendix E:
 # lightweight metadata objects are generated, shuffled, and sharded
 # across GPUs. Expensive I/O is deferred until unpacking on the target worker.
@@ -687,6 +722,7 @@ def create_distributed_dataloader(
     world_size: int = 1,
     rank: int = 0,
     drop_last: bool = True,
+    global_seed: int = 42,
 ) -> PyGDataLoader:
     """
     Aurora-pattern distributed dataloader for multi-GPU DDP training.
@@ -729,7 +765,12 @@ def create_distributed_dataloader(
         rank=rank,
         shuffle=True,
         drop_last=drop_last,
+        seed=global_seed,
     )
+    
+    # Establish root mathematical seed for parallel fork delegation
+    g = torch.Generator()
+    g.manual_seed(global_seed)
     
     return PyGDataLoader(
         dataset,
@@ -738,6 +779,8 @@ def create_distributed_dataloader(
         shuffle=False,  # DistributedSampler handles shuffling
         num_workers=num_workers,
         pin_memory=True,
+        worker_init_fn=_seed_worker,
+        generator=g,
         persistent_workers=num_workers > 0,
         prefetch_factor=2 if num_workers > 0 else None,
         drop_last=drop_last,
@@ -757,6 +800,7 @@ def create_dataloader(
     k_stations: int = 8,
     k_grid: int = 4,
     drop_last: bool = False,
+    global_seed: int = 42,
 ) -> PyGDataLoader:
     """
     Create a single-GPU PyG DataLoader with optimized worker management.
@@ -786,9 +830,15 @@ def create_dataloader(
         windows, ml_task, grid_stats=grid_stats,
         k_stations=k_stations, k_grid=k_grid,
     )
+    
+    g = torch.Generator()
+    g.manual_seed(global_seed)
+    
     return PyGDataLoader(
         dataset, batch_size=batch_size, shuffle=shuffle,
         num_workers=num_workers, pin_memory=True,
+        worker_init_fn=_seed_worker,
+        generator=g,
         persistent_workers=num_workers > 0,
         prefetch_factor=2 if num_workers > 0 else None,
         drop_last=drop_last,
