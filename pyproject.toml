@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "masharikiweather"
-version = "0.1.6"
+version = "0.1.7"
 description = "A geostatistical extraction and alignment engine for East African weather and satellite data."
 readme = "README.md"
 requires-python = ">=3.9"
