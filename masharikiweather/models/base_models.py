@@ -1,7 +1,7 @@
 """
 Base Model Architectures utilizing the Physics Interaction Network blocks.
 
-Demonstrates 100% dynamic task scaling based strictly on dataloader edge definitions.
+Demonstrates dynamic task scaling based on dataloader edge definitions.
 No paths are hardcoded. If the dataset generates completely novel topological edges 
 (e.g., forecasting target meshes), this network natively spawns matching processors 
 and routes exactly as demanded by the dataloader outputs.
@@ -28,10 +28,12 @@ class PrecipAnomalyDetector(torch.nn.Module):
         edge_dim_dict: Dict[Tuple[str, str, str], int],
         hidden_channels: int,
         window_size: int,
+        horizon_size: int,
         tahmo_params: int
     ):
         super().__init__()
         self.window_size = window_size
+        self.horizon_size = horizon_size
         self.tahmo_params = tahmo_params
 
         # -----------------------------------------------------
@@ -69,7 +71,7 @@ class PrecipAnomalyDetector(torch.nn.Module):
         # 3. The Decoder
         # -----------------------------------------------------
         # Maps the latent representation back to the original physical target (TAHMO precipitation)
-        self.decoder = Linear(hidden_channels, self.tahmo_params * self.window_size)
+        self.decoder = Linear(hidden_channels, self.tahmo_params * self.horizon_size)
 
     def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict):
         """
@@ -103,8 +105,8 @@ class PrecipAnomalyDetector(torch.nn.Module):
             # Softplus bounds precipitation to physical reality [0, inf) preventing log(Negative) crashing
             reconstructed_flat = F.softplus(self.decoder(z_tahmo))
 
-            # D. Unflatten back to physical reality [Nodes, Time, Channels]
-            return reconstructed_flat.reshape(-1, self.window_size, self.tahmo_params)
+            # D. Unflatten back to physical reality [Nodes, Horizon, Channels]
+            return reconstructed_flat.reshape(-1, self.horizon_size, self.tahmo_params)
         
         # Fallback if predicting diverse target grids instead of specific stations
         return z_dict

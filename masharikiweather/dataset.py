@@ -1512,7 +1512,7 @@ class MasharikiWeatherDataset:
         patch_radius: int = 1,
         crop_to_stations: bool = False,
         pressure_levels: Optional[List[int]] = None,
-        ml_task: Literal["downscaling", "forecasting", "correction"] = "downscaling",
+        ml_task: Literal["downscaling", "forecasting", "correction", "anomaly_detection"] = "downscaling",
         spatial_mode: Literal["stations", "grid"] = "stations",
         target_node: Optional[str] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
@@ -1539,7 +1539,7 @@ class MasharikiWeatherDataset:
             patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
             crop_to_stations (bool): Whether to crop the gridded data to the stations.
             pressure_levels (Optional[List[int]]): List of pressure levels to extract data for.
-            ml_task (Literal["downscaling", "forecasting", "correction"]): Machine learning task to perform.
+            ml_task (Literal["downscaling", "forecasting", "correction", "anomaly_detection"]): Machine learning task to perform.
             spatial_mode (Literal["stations", "grid"]): Spatial mode to use for the data.
             target_node (Optional[str]): Target node to extract data for.
             bbox (Optional[Tuple[float, float, float, float]]): Bounding box to extract data for.
@@ -1551,8 +1551,8 @@ class MasharikiWeatherDataset:
         if split is not None and split not in ["train", "test"]:
             raise ValueError(f"Invalid split value: {split}. Expected 'train' or 'test'.")
 
-        if ml_task not in ["downscaling", "forecasting", "correction"]:
-            raise ValueError("ml_task must be 'downscaling', 'forecasting', or 'correction'.")
+        if ml_task not in ["downscaling", "forecasting", "correction", "anomaly_detection"]:
+            raise ValueError("ml_task must be 'downscaling', 'forecasting', 'correction', or 'anomaly_detection'.")
 
         if spatial_mode not in ["stations", "grid"]:
             raise ValueError("spatial_mode must be either 'stations' or 'grid'.")
@@ -1621,13 +1621,42 @@ class MasharikiWeatherDataset:
         if np.issubdtype(obs_np.dtype, np.floating): obs_np = obs_np.astype(np.float32, copy=False)
         mask_np = self._export_df(mask, as_numpy=True, copy=False, fill_value=False)
 
-        x_slice = slice(None) if (horizon_size + delay == 0) else slice(None, len(obs_np) - horizon_size - delay)
-        windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
-        windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
-        windows.index_x = sliding_window_view(observations.index[x_slice].values, window_size, axis=0)[::stride]
-        
-        y_start = window_size + delay
-        if horizon_size > 0:
+        # RETROSPECTIVE TASKS: Symmetric Windowing [t-tau, t, t+tau] 
+        # This allows the GNN to "scan" the sequence to align ERA5 phase/timing errors.
+        if ml_task in ["correction", "downscaling", "anomaly_detection"]:
+            # window_size is total context (e.g. 48h). Y is the midpoint.
+            mid = window_size // 2
+            
+            # X extracted from full sequence
+            windows.station_x = sliding_window_view(obs_np, window_size, axis=0)[::stride]
+            windows.station_mask_x = sliding_window_view(mask_np, window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index.values, window_size, axis=0)[::stride]
+            
+            # Y extracted as the midpoint observation
+            y_pts = obs_np[mid : len(obs_np) - (window_size - mid - 1)]
+            m_pts = mask_np[mid : len(mask_np) - (window_size - mid - 1)]
+            i_pts = observations.index[mid : len(observations) - (window_size - mid - 1)].values
+            
+            # Ensure batch alignment (stride applied after slicing)
+            windows.station_y = y_pts[::stride][:, np.newaxis, ...]
+            windows.station_mask_y = m_pts[::stride][:, np.newaxis, ...]
+            windows.index_y = i_pts[::stride][:, np.newaxis]
+            
+            # Valid indices: 0 to len - window_size
+            windows.valid_batch_indices = np.arange(0, len(obs_np) - window_size + 1, stride)
+            
+        # FORECASTING: Strict Causal Windowing [t-tau, t] -> [t+delay, t+delay+horizon]
+        else:
+            sample_span = window_size + delay + horizon_size
+            if len(observations) < sample_span:
+                return windows
+
+            x_slice = slice(None, len(obs_np) - horizon_size - delay)
+            windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
+            windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index[x_slice].values, window_size, axis=0)[::stride]
+            
+            y_start = window_size + delay
             windows.station_y = sliding_window_view(obs_np[y_start:], horizon_size, axis=0)[::stride]
             windows.station_mask_y = sliding_window_view(mask_np[y_start:], horizon_size, axis=0)[::stride]
             windows.index_y = sliding_window_view(observations.index[y_start:].values, horizon_size, axis=0)[::stride]

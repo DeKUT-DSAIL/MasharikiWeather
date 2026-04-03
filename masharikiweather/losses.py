@@ -191,3 +191,59 @@ class SEEPSScore(nn.Module):
         score[t_heavy & p_light] = 1.0 / (1.0 - p1)
         
         return score.mean()
+class BootstrapTweediePower(nn.Module):
+    """
+    Bootstrap utility to estimate the optimal Tweedie power parameter $p$.
+    
+    Mathematically, for a Tweedie distribution: Var(Y) = phi * E(Y)^p.
+    Taking logs: log(Var(Y)) = log(phi) + p * log(E(Y)).
+    
+    This class fits a linear regression to the log-mean vs log-variance of the dataset
+    to dynamically identify if the precipitation regime is more Poisson-like (p -> 1)
+    or Gamma-like (p -> 2).
+    """
+    def __init__(self):
+        super().__init__()
+
+    def estimate(self, data: torch.Tensor, mask: torch.Tensor = None) -> float:
+        """
+        Estimates p from a batch of observations.
+        data: (Batch, ..., Channels)
+        """
+        # Flatten to (Total_Points, Channels)
+        y = data.reshape(-1, data.shape[-1])
+        if mask is not None:
+             m = mask.reshape(-1, mask.shape[-1]).bool()
+        else:
+             m = torch.ones_like(y, dtype=torch.bool)
+             
+        p_values = []
+        for i in range(y.shape[-1]):
+             y_c = y[:, i][m[:, i]]
+             if len(y_c) < 100: continue
+             
+             # Chunk data to compute local means and variances
+             # We use 100 chunks to get enough points for regression
+             chunks = torch.chunk(y_c, 100)
+             means = torch.stack([c.mean() for c in chunks])
+             vars = torch.stack([c.var() for c in chunks])
+             
+             # Filter out zero means/vars for log stability
+             valid = (means > 1e-4) & (vars > 1e-4)
+             if valid.sum() < 10: 
+                  p_values.append(1.5) # Fallback to standard
+                  continue
+                  
+             log_m = torch.log(means[valid])
+             log_v = torch.log(vars[valid])
+             
+             # Fit linear regression: log_v = p * log_m + const
+             # Solving (X^T X)^-1 X^T Y
+             X = torch.stack([log_m, torch.ones_like(log_m)], dim=1)
+             beta = torch.linalg.lstsq(X, log_v.unsqueeze(1)).solution
+             p_est = beta[0].item()
+             
+             # Clip to valid Tweedie range [1.1, 1.9]
+             p_values.append(max(1.1, min(1.9, p_est)))
+             
+        return sum(p_values) / len(p_values) if p_values else 1.5
