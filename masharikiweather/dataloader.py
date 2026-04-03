@@ -77,11 +77,16 @@ class ScalingEngine:
 # Utility: Cyclical temporal encoding
 # ---------------------------------------------------------------------------
 def datetime_encoded(index: pd.DatetimeIndex) -> np.ndarray:
-    """Cyclical temporal encoding for Earth observation data."""
+    """
+    Cyclical temporal encoding for Earth observation data.
+    Ensures zero-centered features in the range [-1, 1] for stable GNN training.
+    """
+    # Normalize indices to [0, 1) before trigger functions
     hour = index.hour.values / 24.0
     dow = index.dayofweek.values / 7.0
     doy = index.dayofyear.values / 365.25
 
+    # Enforce periodicity via sin/cos mapping
     encoded = np.stack([
         np.sin(2 * np.pi * hour), np.cos(2 * np.pi * hour),
         np.sin(2 * np.pi * dow), np.cos(2 * np.pi * dow),
@@ -132,13 +137,15 @@ class EarthSystemAdapter(Dataset):
     def __init__(
         self,
         windows: Windows,
-        ml_task: Literal["downscaling", "forecasting", "correction"],
+        ml_task: Literal["downscaling", "forecasting", "correction", "anomaly_detection"],
         grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
         k_stations: int = 8,
         k_grid: int = 4,
+        n_regime_nodes: int = 16,
     ):
         self.windows = windows
         self.ml_task = ml_task
+        self.n_regime_nodes = n_regime_nodes
 
         # Station-graph geometry: n_stations and n_params for PyG reshape.
         station_labels = getattr(windows, 'station_labels', None)
@@ -271,6 +278,11 @@ class EarthSystemAdapter(Dataset):
             return
 
         # 2. Coupling Loop (Hybrid Unidirectional Topology)
+        # Adding Regime nodes to the source dictionary
+        if self.n_regime_nodes > 0:
+            # Regime nodes have latent coordinates (all zeros) as they are purely global
+            sources['regime'] = np.zeros((self.n_regime_nodes, 2))
+
         all_node_names = list(sources.keys())
         for i, src_name in enumerate(all_node_names):
             for j, dst_name in enumerate(all_node_names):
@@ -278,71 +290,113 @@ class EarthSystemAdapter(Dataset):
                 if dst_name == 'topography':
                     continue
                 
+                # Rule B2: Task-Aware Edge Isolation (Prevent Target Leakage)
+                # For strictly spatial retrospective tasks (Downscaling, AO), we must prevent 
+                # a station from informing a grid cell that is directly used to reconstruct it.
+                # Identity mapping leakage is the biggest cause of 'too-perfect' weather emulators.
+                target_node_name = getattr(self.windows, 'target_node', 'tahmo')
+
+                is_bipartite_leak = False
+                if self.ml_task in ['downscaling', 'anomaly_detection', 'correction']:
+                    if src_name == target_node_name and dst_name != target_node_name:
+                         # We allow neighbors to inform the grid, but the target node's self-edge 
+                         # will be masked in the KNN block later if dist ~ 0.
+                         is_bipartite_leak = True
+                
+                # Rule B3: Regime Connectivity (Global Analogue Context)
+                # Virtual nodes act as global bottlenecks. 
+                # Every grid/station node should inform the regimes.
+                # Regimes broadcast back to every grid/station.
+                is_regime_edge = (src_name == 'regime' or dst_name == 'regime')
+                
                 src_coords = sources[src_name]
                 dst_coords = sources[dst_name]
                 
-                # Rule A: Mathematically Sound Local Cartesian Projection
-                # Convert source and destination coordinates to Kilometers to prevent Metric Space Collision
-                ref_lat = src_coords[:, 0].mean()
-                r_earth = 111.32  # km per degree of latitude
-                
-                def _project_cartesian(coords):
-                    cart = np.zeros_like(coords, dtype=np.float32)
-                    cart[:, 0] = coords[:, 0] * r_earth  # Y [km]
-                    cart[:, 1] = coords[:, 1] * r_earth * np.cos(np.radians(ref_lat))  # X [km]
-                    if coords.shape[1] == 3:
-                        cart[:, 2] = coords[:, 2] / 1000.0  # Z [km]
-                    return cart
-                
-                cart_src = _project_cartesian(src_coords)
-                cart_dst = _project_cartesian(dst_coords)
-                
-                use_3d = (dst_name == 'tahmo' and src_coords.shape[1] == 3 and dst_coords.shape[1] == 3)
-                
-                if use_3d:
-                    # WeatherGNN Anisotropy: λ_alt = 10.0 enforces strong terrain adherence
-                    # 1 km of vertical distance is punished equivalently to 10 km horizontally
-                    dist_weight = np.array([1.0, 1.0, 10.0])
-                    knn_src = cart_src * dist_weight
-                    knn_dst = cart_dst * dist_weight
+                if is_regime_edge:
+                    # Dense bipartite connectivity for regimes (O(N * n_regime))
+                    # For Regime -> Target, every target receives from every regime
+                    # For Source -> Regime, every regime receives from every source
+                    edge_dst_all = np.repeat(np.arange(len(dst_coords)), len(src_coords))
+                    edge_src_all = np.tile(np.arange(len(src_coords)), len(dst_coords))
+                    
+                    indices = edge_src_all.reshape(len(dst_coords), len(src_coords))
+                    distances_scaled = np.zeros_like(indices, dtype=np.float32)
+                    similarities = np.ones_like(indices, dtype=np.float32)
+                    mask = np.ones_like(indices, dtype=bool)
+                    
+                    # Rule A: Skip the KNN block for Regime nodes
+                    k_final = len(src_coords)
+                    true_dist_km = np.zeros(len(edge_src_all), dtype=np.float32)
+                    weights_all = similarities.ravel()
                 else:
-                    # Strictly 2D physical kilometric topology
-                    knn_src = cart_src[:, :2]
-                    knn_dst = cart_dst[:, :2]
-                
-                k_target = k_stations if dst_name == 'tahmo' else k_grid
-                # HYBRID TOPOLOGY: Target density alignment
-                # 1. Local/Topo: K=8, threshold=0.7 (PeakWeather standard)
-                # 2. Regional/Moisture: K=32, no hard threshold (Aurora/WeatherGNN standard)
-                if src_name == 'topography' or src_name == dst_name:
-                    k_final = min(8, len(src_coords))
-                    threshold = 0.7
-                else:
-                    k_final = min(32, len(src_coords))
-                    threshold = 0.1 # Keep weak connections for teleconnections
+                    # Rule A: Mathematically Sound Local Cartesian Projection
+                    # Convert source and destination coordinates to Kilometers
+                    ref_lat = src_coords[:, 0].mean()
+                    r_earth = 111.32  # km per degree of latitude
+                    
+                    def _project_cartesian(coords):
+                        cart = np.zeros((coords.shape[0], coords.shape[1]), dtype=np.float32)
+                        cart[:, 0] = coords[:, 0] * r_earth  # Y [km]
+                        cart[:, 1] = coords[:, 1] * r_earth * np.cos(np.radians(ref_lat))  # X [km]
+                        if coords.shape[1] == 3:
+                            cart[:, 2] = coords[:, 2] / 1000.0  # Z [km]
+                        return cart
+                    
+                    cart_src = _project_cartesian(src_coords)
+                    cart_dst = _project_cartesian(dst_coords)
+                    
+                    use_3d = (dst_name == 'tahmo' and src_coords.shape[1] == 3 and dst_coords.shape[1] == 3)
+                    
+                    if use_3d:
+                        # WeatherGNN Anisotropy: λ_alt = 10.0 enforces strong terrain adherence
+                        dist_weight = np.array([1.0, 1.0, 10.0])
+                        knn_src = cart_src * dist_weight
+                        knn_dst = cart_dst * dist_weight
+                    else:
+                        # Strictly 2D physical kilometric topology
+                        knn_src = cart_src[:, :2]
+                        knn_dst = cart_dst[:, :2]
+                    
+                    k_target = k_stations if dst_name == 'tahmo' else k_grid
+                    if src_name == 'topography' or src_name == dst_name:
+                        k_final = min(8, len(src_coords))
+                        threshold = 0.7
+                    else:
+                        k_final = min(32, len(src_coords))
+                        threshold = 0.1 
 
-                if k_final < 1: continue
+                    if k_final < 1: continue
+                    
+                    # KNN Search
+                    nbrs = NearestNeighbors(n_neighbors=k_final, algorithm='ball_tree').fit(knn_src)
+                    distances_scaled, indices = nbrs.kneighbors(knn_dst)
+                    
+                    # Initialize similarities and mask
+                    sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
+                    similarities = np.exp(-(distances_scaled**2) / (sigma**2))
+                    mask = similarities >= threshold
+
+                    # Rule B4: Leave-One-Out (LOO) self-loop removal for Scientific Correctness
+                    # If connecting to the same node type (e.g., Station-to-Station), remove self-edges.
+                    if src_name == dst_name:
+                        self_mask = indices == np.arange(len(dst_coords))[:, None]
+                        # Correct self-loop masking across all tasks
+                        mask &= (~self_mask)
+
+                    # Rule B5: Bipartite LOO Masking for spatial retrospective tasks.
+                    # If Station i is very close to Grid Cell G (dist < spatial_res), mask it 
+                    # if we are in downscaling/correction/AD mode to prevent leakage.
+                    if is_bipartite_leak:
+                        # Find indices where distance is nearly zero (self-projection)
+                        leak_mask = distances_scaled < 1e-4 # Threshold for spatial collocation
+                        mask &= (~leak_mask)
+
+                    true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k_final, axis=0), axis=1)
+                    edge_dst_all = np.repeat(np.arange(len(dst_coords)), k_final)
+                    edge_src_all = indices.ravel()
+                    weights_all = similarities.ravel()
                 
-                nbrs = NearestNeighbors(n_neighbors=k_final, algorithm='ball_tree').fit(knn_src)
-                distances_scaled, indices = nbrs.kneighbors(knn_dst)
-                
-                # Rule A: Dynamic Sigma calculation for Gaussian Kernel
-                # To ensure the similarity weights [0, 1] are scientifically meaningful
-                sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
-                similarities = np.exp(-(distances_scaled**2) / (sigma**2))
-                
-                # Apply Thresholding
-                mask = similarities >= threshold
-                
-                # Re-compute mathematical physical distance without the λ_alt penalty for Edge Attributes
-                true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k_final, axis=0), axis=1)
-                
-                # Edge Index: [src_idx, dst_idx]
-                edge_dst_all = np.repeat(np.arange(len(dst_coords)), k_final)
-                edge_src_all = indices.ravel()
-                weights_all = similarities.ravel()
-                
-                # Apply Mask to everything
+                # Apply Mask
                 edge_src = edge_src_all[mask.ravel()]
                 edge_dst = edge_dst_all[mask.ravel()]
                 dist_km = true_dist_km[mask.ravel()]
@@ -351,41 +405,34 @@ class EarthSystemAdapter(Dataset):
                 if len(edge_src) == 0: continue
                 
                 index_tensor = torch.tensor(np.stack([edge_src, edge_dst]), dtype=torch.long)
-                
-                # Rule C: Anisotropic Edge Attributes [Normalized]
-                # To prevent MLP saturation from raw km (>1.0), we normalize per-bipartite-edge-type.
                 max_dist = dist_km.max() if len(dist_km) > 0 and dist_km.max() > 0 else 1.0
                 dist_norm = dist_km / max_dist
                 
-                # Combine physical distance with Gaussian Similarity weight
                 dist_tensor = torch.tensor(dist_norm, dtype=torch.float32).unsqueeze(-1)
                 weight_tensor = torch.tensor(weights, dtype=torch.float32).unsqueeze(-1)
                 
-                # Rule C: Uniform Dimension Edge Attributes [dist_norm, weight, delta_elev]
-                # To support Data-Dependent Message Passing (Swiss Anemoi standard), all edge 
-                # types must output exactly [E, 3] features so MLPs can route flow dynamically.
-                # Delta Elevation (km) is signed: Uphill is positive, Downhill is negative.
-                if src_coords.shape[1] == 3 and dst_coords.shape[1] == 3:
-                    # 3D to 3D (Station -> Station, Topo -> Station)
+                # Delta Elevation Logic
+                if src_name == 'regime' or dst_name == 'regime':
+                    delta_signed = np.zeros(len(edge_src), dtype=np.float32)
+                elif src_coords.shape[1] == 3 and dst_coords.shape[1] == 3:
                     delta_elev_km = cart_dst[edge_dst, 2] - cart_src[edge_src, 2]
+                    delta_signed = np.tanh(delta_elev_km / 2.0)
                 elif src_coords.shape[1] == 3 and dst_coords.shape[1] == 2:
-                    # 3D to 2D (Station/Topo -> Grid). Assume Grid is relative 0.
-                    delta_elev_km = 0.0 - cart_src[edge_src, 2]
+                    delta_signed = np.tanh((0.0 - cart_src[edge_src, 2]) / 2.0)
                 elif src_coords.shape[1] == 2 and dst_coords.shape[1] == 3:
-                    # 2D to 3D (Grid -> Station). Assume Grid is relative 0.
-                    delta_elev_km = cart_dst[edge_dst, 2] - 0.0
+                    delta_signed = np.tanh((cart_dst[edge_dst, 2] - 0.0) / 2.0)
                 else:
-                    # 2D to 2D (Grid -> Grid)
-                    delta_elev_km = np.zeros(len(edge_src), dtype=np.float32)
+                    delta_signed = np.zeros(len(edge_src), dtype=np.float32)
                     
-                # Gracefully map steep differentials into [-1, 1] while preserving sign
-                delta_signed = np.tanh(delta_elev_km / 2.0)
                 delta_elev_tensor = torch.tensor(delta_signed, dtype=torch.float32).unsqueeze(-1)
-                
                 attr_tensor = torch.cat([dist_tensor, weight_tensor, delta_elev_tensor], dim=-1)
                 
                 # Semantic Verb Resolver
-                if src_name == dst_name:
+                if src_name == 'regime':
+                    verb = 'summarizes'
+                elif dst_name == 'regime':
+                    verb = 'encodes'
+                elif src_name == dst_name:
                     verb = 'observes'
                 elif src_name == 'tahmo':
                     verb = 'corrects'
@@ -607,7 +654,13 @@ class EarthSystemAdapter(Dataset):
             else:
                 data['topography'].x_categorical = self.native_topography_categorical.reshape(-1, 1)
 
-        # 6. Attach Cached Graph Edges
+        # 6. Regime Nodes
+        # Virtual nodes act as global bottlenecks. They are initialized with an 
+        # identity matrix to allow the network to learn specialized physical regimes.
+        if self.n_regime_nodes > 0:
+            data['regime'].x = torch.eye(self.n_regime_nodes, dtype=torch.float32)
+
+        # 7. Attach Cached Graph Edges
         for edge_key, (edge_index, edge_attr) in self._cached_edges.items():
             data[edge_key].edge_index = edge_index
             data[edge_key].edge_attr = edge_attr
@@ -713,7 +766,7 @@ class BatchDescriptor:
 
 def create_distributed_dataloader(
     windows: Windows,
-    ml_task: Literal["downscaling", "forecasting", "correction"],
+    ml_task: Literal["downscaling", "forecasting", "correction", "anomaly_detection"],
     batch_size: int = 32,
     num_workers: int = 4,
     grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
@@ -792,7 +845,7 @@ def create_distributed_dataloader(
 # ---------------------------------------------------------------------------
 def create_dataloader(
     windows: Windows,
-    ml_task: Literal["downscaling", "forecasting", "correction"],
+    ml_task: Literal["downscaling", "forecasting", "correction", "anomaly_detection"],
     batch_size: int = 32,
     shuffle: bool = True,
     num_workers: int = 4,
