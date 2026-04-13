@@ -665,6 +665,44 @@ class EarthSystemAdapter(Dataset):
             data[edge_key].edge_index = edge_index
             data[edge_key].edge_attr = edge_attr
 
+        # 8. Optional Mass Conservation Constraints (CHIRPS/TAMSAT)
+        # Conditionally attached only if get_mass_constraints() was called on the Windows object.
+        # When absent, the entire block is a no-op, ensuring full backward compatibility.
+        if self.windows.daily_constraints:
+            target = self.windows.target_node or 'tahmo'
+            for constraint_name, constraint_data in self.windows.daily_constraints.items():
+                if isinstance(constraint_data, np.ndarray) and len(constraint_data) > 0:
+                    # Map this window's reference time to the day index
+                    if self.windows.daily_time_index is not None:
+                        actual_idx = (
+                            self.windows.valid_batch_indices[idx]
+                            if self.windows.valid_batch_indices is not None
+                            else idx
+                        )
+                        day_idx = self.windows.daily_time_index[actual_idx]
+                        if 0 <= day_idx < len(constraint_data):
+                            data[target].mass_constraint = torch.as_tensor(
+                                constraint_data[day_idx], dtype=torch.float32
+                            )
+                            # Attach corresponding mask
+                            if constraint_name in self.windows.daily_masks:
+                                mask_data = self.windows.daily_masks[constraint_name]
+                                if isinstance(mask_data, np.ndarray) and day_idx < len(mask_data):
+                                    data[target].mass_mask = torch.as_tensor(
+                                        mask_data[day_idx], dtype=torch.float32
+                                    )
+
+            # Attach day_index for temporal aggregation in the loss function
+            if self.windows.daily_time_index is not None:
+                actual_idx = (
+                    self.windows.valid_batch_indices[idx]
+                    if self.windows.valid_batch_indices is not None
+                    else idx
+                )
+                data[target].day_index = torch.tensor(
+                    self.windows.daily_time_index[actual_idx], dtype=torch.long
+                )
+
         return data
 
 

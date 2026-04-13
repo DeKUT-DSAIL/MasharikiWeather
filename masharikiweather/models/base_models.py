@@ -110,3 +110,34 @@ class PrecipAnomalyDetector(torch.nn.Module):
         
         # Fallback if predicting diverse target grids instead of specific stations
         return z_dict
+
+    def mass_conservation_loss(self, pred_hourly: torch.Tensor, data, lambda_mass: float = 1.0, p: float = 1.5):
+        """
+        Optional Scientific Mass Conservation Constraint.
+        Strictly aggregates the decoded hourly predictions and penalizes them against 
+        low-frequency physically-conserved outputs (CHIRPS/TAMSAT daily arrays).
+
+        relies on `losses.TweedieDevianceLoss` to prevent zero-bounded MSE crashes.
+        """
+        if lambda_mass <= 0.0 or not hasattr(data, 'mass_constraint') or data.mass_constraint is None:
+            return 0.0
+            
+        from .losses import TweedieDevianceLoss
+        tweedie = TweedieDevianceLoss(p=p)
+        
+        # Determine continuous daily clusters from 1D boolean array or assume continuous 24h strides
+        if hasattr(data, 'day_index') and data.day_index is not None:
+            # Flexible temporal mappings
+            num_days = int(data.day_index.max().item()) + 1
+            daily_preds = []
+            for d in range(num_days):
+                mask = (data.day_index == d)
+                daily_preds.append(pred_hourly[:, mask].sum(dim=1))
+            daily_pred = torch.stack(daily_preds, dim=1)
+        else:
+            # Assume naive 24-hr multiples if day_index isn't provided
+            n_nodes, horizon, channels = pred_hourly.shape
+            daily_pred = pred_hourly.view(n_nodes, -1, 24, channels).sum(dim=2)
+            
+        loss = tweedie(daily_pred, data.mass_constraint, mask=getattr(data, 'mass_mask', None))
+        return loss * lambda_mass
