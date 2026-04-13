@@ -10,14 +10,14 @@ from .rechunker import rechunk_dataset
 #     create_dataloader,
 #     create_distributed_dataloader,
 #     project_to_local_crs,
-#     BatchDescriptor,
-# )
+#     BatchDescriptor,)
 
-__version__ = "0.1.8"
+
+__version__ = "0.1.9"
 __all__ = [
     "MasharikiWeatherDataset",
     "Windows",
-    "rechunk_dataset"
+    "rechunk_dataset",
     # "EarthSystemAdapter",
     # "PyGDataLoader",
     # "create_dataloader",

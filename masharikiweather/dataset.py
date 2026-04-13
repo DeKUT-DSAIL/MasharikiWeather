@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import fsspec
+import shutil
+import difflib
 from tqdm import tqdm
 from .rechunker import rechunk_dataset, get_zarr_encoding, DEFAULT_TIME_CHUNKS
 import dask
@@ -59,10 +61,17 @@ class Windows:
     static_categorical_labels: Optional[Sequence[str]] = None
     grid_lats: Optional[np.ndarray] = None
     grid_lons: Optional[np.ndarray] = None
-    valid_batch_indices: Optional[np.ndarray] = None
 
     # Scientific Metadata
     variable_types: Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC"]] = field(default_factory=dict)
+
+    # 6. Optional Mass Conservation Targets (CHIRPS/TAMSAT)
+    # These are NEVER used as sequential inputs. They exist solely for
+    # physics-informed loss constraints in the training loop.
+    # Keys are group names (e.g. 'chirps', 'tamsat').
+    daily_constraints: Dict[str, np.ndarray] = field(default_factory=dict)
+    daily_masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    daily_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> day index
 
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
     """
@@ -98,10 +107,69 @@ class MasharikiWeatherDataset:
     providing seamless access to historical weather observations and 
     topographical data for the East Africa region.
     """ 
-    __version__ = "0.1.8"
+    __version__ = "0.1.9"
     
     # Hardcoded Test Set Split Anchor
     test_set_start = pd.Timestamp("2023-01-01", tz="UTC")
+
+    VALID_GRIDDED_GROUPS = ["era5", "imerg", "chirps", "tahmo", "topography", "tamsat"]
+
+    def _standardize_coordinates(self, ds: Optional[xr.Dataset]) -> Optional[xr.Dataset]:
+        """
+        Standardizes coordinate orientation across disparate datasets (e.g. CHIRPS vs IMERG).
+        Ensures that latitudes and longitudes are strictly ascending,
+        so users can reliably use ds.sel(lat=slice(min, max), lon=slice(min, max)).
+        """
+        if ds is None:
+            return None
+            
+        lat_dim = 'lat' if 'lat' in ds.dims else ('latitude' if 'latitude' in ds.dims else None)
+        lon_dim = 'lon' if 'lon' in ds.dims else ('longitude' if 'longitude' in ds.dims else None)
+
+        if lat_dim and len(ds[lat_dim]) > 1:
+            if ds[lat_dim].values[0] > ds[lat_dim].values[-1]:
+                ds = ds.isel({lat_dim: slice(None, None, -1)})
+
+        if lon_dim and len(ds[lon_dim]) > 1:
+            if ds[lon_dim].values[0] > ds[lon_dim].values[-1]:
+                ds = ds.isel({lon_dim: slice(None, None, -1)})
+                
+        return ds
+
+    def _validate_groups(self, groups: List[str]):
+        """Validate that the requested groups are known and give helpful error if not."""
+        for group in groups:
+            if group not in self.VALID_GRIDDED_GROUPS:
+                matches = difflib.get_close_matches(group, self.VALID_GRIDDED_GROUPS, n=1, cutoff=0.6)
+                suggestion = f" Did you mean '{matches[0]}' instead of '{group}'?" if matches else ""
+                raise ValueError(f"Invalid group '{group}'.{suggestion} Valid groups are: {self.VALID_GRIDDED_GROUPS}.")
+
+    def _validate_years(self, years: List[int]) -> List[int]:
+        """
+        Validate requested years against the configured dataset range.
+        Emits a warning for out-of-range years and raises ValueError if none remain.
+
+        Args:
+            years: List of requested years.
+
+        Returns:
+            List of valid years within the configured range.
+        """
+        import warnings
+        valid = [y for y in years if y in self.years]
+        invalid = [y for y in years if y not in self.years]
+        if invalid:
+            warnings.warn(
+                f"Requested years {invalid} are outside the configured dataset range "
+                f"{self.years}. These will be skipped. "
+                f"To include them, pass `years={sorted(set(self.years + invalid))}` to the constructor.",
+                UserWarning
+            )
+        if not valid:
+            raise ValueError(
+                f"None of the requested years {years} are within the configured range {self.years}."
+            )
+        return valid
 
     def __init__(
         self,
@@ -288,7 +356,7 @@ class MasharikiWeatherDataset:
                 ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
                 ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
-            return ds
+            return self._standardize_coordinates(ds)
             
         except Exception as e:
             print(f"Error: Could not open {rel_path}. {e}")
@@ -305,11 +373,12 @@ class MasharikiWeatherDataset:
         # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
         if os.path.exists(optimized_path):
             try:
-                return xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
+                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
                                      backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
-                return xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
+                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
                                      backend_kwargs={"consolidated": False}, decode_timedelta=False)
+            return self._standardize_coordinates(ds)
         
         # 2. Check Raw Download Tier
         if os.path.exists(local_path):
@@ -320,11 +389,12 @@ class MasharikiWeatherDataset:
                 
             chunks = {} if lazy else None
             try:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
+                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
                                      backend_kwargs={"consolidated": True}, decode_timedelta=False)
             except Exception:
-                return xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
+                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
                                      backend_kwargs={"consolidated": False}, decode_timedelta=False)
+            return self._standardize_coordinates(ds)
                 
         # 3. Fallback to Hugging Face lazy streaming pipeline
         return self._open_zipped_zarr(f"data/{group}/{year}.zarr.zip", lazy)
@@ -339,7 +409,9 @@ class MasharikiWeatherDataset:
         Args:
             num_workers (int): Number of parallel HTTP streams for the download.
         """
+        self._validate_groups(groups)
         target_years = [years] if isinstance(years, int) else (years or self.years)
+        target_years = self._validate_years(target_years)
         # Use class preference if caller doesn't specify swap
         should_swap = swap if swap is not None else self.swap
         
@@ -1077,7 +1149,7 @@ class MasharikiWeatherDataset:
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
         pressure_levels: Optional[List[int]] = None,
-    ) -> Dict[str, pd.DataFrame]:
+    ) -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
 
         """
         Extract gridded weather data for a list of stations.
@@ -1094,14 +1166,18 @@ class MasharikiWeatherDataset:
             last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
 
         Returns:
-            Dict[str, pd.DataFrame]: Dictionary of gridded weather data for each station.
+            Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]: 
+                - First Dict: Contains strictly native temporal resolution DataFrames for each group.
+                - Second Dict: Contains matched Boolean mask DataFrames indicating structurally missing coordinates (1 for missing).
         """
         
+        self._validate_groups(groups)
         valid_stations = self.validate_stations(stations)
         if not valid_stations:
-            return {}
+            return {}, {}
 
         target_years = [years] if isinstance(years, int) else (years or self.years)
+        target_years = self._validate_years(target_years)
         
         elev_col = next((c for c in ['DEM', 'dem', 'elevation', 'Elevation', 'z'] if c in self.stations_table.columns), None)
         has_dem = elev_col is not None
@@ -1114,6 +1190,7 @@ class MasharikiWeatherDataset:
             coords = coords.rename(columns={elev_col: 'dem'})
 
         extracted_dfs = {}
+        mask_dfs = {}
         for group in groups:
             yearly_dfs = []
             
@@ -1264,9 +1341,39 @@ class MasharikiWeatherDataset:
             pivoted_df = pivoted_df.reorder_levels([1, 0], axis=1).sort_index(axis=1)
             pivoted_df.columns.names = ['station_id', 'parameter']
             
-            extracted_dfs[group] = pivoted_df
+            # Extract missing mask before any imputation
+            mask_df = pivoted_df.isna().astype(int)
             
-        return extracted_dfs
+            extracted_dfs[group] = pivoted_df
+            mask_dfs[group] = mask_df
+            
+        return extracted_dfs, mask_dfs
+
+    @staticmethod
+    def spatial_sel(ds: xr.Dataset, lat_slice: Optional[slice] = None, lon_slice: Optional[slice] = None) -> xr.Dataset:
+        """
+        Order-agnostic spatial selection utility. Auto-corrects flipped slices 
+        (e.g., max to min) and emits a gentle warning, proceeding without failure.
+        """
+        import warnings
+        sel_dict = {}
+        
+        lat_dim = 'lat' if 'lat' in ds.coords else ('latitude' if 'latitude' in ds.coords else None)
+        lon_dim = 'lon' if 'lon' in ds.coords else ('longitude' if 'longitude' in ds.coords else None)
+        
+        if lat_slice and lat_dim:
+            if lat_slice.start is not None and lat_slice.stop is not None and lat_slice.start > lat_slice.stop:
+                warnings.warn(f"Flipped latitude slice detected ({lat_slice.start} to {lat_slice.stop}). Auto-correcting to (min, max).", UserWarning)
+                lat_slice = slice(lat_slice.stop, lat_slice.start)
+            sel_dict[lat_dim] = lat_slice
+            
+        if lon_slice and lon_dim:
+            if lon_slice.start is not None and lon_slice.stop is not None and lon_slice.start > lon_slice.stop:
+                warnings.warn(f"Flipped longitude slice detected ({lon_slice.start} to {lon_slice.stop}). Auto-correcting to (min, max).", UserWarning)
+                lon_slice = slice(lon_slice.stop, lon_slice.start)
+            sel_dict[lon_dim] = lon_slice
+            
+        return ds.sel(sel_dict) if sel_dict else ds
 
     def _export_df(self, df: pd.DataFrame, as_numpy: bool = False, copy: bool = False, fill_value=None) -> FrameArray:
         if fill_value is not None:
@@ -1363,7 +1470,9 @@ class MasharikiWeatherDataset:
         Returns:
             Dictionary of loaded datasets.
         """
+        self._validate_groups(groups)
         target_years = [years] if isinstance(years, int) else (years or self.years)
+        target_years = self._validate_years(target_years)
         gridded_dict = {}
         
         for group in groups:
@@ -1388,7 +1497,155 @@ class MasharikiWeatherDataset:
                     
         return gridded_dict
 
-    
+    VALID_CONSTRAINT_GROUPS = ["chirps", "tamsat"]
+
+    def get_mass_constraints(
+        self,
+        windows: Windows,
+        groups: Optional[List[str]] = None,
+        years: Optional[List[int]] = None,
+        stations: Optional[Union[str, List[str]]] = None,
+        first_date: Optional[Union[str, pd.Timestamp]] = None,
+        last_date: Optional[Union[str, pd.Timestamp]] = None,
+    ) -> Windows:
+        """
+        Optional: Extract daily precipitation totals from CHIRPS/TAMSAT and
+        attach them to an existing Windows object as mass conservation targets.
+
+        This method does NOT modify the sequential inputs (station_x, grids_x).
+        It populates windows.daily_constraints and windows.daily_masks exclusively.
+
+        Only groups in ["chirps", "tamsat"] are accepted. All others raise ValueError.
+
+        Mathematical justification:
+            The mass conservation constraint enforces:
+                sum_{t in day} P_hat(t) = P_daily
+            where P_hat(t) are the hourly predictions and P_daily is the
+            observed daily total from CHIRPS or TAMSAT. This is evaluated
+            via Tweedie Deviance Loss in the training loop.
+
+        Args:
+            windows: An existing Windows object from get_windows().
+            groups: Daily precipitation products to extract. Defaults to ["chirps"].
+            years: Years to extract. Defaults to self.years.
+            stations: Stations to extract for. Defaults to windows.station_labels.
+            first_date: Optional temporal lower bound.
+            last_date: Optional temporal upper bound.
+
+        Returns:
+            The same Windows object with daily_constraints and daily_masks populated.
+        """
+        import warnings
+
+        if groups is None:
+            groups = ["chirps"]
+
+        # Strict validation: only daily precipitation products allowed
+        invalid_groups = [g for g in groups if g not in self.VALID_CONSTRAINT_GROUPS]
+        if invalid_groups:
+            raise ValueError(
+                f"Invalid mass conservation groups: {invalid_groups}. "
+                f"Only {self.VALID_CONSTRAINT_GROUPS} are valid constraint targets. "
+                f"Hourly products (ERA5, IMERG) should be passed via `gridded_url` in get_windows()."
+            )
+
+        self._validate_groups(groups)
+
+        # Determine stations from the Windows object if not explicitly provided
+        constraint_stations = stations or getattr(windows, 'station_labels', None)
+        target_years = years or self.years
+
+        # Extract daily products via the existing station extraction pipeline
+        ext_dfs, mask_dfs = self.get_gridded_for_stations(
+            groups=groups,
+            stations=constraint_stations,
+            years=target_years,
+            first_date=first_date,
+            last_date=last_date,
+        )
+
+        if not ext_dfs:
+            warnings.warn(
+                f"No data extracted for mass conservation groups {groups}. "
+                "Windows will have empty daily_constraints.",
+                UserWarning
+            )
+            return windows
+
+        # Align daily totals to the hourly window temporal extent
+        # Use the hourly observation index from the windows to determine day boundaries
+        if windows.index_x is not None and len(windows.index_x) > 0:
+            # The last timestamp of each window defines its reference time
+            hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
+        else:
+            warnings.warn(
+                "Cannot align daily constraints: windows.index_x is empty.",
+                UserWarning
+            )
+            return windows
+
+        for group in groups:
+            if group not in ext_dfs:
+                continue
+
+            df = ext_dfs[group]
+            mask_df = mask_dfs.get(group, df.isna().astype(int))
+
+            # Ensure timezone-naive for alignment
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            if mask_df.index.tz is not None:
+                mask_df.index = mask_df.index.tz_localize(None)
+
+            # Resample to daily sums (native resolution for CHIRPS/TAMSAT)
+            # For products already at daily resolution, this is a no-op identity
+            daily_df = df.resample("1D").sum(min_count=1)
+            daily_mask = mask_df.resample("1D").max()  # Missing if ANY hour is missing
+
+            # Map each hourly window reference time to its corresponding day
+            ref_dates = hourly_index.normalize()  # Floor to day
+            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
+
+            # Find overlapping days between the daily product and the window span
+            overlap_days = unique_days.intersection(daily_df.index)
+            if len(overlap_days) == 0:
+                warnings.warn(
+                    f"No temporal overlap between {group} daily data and window span. "
+                    f"Skipping constraint for {group}.",
+                    UserWarning
+                )
+                continue
+
+            # Build the day_index mapping: for each window sample, which day does it belong to?
+            day_to_idx = {d: i for i, d in enumerate(overlap_days)}
+            day_index = np.array([day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64)
+
+            # Filter windows that have valid day mappings
+            valid_mask = day_index >= 0
+
+            # Extract the constraint values as numpy arrays
+            # Shape: (n_days, n_stations * n_params)
+            constraint_vals = daily_df.loc[overlap_days].values.astype(np.float32)
+            constraint_mask_vals = daily_mask.loc[overlap_days].values.astype(np.float32)
+
+            # Replace NaN with 0 in constraint values (masked out by the mask anyway)
+            constraint_vals = np.nan_to_num(constraint_vals, nan=0.0)
+
+            windows.daily_constraints[group] = constraint_vals
+            windows.daily_masks[group] = constraint_mask_vals
+
+        # Build the day_index from the last processed group (shared temporal axis)
+        if windows.index_x is not None and len(windows.index_x) > 0:
+            hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
+            ref_dates = hourly_index.normalize()
+            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
+            day_to_idx = {d: i for i, d in enumerate(unique_days)}
+            windows.daily_time_index = np.array(
+                [day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64
+            )
+
+        return windows
+
     def load_gridded_data(self, gridded_url: Union[str, List[str]]) -> xr.Dataset:
         """
         Load gridded data for the requested groups and years.
@@ -1669,13 +1926,25 @@ class MasharikiWeatherDataset:
 
         # 2. Dynamic N-Grids Mapping
         if gridded_url:
-            groups = [gridded_url] if isinstance(gridded_url, str) else gridded_url
+            groups = [gridded_url] if isinstance(gridded_url, str) else list(gridded_url)
+            
+            # Physically Prohibit Daily Products as Sequential PyG Inputs
+            daily_conflicts = [g for g in groups if g in ["chirps", "tamsat"]]
+            if daily_conflicts:
+                raise ValueError(
+                    f"Invalid gridded input for temporal windowing: {daily_conflicts}. "
+                    "CHIRPS and TAMSAT are native daily products. Including them as sequential "
+                    "inputs structurally destroys spatiotemporal intermittency and introduces "
+                    "artificial impulse constraints. Please explicitly remove them from `gridded_url` "
+                    "and handle them independently as mass-conservation targets in your loss pipeline."
+                )
+
             target_years = list(set(observations.index.year)) if not observations.empty else self.years
             
             per_grid_datasets = {}
             for group in groups:
                  if spatial_mode == "stations":
-                      ext_dfs = self.get_gridded_for_stations(
+                      ext_dfs, mask_dfs = self.get_gridded_for_stations(
                            groups=[group],
                            variables=gridded_variables[group] if isinstance(gridded_variables, dict) else gridded_variables,
                            method_overrides=method_overrides,
@@ -1730,10 +1999,11 @@ class MasharikiWeatherDataset:
                                 l_min, l_max = min(lat1, lat2), max(lat1, lat2)
                                 n_min, n_max = min(lon1, lon2), max(lon1, lon2)
                                 
-                                ds = ds[valid_vars].isel({
-                                    lat_dim: slice(max(0, l_min), min(len(lats), l_max + 1)),
-                                    lon_dim: slice(max(0, n_min), min(len(lons), n_max + 1))
-                                })
+                                ds = self.spatial_sel(
+                                    ds[valid_vars],
+                                    lat_slice=slice(max(0, l_min), min(len(lats), l_max + 1)),
+                                    lon_slice=slice(max(0, n_min), min(len(lons), n_max + 1))
+                                )
                            else:
                                 ds = ds[valid_vars]
                                 
@@ -1778,9 +2048,12 @@ class MasharikiWeatherDataset:
                            grid_np = self._export_df(g_df, as_numpy=True, copy=False).astype(np.float32, copy=False)
                            windows.grids_features[g_name] = g_df.columns.unique(level=1).tolist()
                            windows.grids_x[g_name] = sliding_window_view(grid_np[x_slice], window_size, axis=0)[::stride][x_idx_mask]
-                           if ml_task in ["correction", "downscaling", "forecasting"] and horizon_size > 0:
-                                windows.grids_y[g_name] = sliding_window_view(grid_np[y_start:], horizon_size, axis=0)[::stride][x_idx_mask]
+                           windows.grids_y[g_name] = sliding_window_view(grid_np[y_start:], horizon_size, axis=0)[::stride][x_idx_mask]
                       else:
+                           # Native Scale Preservation and Alignment
+                           if group == "imerg":
+                               g_ds = g_ds.resample(time="1h").sum(skipna=False)
+                           
                            g_ds = g_ds.sel(time=common_times)
                            windows.grids_features[g_name] = list(g_ds.data_vars)
                            windows.grids_x[g_name] = g_ds
