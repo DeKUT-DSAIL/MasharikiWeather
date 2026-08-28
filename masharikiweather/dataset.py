@@ -344,8 +344,11 @@ class MasharikiWeatherDataset:
                 print("Check that your HF Token is correct and has access to the private repository.")
                 return None
                 
-            # Create fsspec mapper using protocol chaining
-            zip_mapper = fsspec.get_mapper(f"zip://::{full_path}")
+            # Explicitly open the remote file object first using the authenticated filesystem
+            remote_file = self.fs.open(full_path)
+            
+            # Pass the active file object to the zip mapper
+            zip_mapper = fsspec.get_mapper("zip://", fo=remote_file)
             
             chunks = {} if lazy else None
             
