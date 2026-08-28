@@ -334,7 +334,7 @@ class MasharikiWeatherDataset:
 
     def _open_zipped_zarr(self, rel_path: str, lazy: bool = True) -> Optional[xr.Dataset]:
         """
-        Open a zipped Zarr dataset from Hugging Face.
+        Open a zipped Zarr dataset from Hugging Face or local path.
         """
         full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
         try:
@@ -344,18 +344,15 @@ class MasharikiWeatherDataset:
                 print("Check that your HF Token is correct and has access to the private repository.")
                 return None
                 
-            # Explicitly open the remote file object first
-            remote_file = self.fs.open(full_path)
-            
-            # Pass the active file object to the zip mapper
-            zip_mapper = fsspec.get_mapper("zip://", fo=remote_file)
+            # Create fsspec mapper using protocol chaining
+            zip_mapper = fsspec.get_mapper(f"zip://::{full_path}")
             
             chunks = {} if lazy else None
             
             try:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
             
         except Exception as e:
@@ -373,11 +370,11 @@ class MasharikiWeatherDataset:
         # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
         if os.path.exists(optimized_path):
             try:
-                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
-                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
+                                  consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
-                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
+                                  consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
         
         # 2. Check Raw Download Tier
@@ -389,11 +386,11 @@ class MasharikiWeatherDataset:
                 
             chunks = {} if lazy else None
             try:
-                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
-                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(local_path, chunks=chunks, 
+                                  consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
-                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(local_path, chunks=chunks, 
+                                  consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
                 
         # 3. Fallback to Hugging Face lazy streaming pipeline
