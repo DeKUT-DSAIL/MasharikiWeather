@@ -689,7 +689,7 @@ class MasharikiWeatherDataset:
 
         try:
             gt_zarr = GeoTesseraZarr()
-            mosaic, transform = gt_zarr.read_region(bbox, year=year)
+            mosaic, transform = gt_zarr.read_patch(bbox, year=year)
             
             # Matryoshka slice (retain only top embedding_dim dimensions)
             mosaic = mosaic[..., :embedding_dim]
@@ -792,14 +792,6 @@ class MasharikiWeatherDataset:
         if self._topo_ds is None:
             # 1. Load the default static netCDF topography (Elevation, Slope, Aspect)
             self._topo_ds = self.load_topography()
-            
-            # 2. Attempt to load the GeoTessera VAE embeddings and merge them
-            try:
-                emb_ds = self.load_geotessera_embeddings()
-                if emb_ds is not None and self._topo_ds is not None:
-                    self._topo_ds = xr.merge([self._topo_ds, emb_ds], compat='override')
-            except Exception as e:
-                print(f"Notice: Could not merge GeoTessera embeddings: {e}")
 
         if self._topo_ds is None:
             return
