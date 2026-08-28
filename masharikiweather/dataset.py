@@ -641,7 +641,7 @@ class MasharikiWeatherDataset:
                 
         self.observations = obs_df
 
-    def load_topography(self, bbox: Optional[Tuple[float, float, float, float]] = None, year: int = 2024, embedding_dim: int = 16) -> Optional[xr.Dataset]:
+    def load_geotessera_embeddings(self, bbox: Optional[Tuple[float, float, float, float]] = None, year: int = 2024, embedding_dim: int = 16) -> Optional[xr.Dataset]:
         """
         Load static topographic priors using GeoTessera Zarr API.
         Extracts Matryoshka Representation Learning embeddings (sliced to `embedding_dim`).
@@ -705,6 +705,63 @@ class MasharikiWeatherDataset:
         except Exception as e:
             print(f"Warning: Could not fetch topography data from GeoTessera. {e}")
             return None
+
+    def load_topography(self, filename: str = "east_africa_static_priors") -> Optional[xr.Dataset]:
+        """
+        Load static topographic priors from disk or Hugging Face.
+
+        Applies cyclical encoding to Aspect (degrees -> sin/cos) to prevent
+        the circular paradox where 359 deg and 1 deg appear maximally distant
+        to a neural network, when physically they are adjacent.
+
+        Args:
+            filename (str): Name of the topography file (without extension).
+
+        Returns:
+            Optional[xr.Dataset]: Topographic dataset with Aspect decomposed.
+        """
+        local_dir = f"{self.root_dir}/topography"
+        local_path = f"{local_dir}/{filename}.nc"
+        hf_path = f"hf://datasets/{self.repo_id}/data/topography/{filename}.nc"
+
+        ds = None
+        # Minimum-Latency Local Load
+        if os.path.exists(local_path):
+            try:
+                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+            except Exception as e:
+                print(f"Warning: Local topography cache corrupted. Re-downloading... ({e})")
+
+        # First-Time Fetch (Download to Cache)
+        if ds is None:
+            try:
+                os.makedirs(local_dir, exist_ok=True)
+                self.fs.get(hf_path, local_path)
+                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+            except Exception as e:
+                print(f"Warning: Could not fetch topography data from Hugging Face. {e}")
+                return None
+
+        # Cyclical Encoding: ALL Aspect variables (degrees) -> sin/cos pairs
+        # This maps circular angular variables onto a 2D unit circle so that
+        # 359 deg and 1 deg are correctly adjacent in feature space.
+        # Handles: 'Aspect', 'ASPECT_2000M_SIGRATIO1', 'ASPECT_10000M_SIGRATIO1', etc.
+        aspect_vars = [
+            v for v in list(ds.data_vars)
+            if 'aspect' in v.lower() and '_sin' not in v and '_cos' not in v
+        ]
+        for var_name in aspect_vars:
+            # convert to radians
+            aspect_rad = ds[var_name] * (np.pi / 180.0)
+            
+            # compute sin and cos
+            ds[f'{var_name}_sin'] = np.sin(aspect_rad)
+            ds[f'{var_name}_cos'] = np.cos(aspect_rad)
+            
+            # drop the original variable
+            ds = ds.drop_vars(var_name)
+
+        return ds
 
     def interpolate_topography(self) -> None:
         """
