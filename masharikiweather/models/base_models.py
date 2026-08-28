@@ -37,9 +37,9 @@ class PrecipAnomalyDetector(torch.nn.Module):
         self.tahmo_params = tahmo_params
 
         # -----------------------------------------------------
-        # 1. The Encoders (Minimally Processed Latent Fusion)
+        # 1. The Encoders
         # -----------------------------------------------------
-        # Independent linear layers map disparate data sources (IMERG, ERA5, TAHMO)
+        # Independent linear layers map disparate data sources (e.g IMERG, ERA5, TAHMO)
         # into a shared mathematical latent dimension without forced interpolation.
         self.embeddings = ModuleDict({
             node_type: Linear(in_channels, hidden_channels)
@@ -53,11 +53,11 @@ class PrecipAnomalyDetector(torch.nn.Module):
         })
 
         # -----------------------------------------------------
-        # 2. The Processor (Differentiable Message Passing)
+        # 2. The Processor 
         # -----------------------------------------------------
-        # Dynamically spawns PhysicsInteractionBlocks for EVERY edge detected 
-        # by the dataloader. No hardcoded logic. 
-        # Automatically scales across downscaling/anomaly/forecasting.
+        # spawns PhysicsInteractionBlocks for EVERY edge detected 
+        # by the dataloader.
+        # task agnostic
         interaction_dict = {}
         for edge_type, edge_dim in edge_dim_dict.items():
             interaction_dict[edge_type] = PhysicsInteractionBlock(
@@ -113,8 +113,8 @@ class PrecipAnomalyDetector(torch.nn.Module):
 
     def mass_conservation_loss(self, pred_hourly: torch.Tensor, data, lambda_mass: float = 1.0, p: float = 1.5):
         """
-        Optional Scientific Mass Conservation Constraint.
-        Strictly aggregates the decoded hourly predictions and penalizes them against 
+        Optional Mass Conservation Constraint.
+        aggregates the decoded hourly predictions and penalizes them against 
         low-frequency physically-conserved outputs (CHIRPS/TAMSAT daily arrays).
 
         relies on `losses.TweedieDevianceLoss` to prevent zero-bounded MSE crashes.

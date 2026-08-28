@@ -641,62 +641,70 @@ class MasharikiWeatherDataset:
                 
         self.observations = obs_df
 
-    def load_topography(self, filename: str = "east_africa_static_priors") -> Optional[xr.Dataset]:
+    def load_topography(self, bbox: Optional[Tuple[float, float, float, float]] = None, year: int = 2024, embedding_dim: int = 16) -> Optional[xr.Dataset]:
         """
-        Load static topographic priors from disk or Hugging Face.
-
-        Applies cyclical encoding to Aspect (degrees -> sin/cos) to prevent
-        the circular paradox where 359 deg and 1 deg appear maximally distant
-        to a neural network, when physically they are adjacent.
-
+        Load static topographic priors using GeoTessera Zarr API.
+        Extracts Matryoshka Representation Learning embeddings (sliced to `embedding_dim`).
+        
         Args:
-            filename (str): Name of the topography file (without extension).
-
+            bbox: Bounding box to extract data for (lon_min, lat_min, lon_max, lat_max). 
+                  If None, a default Kenya bbox is used.
+            year: Year to extract embeddings for.
+            embedding_dim: Number of embedding dimensions to retain.
+            
         Returns:
-            Optional[xr.Dataset]: Topographic dataset with Aspect decomposed.
+            Optional[xr.Dataset]: Topographic dataset with embedding bands as data variables.
         """
-        local_dir = f"{self.root_dir}/topography"
-        local_path = f"{local_dir}/{filename}.nc"
-        hf_path = f"hf://datasets/{self.repo_id}/data/topography/{filename}.nc"
+        try:
+            from geotessera.store import GeoTesseraZarr
+        except ImportError:
+            print("Warning: geotessera is not installed. Topographic embeddings will be bypassed.")
+            return None
 
-        ds = None
-        # Minimum-Latency Local Load
-        if os.path.exists(local_path):
-            try:
-                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
-            except Exception as e:
-                print(f"Warning: Local topography cache corrupted. Re-downloading... ({e})")
+        # Default to Kenya roughly if no bbox provided
+        if bbox is None:
+            bbox = (33.89, -4.68, 41.86, 5.51)
 
-        # First-Time Fetch (Download to Cache)
-        if ds is None:
-            try:
-                os.makedirs(local_dir, exist_ok=True)
-                self.fs.get(hf_path, local_path)
-                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
-            except Exception as e:
-                print(f"Warning: Could not fetch topography data from Hugging Face. {e}")
-                return None
-
-        # Cyclical Encoding: ALL Aspect variables (degrees) -> sin/cos pairs
-        # This maps circular angular variables onto a 2D unit circle so that
-        # 359 deg and 1 deg are correctly adjacent in feature space.
-        # Handles: 'Aspect', 'ASPECT_2000M_SIGRATIO1', 'ASPECT_10000M_SIGRATIO1', etc.
-        aspect_vars = [
-            v for v in list(ds.data_vars)
-            if 'aspect' in v.lower() and '_sin' not in v and '_cos' not in v
-        ]
-        for var_name in aspect_vars:
-            # convert to radians
-            aspect_rad = ds[var_name] * (np.pi / 180.0)
+        try:
+            gt_zarr = GeoTesseraZarr()
+            mosaic, transform = gt_zarr.read_region(bbox, year=year)
             
-            # compute sin and cos
-            ds[f'{var_name}_sin'] = np.sin(aspect_rad)
-            ds[f'{var_name}_cos'] = np.cos(aspect_rad)
+            # Matryoshka slice (retain only top embedding_dim dimensions)
+            mosaic = mosaic[..., :embedding_dim]
             
-            # drop the original variable
-            ds = ds.drop_vars(var_name)
-
-        return ds
+            # Construct coordinates from transform
+            # mosaic shape is (H, W, D)
+            H, W, D = mosaic.shape
+            import affine
+            if hasattr(transform, 'to_gdal'):
+                trans = transform
+            else:
+                # If it's a tuple, convert to Affine
+                trans = affine.Affine(*transform)
+                
+            lons, lats = [], []
+            for r in range(H):
+                lon, lat = trans * (0.5, r + 0.5)
+                lats.append(lat)
+            for c in range(W):
+                lon, lat = trans * (c + 0.5, 0.5)
+                lons.append(lon)
+                
+            ds_dict = {}
+            for d in range(D):
+                ds_dict[f"tessera_emb_{d}"] = (["lat", "lon"], mosaic[:, :, d])
+                
+            ds = xr.Dataset(
+                ds_dict,
+                coords={
+                    "lat": ("lat", lats),
+                    "lon": ("lon", lons)
+                }
+            )
+            return ds
+        except Exception as e:
+            print(f"Warning: Could not fetch topography data from GeoTessera. {e}")
+            return None
 
     def interpolate_topography(self) -> None:
         """
@@ -944,7 +952,7 @@ class MasharikiWeatherDataset:
         
         # 2. Mass Conservation (Precipitation)
         if any(kw in var_lower for kw in ['precip', 'rain', 'tp', 'pr']):
-            return "patch_flat"
+            return "linear"
             
         # 3. Extreme / Turbulent Variables (Wind Gusts)
         elif any(kw in var_lower for kw in ['gust', 'fg10']):
@@ -1146,6 +1154,7 @@ class MasharikiWeatherDataset:
         variables: Optional[List[str]] = None,
         method_overrides: Optional[Dict[str, str]] = None,
         patch_radius: int = 1,
+        interpolation: Optional[str] = None,
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
         pressure_levels: Optional[List[int]] = None,
@@ -1162,6 +1171,7 @@ class MasharikiWeatherDataset:
             method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides
             for specific variables (e.g. {"temperature": "patch_max", "wind_speed": "nearest", "total_precipitation": "linear"}).
             patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
+            interpolation (Optional[str]): Overall interpolation method for variables ("nearest", "bilinear", "peak_preserving", "patch").
             first_date (Optional[Union[str, pd.Timestamp]]): First date to extract data for.
             last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
 
@@ -1175,6 +1185,21 @@ class MasharikiWeatherDataset:
         valid_stations = self.validate_stations(stations)
         if not valid_stations:
             return {}, {}
+            
+        if interpolation:
+            if method_overrides is None:
+                method_overrides = {}
+            interp_map = {
+                "patch": "patch_flat",
+                "peak_preserving": "patch_max",
+                "bilinear": "linear",
+                "nearest": "nearest"
+            }
+            mapped_method = interp_map.get(interpolation, interpolation)
+            if variables:
+                for var in variables:
+                    if var not in method_overrides:
+                        method_overrides[var] = mapped_method
 
         target_years = [years] if isinstance(years, int) else (years or self.years)
         target_years = self._validate_years(target_years)
@@ -1773,6 +1798,7 @@ class MasharikiWeatherDataset:
         spatial_mode: Literal["stations", "grid"] = "stations",
         target_node: Optional[str] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
+        interpolation: Optional[str] = None,
         as_xarray: bool = False,
     ) -> Windows:
         """
@@ -1800,6 +1826,7 @@ class MasharikiWeatherDataset:
             spatial_mode (Literal["stations", "grid"]): Spatial mode to use for the data.
             target_node (Optional[str]): Target node to extract data for.
             bbox (Optional[Tuple[float, float, float, float]]): Bounding box to extract data for.
+            interpolation (Optional[str]): Global interpolation method overriding default ("nearest", "bilinear", "peak_preserving", "patch").
             as_xarray (bool): Whether to return the data as xarray datasets.
             
         Returns:
@@ -1817,6 +1844,22 @@ class MasharikiWeatherDataset:
         if not lazy:
             lazy = True # Mandatory logic enforcing isolated VRAM handling Dask per dict entry
             print("Warning: N-Grid architectures natively map `lazy=True`. Eager is bypassed.")
+            
+        if interpolation:
+            if method_overrides is None:
+                method_overrides = {}
+            interp_map = {
+                "patch": "patch_flat",
+                "peak_preserving": "patch_max",
+                "bilinear": "linear",
+                "nearest": "nearest"
+            }
+            mapped_method = interp_map.get(interpolation, interpolation)
+            if gridded_variables:
+                for grp, vars_list in (gridded_variables.items() if isinstance(gridded_variables, dict) else {g: gridded_variables for g in (gridded_url if isinstance(gridded_url, list) else [gridded_url])}.items()):
+                    for var in vars_list:
+                        if var not in method_overrides:
+                            method_overrides[var] = mapped_method
 
         from numpy.lib.stride_tricks import sliding_window_view
         observations, mask = self.get_observations(

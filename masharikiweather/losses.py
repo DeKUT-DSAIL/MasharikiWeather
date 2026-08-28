@@ -1,7 +1,6 @@
 """
-WeatherBench 2 Standardized Atmospheric Loss and Evaluation Metrics.
-Implementing exact differentiable and non-differentiable mathematically sound metrics 
-assessing generative sharpness, compound probability spaces, and true threshold skill limits.
+Atmospheric Loss and Evaluation Metrics.
+Implementing differentiable and non-differentiable mathematically sound metrics 
 """
 import torch
 import torch.nn as nn
@@ -48,6 +47,27 @@ class TweedieDevianceLoss(nn.Module):
             return deviance.sum()
         else:
             return deviance
+
+class RMSELoss(nn.Module):
+    """
+    Standard Root Mean Square Error (RMSE).
+    Evaluates strictly the deterministic mean error spread across the physical domain.
+    """
+    def __init__(self, reduction: str = 'mean'):
+        super().__init__()
+        self.mse = nn.MSELoss(reduction=reduction)
+        
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        if mask is not None:
+            # Mask out missing sensors/pixels
+            preds = preds * mask.float()
+            targets = targets * mask.float()
+            # Calculate sum of squared errors
+            sse = torch.sum((preds - targets) ** 2)
+            # Divide by number of valid elements to get MSE
+            mse = sse / (mask.float().sum() + 1e-8)
+            return torch.sqrt(mse)
+        return torch.sqrt(self.mse(preds, targets))
 
 class DifferentiableFSSLoss(nn.Module):
     """
@@ -191,6 +211,7 @@ class SEEPSScore(nn.Module):
         score[t_heavy & p_light] = 1.0 / (1.0 - p1)
         
         return score.mean()
+        
 class BootstrapTweediePower(nn.Module):
     """
     Bootstrap utility to estimate the optimal Tweedie power parameter $p$.
