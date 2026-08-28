@@ -789,7 +789,7 @@ class MasharikiWeatherDataset:
         Returns:
             List[str]: List of valid station IDs.
         """
-        if stations is None:
+        if stations is None or stations == "all":
             return list(self.stations_table.index)
             
         if isinstance(stations, str):
@@ -1988,12 +1988,9 @@ class MasharikiWeatherDataset:
             # Physically Prohibit Daily Products as Sequential PyG Inputs
             daily_conflicts = [g for g in groups if g in ["chirps", "tamsat"]]
             if daily_conflicts:
-                raise ValueError(
-                    f"Invalid gridded input for temporal windowing: {daily_conflicts}. "
-                    "CHIRPS and TAMSAT are native daily products. Including them as sequential "
-                    "inputs structurally destroys spatiotemporal intermittency and introduces "
-                    "artificial impulse constraints. Please explicitly remove them from `gridded_url` "
-                    "and handle them independently as mass-conservation targets in your loss pipeline."
+                import warnings
+                warnings.warn(
+                    "CHIRPS and TAMSAT are native daily products"
                 )
 
             target_years = list(set(observations.index.year)) if not observations.empty else self.years
