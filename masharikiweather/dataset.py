@@ -488,7 +488,7 @@ class MasharikiWeatherDataset:
                     # 3. Trigger Parallel Single-Pass Write
                     with dask.config.set(scheduler='threads', num_workers=num_workers):
                         with ProgressBar():
-                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True)
+                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True, zarr_format=2)
                     
                     # 4. Atomic Swap
                     if os.path.exists(target_write_path):
