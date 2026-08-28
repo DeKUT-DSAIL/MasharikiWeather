@@ -663,71 +663,6 @@ class MasharikiWeatherDataset:
                 
         self.observations = obs_df
 
-    def load_geotessera_embeddings(self, bbox: Optional[Tuple[float, float, float, float]] = None, year: int = 2024, embedding_dim: int = 16) -> Optional[xr.Dataset]:
-        """
-        Load static topographic priors using GeoTessera Zarr API.
-        Extracts Matryoshka Representation Learning embeddings (sliced to `embedding_dim`).
-        
-        Args:
-            bbox: Bounding box to extract data for (lon_min, lat_min, lon_max, lat_max). 
-                  If None, a default Kenya bbox is used.
-            year: Year to extract embeddings for.
-            embedding_dim: Number of embedding dimensions to retain.
-            
-        Returns:
-            Optional[xr.Dataset]: Topographic dataset with embedding bands as data variables.
-        """
-        try:
-            from geotessera.store import GeoTesseraZarr
-        except Exception as e:
-            print(f"Warning: geotessera import failed ({e}). Topographic embeddings will be bypassed.")
-            return None
-
-        # Default to Kenya roughly if no bbox provided
-        if bbox is None:
-            bbox = (33.89, -4.68, 41.86, 5.51)
-
-        try:
-            gt_zarr = GeoTesseraZarr()
-            mosaic, transform = gt_zarr.read_patch(bbox, year=year)
-            
-            # Matryoshka slice (retain only top embedding_dim dimensions)
-            mosaic = mosaic[..., :embedding_dim]
-            
-            # Construct coordinates from transform
-            # mosaic shape is (H, W, D)
-            H, W, D = mosaic.shape
-            import affine
-            if hasattr(transform, 'to_gdal'):
-                trans = transform
-            else:
-                # If it's a tuple, convert to Affine
-                trans = affine.Affine(*transform)
-                
-            lons, lats = [], []
-            for r in range(H):
-                lon, lat = trans * (0.5, r + 0.5)
-                lats.append(lat)
-            for c in range(W):
-                lon, lat = trans * (c + 0.5, 0.5)
-                lons.append(lon)
-                
-            ds_dict = {}
-            for d in range(D):
-                ds_dict[f"tessera_emb_{d}"] = (["lat", "lon"], mosaic[:, :, d])
-                
-            ds = xr.Dataset(
-                ds_dict,
-                coords={
-                    "lat": ("lat", lats),
-                    "lon": ("lon", lons)
-                }
-            )
-            return ds
-        except Exception as e:
-            print(f"Warning: Could not fetch topography data from GeoTessera. {e}")
-            return None
-
     def load_topography(self, filename: str = "east_africa_static_priors") -> Optional[xr.Dataset]:
         """
         Load static topographic priors from disk or Hugging Face.
@@ -841,6 +776,7 @@ class MasharikiWeatherDataset:
             df_topo[col] = df_topo[col].fillna(default_val)
 
         self.stations_table = self.stations_table.join(df_topo)
+
 
     def validate_stations(self, stations: Optional[Union[str, List[str]]] = None) -> List[str]:
         """
