@@ -336,6 +336,28 @@ class MasharikiWeatherDataset:
         """
         Open a zipped Zarr dataset from Hugging Face or local path.
         """
+        # 1. Prioritize Local Zipped Archives if available (Offline Mode)
+        # Check both {root_dir}/obs/tahmo.zarr.zip and {root_dir}/data/obs/tahmo.zarr.zip
+        local_path_1 = f"{self.root_dir}/{rel_path.replace('data/', '')}"
+        local_path_2 = f"{self.root_dir}/{rel_path}"
+        
+        local_zip = None
+        if os.path.exists(local_path_1):
+            local_zip = local_path_1
+        elif os.path.exists(local_path_2):
+            local_zip = local_path_2
+            
+        if local_zip:
+            # Create fsspec mapper using local protocol chaining
+            zip_mapper = fsspec.get_mapper(f"zip://::file://{os.path.abspath(local_zip)}")
+            chunks = {} if lazy else None
+            try:
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
+            except Exception:
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+            return self._standardize_coordinates(ds)
+
+        # 2. Fallback to Hugging Face Remote Streaming
         full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
         try:
             # Safety Check: Verify file exists and token is valid
