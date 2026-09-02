@@ -147,6 +147,54 @@ def _haversine_distances(coords_a: np.ndarray, coords_b: np.ndarray) -> np.ndarr
     return 2.0 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
 
+def compute_terrain_wind_alignment(
+    edge_src: np.ndarray, 
+    edge_dst: np.ndarray, 
+    grid_features: dict = None
+) -> np.ndarray:
+    """
+    Computes terrain-steered wind alignment scalar: dot product of wind vector (u, v) 
+    and surface slope/aspect orientation vector.
+    Gracefully falls back to zeros if u, v variables are absent.
+    """
+    n_edges = len(edge_src)
+    
+    # Graceful Fallback Check
+    has_wind = grid_features and 'u10' in grid_features and 'v10' in grid_features
+    if not has_wind:
+        return np.zeros((n_edges, 1), dtype=np.float32)
+        
+    try:
+        # Extract dynamic wind components (u, v) and static slope/aspect components
+        u = grid_features['u10'] # [Nodes, Time] or node-level vector
+        v = grid_features['v10']
+        
+        # Terrain normal vector derived from slope and aspect (sin/cos)
+        slope = grid_features.get('Slope', np.zeros_like(u))
+        aspect_sin = grid_features.get('Aspect_sin', np.zeros_like(u))
+        aspect_cos = grid_features.get('Aspect_cos', np.zeros_like(u))
+        
+        # Terrain gradient spatial orientation vector
+        terrain_x = slope * aspect_sin
+        terrain_y = slope * aspect_cos
+        
+        # Compute directional alignment via dot product along edges (sender to receiver)
+        u_src = u[edge_src]
+        v_src = v[edge_src]
+        tx_dst = terrain_x[edge_dst]
+        ty_dst = terrain_y[edge_dst]
+        
+        dot_product = (u_src * tx_dst + v_src * ty_dst)
+        norm = (np.sqrt(u_src**2 + v_src**2) * np.sqrt(tx_dst**2 + ty_dst**2) + 1e-6)
+        alignment = (dot_product / norm).astype(np.float32)
+        
+        return np.expand_dims(alignment, axis=-1)
+    except Exception:
+        # Absolute safety net against shape mismatches or missing keys
+        return np.zeros((n_edges, 1), dtype=np.float32)
+
+
+
 class EarthSystemAdapter(Dataset):
     """
     A PyTorch Dataset rigidly following Torch Spatiotemporal (TSL) and PyTorch Geometric
@@ -162,13 +210,11 @@ class EarthSystemAdapter(Dataset):
         grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
         k_stations: int = 8,
         k_grid: int = 4,
-        n_regime_nodes: int = 16,
         tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
         projection_type: Literal["graphcast_3d", "esfm_fourier", "raw"] = "esfm_fourier",
     ):
         self.windows = windows
         self.ml_task = ml_task
-        self.n_regime_nodes = n_regime_nodes
         self.projection_type = projection_type
 
         # Station-graph geometry: n_stations and n_params for PyG reshape.
@@ -339,14 +385,22 @@ class EarthSystemAdapter(Dataset):
         # 1. Discover all spatial sources
         sources = {} 
         
-        # Station Coords (Lat, Lon, Alt)
+        # Station Coords (Lat, Lon, Alt, DEM, TPI)
         st_coords = getattr(self.windows, 'station_coords', None)
         if st_coords is not None:
             # Assuming station_static contains Altitude at index 0 (Standard in Mashariki dataset)
             # If not, we fall back to 2D
             st_alt = self.windows.station_static[:, :1] if self.windows.station_static is not None else np.zeros((len(st_coords), 1))
             
-            sources['tahmo'] = np.concatenate([st_coords, st_alt], axis=1)
+            # Topographic Analogue KNN features
+            if self.windows.station_static is not None and self.windows.station_static.shape[1] >= 7:
+                dem = self.windows.station_static[:, 0:1]
+                tpi = self.windows.station_static[:, 6:7]
+                if isinstance(dem, torch.Tensor): dem = dem.numpy()
+                if isinstance(tpi, torch.Tensor): tpi = tpi.numpy()
+                sources['tahmo'] = np.concatenate([st_coords, st_alt, dem, tpi], axis=1) # 5D
+            else:
+                sources['tahmo'] = np.concatenate([st_coords, st_alt], axis=1) # 3D
 
         # Grid Coords (Lat, Lon) - No altitude interpolation for coarse grids
         for g_name in getattr(self.windows, 'grids_x', {}).keys():
@@ -385,11 +439,6 @@ class EarthSystemAdapter(Dataset):
             return
 
         # 2. Coupling Loop (Hybrid Unidirectional Topology)
-        # Adding Regime nodes to the source dictionary
-        if self.n_regime_nodes > 0:
-            # Regime nodes have latent coordinates (all zeros) as they are purely global
-            sources['regime'] = np.zeros((self.n_regime_nodes, 2))
-
         all_node_names = list(sources.keys())
         for i, src_name in enumerate(all_node_names):
             for j, dst_name in enumerate(all_node_names):
@@ -410,141 +459,136 @@ class EarthSystemAdapter(Dataset):
                          # will be masked in the KNN block later if dist ~ 0.
                          is_bipartite_leak = True
                 
-                # Regime Connectivity (Global Analogue Context)
-                # Virtual nodes act as global bottlenecks. 
-                # Every grid/station node should inform the regimes.
-                # Regimes broadcast back to every grid/station.
-                is_regime_edge = (src_name == 'regime' or dst_name == 'regime')
-                
                 src_coords = sources[src_name]
                 dst_coords = sources[dst_name]
                 
-                if is_regime_edge:
-                    # Dense bipartite connectivity for regimes (O(N * n_regime))
-                    # For Regime -> Target, every target receives from every regime
-                    # For Source -> Regime, every regime receives from every source
-                    edge_dst_all = np.repeat(np.arange(len(dst_coords)), len(src_coords))
-                    edge_src_all = np.tile(np.arange(len(src_coords)), len(dst_coords))
+                # Mathematically Sound Local Cartesian Projection
+                # Convert source and destination coordinates to Kilometers
+                ref_lat = src_coords[:, 0].mean()
+                r_earth = 111.32  # km per degree of latitude
+                
+                def _project_cartesian(coords):
+                    cart = np.zeros((coords.shape[0], coords.shape[1]), dtype=np.float32)
+                    cart[:, 0] = coords[:, 0] * r_earth  # Y [km]
+                    cart[:, 1] = coords[:, 1] * r_earth * np.cos(np.radians(ref_lat))  # X [km]
+                    if coords.shape[1] >= 3:
+                        cart[:, 2] = coords[:, 2] / 1000.0  # Z [km]
+                    return cart
+                
+                cart_src = _project_cartesian(src_coords)
+                cart_dst = _project_cartesian(dst_coords)
+                
+                use_analogue_5d = (src_name == 'tahmo' and dst_name == 'tahmo' and src_coords.shape[1] >= 5 and dst_coords.shape[1] >= 5)
+                use_3d = (src_coords.shape[1] >= 3 and dst_coords.shape[1] >= 3)
+                
+                if use_analogue_5d:
+                    # Topographic Feature-Space Analogue KNN (Z-Score Standardization)
+                    from sklearn.preprocessing import StandardScaler
+                    scaler = StandardScaler()
                     
-                    indices = edge_src_all.reshape(len(dst_coords), len(src_coords))
-                    distances_scaled = np.zeros_like(indices, dtype=np.float32)
-                    similarities = np.ones_like(indices, dtype=np.float32)
-                    mask = np.ones_like(indices, dtype=bool)
+                    # Apply Cartesian Projection for X, Y, Z
+                    cart_src_5d = np.zeros_like(src_coords, dtype=np.float32)
+                    cart_src_5d[:, :3] = cart_src[:, :3]
+                    cart_src_5d[:, 3:] = src_coords[:, 3:5] # DEM, TPI
                     
-                    # Skip the KNN block for Regime nodes
-                    k_final = len(src_coords)
-                    true_dist_km = np.zeros(len(edge_src_all), dtype=np.float32)
-                    weights_all = similarities.ravel()
+                    cart_dst_5d = np.zeros_like(dst_coords, dtype=np.float32)
+                    cart_dst_5d[:, :3] = cart_dst[:, :3]
+                    cart_dst_5d[:, 3:] = dst_coords[:, 3:5]
+                    
+                    # Standardize to give equal weight to all 5 dimensions
+                    knn_src = scaler.fit_transform(cart_src_5d)
+                    knn_dst = scaler.transform(cart_dst_5d)
+                elif use_3d:
+                    # WeatherGNN Anisotropy: λ_alt = 10.0 enforces strong terrain adherence
+                    dist_weight = np.array([1.0, 1.0, 10.0])
+                    knn_src = cart_src[:, :3] * dist_weight
+                    knn_dst = cart_dst[:, :3] * dist_weight
                 else:
-                    # Mathematically Sound Local Cartesian Projection
-                    # Convert source and destination coordinates to Kilometers
-                    ref_lat = src_coords[:, 0].mean()
-                    r_earth = 111.32  # km per degree of latitude
-                    
-                    def _project_cartesian(coords):
-                        cart = np.zeros((coords.shape[0], coords.shape[1]), dtype=np.float32)
-                        cart[:, 0] = coords[:, 0] * r_earth  # Y [km]
-                        cart[:, 1] = coords[:, 1] * r_earth * np.cos(np.radians(ref_lat))  # X [km]
-                        if coords.shape[1] == 3:
-                            cart[:, 2] = coords[:, 2] / 1000.0  # Z [km]
-                        return cart
-                    
-                    cart_src = _project_cartesian(src_coords)
-                    cart_dst = _project_cartesian(dst_coords)
-                    
-                    use_3d = (dst_name == 'tahmo' and src_coords.shape[1] == 3 and dst_coords.shape[1] == 3)
-                    
-                    if use_3d:
-                        # WeatherGNN Anisotropy: λ_alt = 10.0 enforces strong terrain adherence
-                        dist_weight = np.array([1.0, 1.0, 10.0])
-                        knn_src = cart_src * dist_weight
-                        knn_dst = cart_dst * dist_weight
-                    else:
-                        # Strictly 2D physical kilometric topology
-                        knn_src = cart_src[:, :2]
-                        knn_dst = cart_dst[:, :2]
-                    
-                    k_target = k_stations if dst_name == 'tahmo' else k_grid
-                    if src_name == 'topography' or src_name == dst_name:
-                        k_final = min(8, len(src_coords))
-                        threshold = 0.7
-                    else:
-                        k_final = min(32, len(src_coords))
-                        threshold = 0.1 
+                    # Strictly 2D physical kilometric topology
+                    knn_src = cart_src[:, :2]
+                    knn_dst = cart_dst[:, :2]
+                
+                k_target = k_stations if dst_name == 'tahmo' else k_grid
+                if src_name == 'topography' or src_name == dst_name:
+                    k_final = min(8, len(src_coords))
+                    threshold = 0.7
+                else:
+                    k_final = min(32, len(src_coords))
+                    threshold = 0.1 
 
-                    if k_final < 1: continue
+                if k_final < 1: continue
+                
+                # KNN Search via torch_cluster (CUDA Accelerated)
+                
+                knn_src_t = torch.tensor(knn_src, dtype=torch.float32)
+                knn_dst_t = torch.tensor(knn_dst, dtype=torch.float32)
                     
-                    # KNN Search via torch_cluster (CUDA Accelerated)
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                edge_index = knn(knn_src_t.to(device), knn_dst_t.to(device), k=k_final)
+                
+                dst_idx = edge_index[0].cpu().numpy()
+                src_idx = edge_index[1].cpu().numpy()
+                
+                # Ensure deterministic sorting for reshaping
+                sort_order = np.argsort(dst_idx, kind='mergesort')
+                src_idx = src_idx[sort_order]
+                
+                indices = src_idx.reshape(len(dst_coords), k_final)
+                distances_scaled = np.linalg.norm(knn_src[indices] - knn_dst[:, None, :], axis=-1)
+                
+                # Initialize similarities and mask
+                sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
+                similarities = np.exp(-(distances_scaled**2) / (sigma**2))
+                
+                # --- TOPOGRAPHIC RIDGE PROMINENCE PENALTY ---
+                # If DEM is available and we're calculating physically plausible edges (e.g. between stations)
+                if topo_tensor is not None and t_lats is not None and t_lons is not None and src_coords.shape[1] >= 3 and dst_coords.shape[1] >= 3:
+                    gamma = 3.0  # Barrier penalty hyperparameter
+                    steps = 10
                     
-                    knn_src_t = torch.tensor(knn_src, dtype=torch.float32)
-                    knn_dst_t = torch.tensor(knn_dst, dtype=torch.float32)
+                    dem_numpy = topo_tensor.numpy() if isinstance(topo_tensor, torch.Tensor) else topo_tensor
                     
-                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                    edge_index = knn(knn_src_t.to(device), knn_dst_t.to(device), k=k_final)
-                    
-                    dst_idx = edge_index[0].cpu().numpy()
-                    src_idx = edge_index[1].cpu().numpy()
-                    
-                    # Ensure deterministic sorting for reshaping
-                    sort_order = np.argsort(dst_idx, kind='mergesort')
-                    src_idx = src_idx[sort_order]
-                    
-                    indices = src_idx.reshape(len(dst_coords), k_final)
-                    distances_scaled = np.linalg.norm(knn_src[indices] - knn_dst[:, None, :], axis=-1)
-                    
-                    # Initialize similarities and mask
-                    sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
-                    similarities = np.exp(-(distances_scaled**2) / (sigma**2))
-                    
-                    # --- TOPOGRAPHIC RIDGE PROMINENCE PENALTY ---
-                    # If DEM is available and we're calculating physically plausible edges (e.g. between stations)
-                    if topo_tensor is not None and t_lats is not None and t_lons is not None and src_coords.shape[1] >= 3 and dst_coords.shape[1] >= 3:
-                        gamma = 3.0  # Barrier penalty hyperparameter
-                        steps = 10
-                        
-                        dem_numpy = topo_tensor.numpy() if isinstance(topo_tensor, torch.Tensor) else topo_tensor
-                        
-                        for i in range(len(dst_coords)):
-                            for k_idx, j in enumerate(indices[i]):
-                                # Draw linear transect between i and j
-                                lats_profile = np.linspace(dst_coords[i, 0], src_coords[j, 0], steps)
-                                lons_profile = np.linspace(dst_coords[i, 1], src_coords[j, 1], steps)
-                                
-                                # Search indices in DEM coordinates
-                                lat_indices = np.clip(np.searchsorted(t_lats, lats_profile) - 1, 0, len(t_lats) - 1)
-                                lon_indices = np.clip(np.searchsorted(t_lons, lons_profile) - 1, 0, len(t_lons) - 1)
-                                
-                                profile_elevations = dem_numpy[lat_indices, lon_indices]
-                                
-                                # Calculate Ridge Prominence in kilometers
-                                z_max_path = np.nanmax(profile_elevations) / 1000.0 if not np.all(np.isnan(profile_elevations)) else 0.0
-                                z_max_endpoints = max(dst_coords[i, 2], src_coords[j, 2]) / 1000.0
-                                H_ij = max(0.0, z_max_path - z_max_endpoints)
-                                
-                                # Penalize the similarity edge weight
-                                similarities[i, k_idx] *= np.exp(-gamma * H_ij)
-                                
-                    mask = similarities >= threshold
+                    for i in range(len(dst_coords)):
+                        for k_idx, j in enumerate(indices[i]):
+                            # Draw linear transect between i and j
+                            lats_profile = np.linspace(dst_coords[i, 0], src_coords[j, 0], steps)
+                            lons_profile = np.linspace(dst_coords[i, 1], src_coords[j, 1], steps)
+                            
+                            # Search indices in DEM coordinates
+                            lat_indices = np.clip(np.searchsorted(t_lats, lats_profile) - 1, 0, len(t_lats) - 1)
+                            lon_indices = np.clip(np.searchsorted(t_lons, lons_profile) - 1, 0, len(t_lons) - 1)
+                            
+                            profile_elevations = dem_numpy[lat_indices, lon_indices]
+                            
+                            # Calculate Ridge Prominence in kilometers
+                            z_max_path = np.nanmax(profile_elevations) / 1000.0 if not np.all(np.isnan(profile_elevations)) else 0.0
+                            z_max_endpoints = max(dst_coords[i, 2], src_coords[j, 2]) / 1000.0
+                            H_ij = max(0.0, z_max_path - z_max_endpoints)
+                            
+                            # Penalize the similarity edge weight
+                            similarities[i, k_idx] *= np.exp(-gamma * H_ij)
+                            
+                mask = similarities >= threshold
 
-                    # Leave-One-Out (LOO) self-loop removal for Scientific Correctness
-                    # If connecting to the same node type (e.g., Station-to-Station), remove self-edges.
-                    if src_name == dst_name:
-                        self_mask = indices == np.arange(len(dst_coords))[:, None]
-                        # Correct self-loop masking across all tasks
-                        mask &= (~self_mask)
+                # Leave-One-Out (LOO) self-loop removal for Scientific Correctness
+                # If connecting to the same node type (e.g., Station-to-Station), remove self-edges.
+                if src_name == dst_name:
+                    self_mask = indices == np.arange(len(dst_coords))[:, None]
+                    # Correct self-loop masking across all tasks
+                    mask &= (~self_mask)
 
-                    # Bipartite LOO Masking for spatial retrospective tasks.
-                    # If Station i is very close to Grid Cell G (dist < spatial_res), mask it 
-                    # if we are in downscaling/correction/AD mode to prevent leakage.
-                    if is_bipartite_leak:
-                        # Find indices where distance is nearly zero (self-projection)
-                        leak_mask = distances_scaled < 1e-4 # Threshold for spatial collocation
-                        mask &= (~leak_mask)
+                # Bipartite LOO Masking for spatial retrospective tasks.
+                # If Station i is very close to Grid Cell G (dist < spatial_res), mask it 
+                # if we are in downscaling/correction/AD mode to prevent leakage.
+                if is_bipartite_leak:
+                    # Find indices where distance is nearly zero (self-projection)
+                    leak_mask = distances_scaled < 1e-4 # Threshold for spatial collocation
+                    mask &= (~leak_mask)
 
-                    true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k_final, axis=0), axis=1)
-                    edge_dst_all = np.repeat(np.arange(len(dst_coords)), k_final)
-                    edge_src_all = indices.ravel()
-                    weights_all = similarities.ravel()
+                true_dist_km = np.linalg.norm(cart_src[indices.ravel(), :2] - np.repeat(cart_dst[:, :2], k_final, axis=0), axis=1)
+                edge_dst_all = np.repeat(np.arange(len(dst_coords)), k_final)
+                edge_src_all = indices.ravel()
+                weights_all = similarities.ravel()
                 
                 # Apply Mask
                 edge_src = edge_src_all[mask.ravel()]
@@ -562,14 +606,12 @@ class EarthSystemAdapter(Dataset):
                 weight_tensor = torch.tensor(weights, dtype=torch.float32).unsqueeze(-1)
                 
                 # Delta Elevation Logic
-                if src_name == 'regime' or dst_name == 'regime':
-                    delta_signed = np.zeros(len(edge_src), dtype=np.float32)
-                elif src_coords.shape[1] == 3 and dst_coords.shape[1] == 3:
+                if src_coords.shape[1] >= 3 and dst_coords.shape[1] >= 3:
                     delta_elev_km = cart_dst[edge_dst, 2] - cart_src[edge_src, 2]
                     delta_signed = np.tanh(delta_elev_km / 2.0)
-                elif src_coords.shape[1] == 3 and dst_coords.shape[1] == 2:
+                elif src_coords.shape[1] >= 3 and dst_coords.shape[1] == 2:
                     delta_signed = np.tanh((0.0 - cart_src[edge_src, 2]) / 2.0)
-                elif src_coords.shape[1] == 2 and dst_coords.shape[1] == 3:
+                elif src_coords.shape[1] == 2 and dst_coords.shape[1] >= 3:
                     delta_signed = np.tanh((cart_dst[edge_dst, 2] - 0.0) / 2.0)
                 else:
                     delta_signed = np.zeros(len(edge_src), dtype=np.float32)
@@ -578,11 +620,7 @@ class EarthSystemAdapter(Dataset):
                 attr_tensor = torch.cat([dist_tensor, weight_tensor, delta_elev_tensor], dim=-1)
                 
                 # Semantic Verb Resolver
-                if src_name == 'regime':
-                    verb = 'summarizes'
-                elif dst_name == 'regime':
-                    verb = 'encodes'
-                elif src_name == dst_name:
+                if src_name == dst_name:
                     verb = 'observes'
                 elif src_name == 'tahmo':
                     verb = 'corrects'
