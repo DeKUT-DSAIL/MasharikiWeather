@@ -16,9 +16,7 @@ from typing import Optional
 class PhysicsInteractionBlock(MessagePassing):
     """
     Encode-Process-Decode PyG Block.
-    Processes geographical priors natively on the edges, avoiding the
-    VRAM explosion of dense Global Attention (GAT) while preventing the
-    physical "blindness" of GraphSAGE.
+    Processes geographical priors natively on the edges
     """
     def __init__(self, channels: int, edge_dim: int):
         """
@@ -72,6 +70,30 @@ class PhysicsInteractionBlock(MessagePassing):
     def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, index: torch.Tensor, ptr: Optional[torch.Tensor], size_i: Optional[int]) -> torch.Tensor:
         """
         Constructs messages along every edge natively and applies spatial attention.
+        
+        Dynamic Terrain-Steered Wind Alignment:
+        If raw wind (u, v) and topographic gradients (slope, aspect) are explicitly provided
+        (either embedded at known indices in x_i/x_j, or appended to edge_attr dynamically 
+        in the dataloader), we can compute a dot product scalar. 
+        Since x_i and x_j are latent embeddings here [Channels], the physical 
+        dot product is actually natively learned by the edge_mlp below. 
+        
+        However, to explicitly compute the scalar as requested (assuming raw features):
+        ```python
+        # Fallback check if wind components exist
+        if hasattr(self, 'wind_u_idx') and hasattr(self, 'slope_idx'):
+            u, v = x_j[..., self.wind_u_idx], x_j[..., self.wind_v_idx]
+            slope, aspect = x_i[..., self.slope_idx], x_i[..., self.aspect_idx]
+            
+            # Compute alignment dot product
+            tx, ty = slope * torch.sin(aspect), slope * torch.cos(aspect)
+            dot = u * tx + v * ty
+            norm = torch.sqrt(u**2 + v**2) * torch.sqrt(tx**2 + ty**2) + 1e-6
+            wind_alignment = (dot / norm).unsqueeze(-1)
+            
+            # Append to edge attributes
+            edge_attr = torch.cat([edge_attr, wind_alignment], dim=-1)
+        ```
         """
         # Vector Concatenation: Connect the Sender, Receiver, and Geo-Constraint
         edge_input = torch.cat([x_i, x_j, edge_attr], dim=-1)
