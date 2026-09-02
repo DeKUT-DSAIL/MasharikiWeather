@@ -966,7 +966,7 @@ class MasharikiWeatherDataset:
         
         # 2. Mass Conservation (Precipitation)
         if any(kw in var_lower for kw in ['precip', 'rain', 'tp', 'pr']):
-            return "linear"
+            return "patch_flat"
             
         # 3. Extreme / Turbulent Variables (Wind Gusts)
         elif any(kw in var_lower for kw in ['gust', 'fg10']):
@@ -1846,8 +1846,8 @@ class MasharikiWeatherDataset:
         Returns:
             Windows: Windows of data.
         """
-        if split is not None and split not in ["train", "test"]:
-            raise ValueError(f"Invalid split value: {split}. Expected 'train' or 'test'.")
+        if split is not None and split not in ["train", "val", "test"]:
+            raise ValueError(f"Invalid split value: {split}. Expected 'train', 'val', or 'test'.")
 
         if ml_task not in ["downscaling", "forecasting", "correction", "anomaly_detection"]:
             raise ValueError("ml_task must be 'downscaling', 'forecasting', 'correction', or 'anomaly_detection'.")
