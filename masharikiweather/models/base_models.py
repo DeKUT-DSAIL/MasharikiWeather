@@ -9,9 +9,68 @@ and routes exactly as demanded by the dataloader outputs.
 
 import torch
 import torch.nn.functional as F
-from torch.nn import Linear, ModuleDict, LayerNorm
+from torch.nn import Linear, ModuleDict, LayerNorm, GRU, MultiheadAttention
 from torch_geometric.nn import HeteroConv
 from typing import Dict, Tuple
+from tsl.nn.blocks.encoders import RNN
+
+class RetrospectiveTemporalCrossAttentionDecoder(torch.nn.Module):
+    """
+    Non-causal temporal cross-attention decoder for retrospective weather analysis.
+    - Query (Q): Updated spatial GNN embedding [Nodes, Channels]
+    - Key (K) & Value (V): Full local history sequence [Nodes, Time, Channels]
+    """
+    def __init__(self, channels: int, horizon_size: int, output_dim: int = 1, num_heads: int = 4):
+        super().__init__()
+        self.horizon_size = horizon_size
+        self.output_dim = output_dim
+        
+        # Multihead attention (batch_first=True expects [Batch/Nodes, SeqLen, EmbedDim])
+        self.cross_attn = MultiheadAttention(
+            embed_dim=channels, 
+            num_heads=num_heads, 
+            batch_first=True
+        )
+        self.norm = LayerNorm(channels)
+        
+        # Hurdle Model Heads (Occurrence + Intensity)
+        self.occ_proj = Linear(channels, output_dim * horizon_size)
+        self.int_proj = torch.nn.Sequential(
+            Linear(channels, channels),
+            torch.nn.SiLU(),
+            Linear(channels, output_dim * horizon_size),
+            torch.nn.Softplus()
+        )
+
+    def forward(self, z_spatial: torch.Tensor, h_temporal_seq: torch.Tensor):
+        """
+        Args:
+            z_spatial: GNN spatial embeddings from HeteroConv [Nodes, Channels]
+            h_temporal_seq: GRU temporal sequence states [Nodes, Time, Channels]
+        Returns:
+            logits: Occurrence logits [Nodes, Horizon, Output_Dim]
+            intensity: Rainfall intensity [Nodes, Horizon, Output_Dim]
+        """
+        # 1. Expand spatial state to act as Query [Nodes, 1, Channels]
+        query = z_spatial.unsqueeze(1)
+        
+        # 2. Assign Keys and Values from the full temporal history sequence
+        key = h_temporal_seq
+        value = h_temporal_seq
+        
+        # 3. Cross-Attention (No causal mask applied because task is retrospective)
+        attn_out, _ = self.cross_attn(query=query, key=key, value=value, need_weights=False)
+        
+        # Residual connection and layer normalization
+        z_decoded = self.norm(query + attn_out).squeeze(1) # [Nodes, Channels]
+        
+        # 4. Project to Two-Headed Hurdle outputs
+        n_nodes = z_decoded.shape[0]
+        logits = self.occ_proj(z_decoded).reshape(n_nodes, self.horizon_size, self.output_dim)
+        intensity = self.int_proj(z_decoded).reshape(n_nodes, self.horizon_size, self.output_dim)
+        
+        return logits, intensity
+
 
 from .interaction_network import PhysicsInteractionBlock
 
@@ -39,9 +98,23 @@ class PrecipAnomalyDetector(torch.nn.Module):
         # -----------------------------------------------------
         # 1. The Encoders
         # -----------------------------------------------------
-        # Independent linear layers map disparate data sources (e.g IMERG, ERA5, TAHMO)
-        # into a shared mathematical latent dimension without forced interpolation.
-        self.embeddings = ModuleDict({
+        # Local Temporal Encoders (Per Node Type)
+        # Operates on [Nodes, Time, Features] to capture sequential storm patterns
+        # We use TSL's RNN block natively
+        self.temporal_encoders = ModuleDict({
+            node_type: RNN(
+                input_size=in_channels, 
+                hidden_size=hidden_channels, 
+                return_only_last_state=False,
+                n_layers=2,
+                dropout=0.1,
+                cell='gru'
+            )
+            for node_type, in_channels in in_channels_dict.items()
+        })
+        
+        # Fallback for static nodes (like topography) that lack a time dimension
+        self.static_encoders = ModuleDict({
             node_type: Linear(in_channels, hidden_channels)
             for node_type, in_channels in in_channels_dict.items()
         })
@@ -71,7 +144,11 @@ class PrecipAnomalyDetector(torch.nn.Module):
         # 3. The Decoder
         # -----------------------------------------------------
         # Maps the latent representation back to the original physical target (TAHMO precipitation)
-        self.decoder = Linear(hidden_channels, self.tahmo_params * self.horizon_size)
+        self.decoder = RetrospectiveTemporalCrossAttentionDecoder(
+            channels=hidden_channels, 
+            horizon_size=self.horizon_size, 
+            output_dim=self.tahmo_params
+        )
 
     def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict):
         """
@@ -79,14 +156,21 @@ class PrecipAnomalyDetector(torch.nn.Module):
         """
         # A. Encode
         z_dict = {}
+        h_seq_dict = {}
         for node_type, x in x_dict.items():
-            # Dynamically flatten 3D spatiotemporal tensors (e.g., [Nodes, Time, Params])
-            # into 2D Graph Nodes [Nodes, Channels * Time]
+            z = None
             if x.dim() == 3:
-                x = x.reshape(x.size(0), -1)
+                # [Nodes, Time, Features] -> [Nodes, Time, hidden_channels]
+                if node_type in self.temporal_encoders:
+                    h_seq = self.temporal_encoders[node_type](x)
+                    h_seq_dict[node_type] = h_seq
+                    z = h_seq[:, -1, :] # Last state for GNN
+            else:
+                # Fallback for static nodes without a time dimension (e.g., topography)
+                if node_type in self.static_encoders:
+                    z = self.static_encoders[node_type](x)
 
-            if node_type in self.embeddings:
-                z = self.embeddings[node_type](x)
+            if z is not None and node_type in self.norms:
                 z = self.norms[node_type](z)
                 z_dict[node_type] = F.silu(z)
 
@@ -100,13 +184,13 @@ class PrecipAnomalyDetector(torch.nn.Module):
 
         # C. Decode (Task Specific Reconstruction)
         # In this task, we specifically target TAHMO anomaly reconstruction
-        if 'tahmo' in z_dict:
+        if 'tahmo' in z_dict and 'tahmo' in h_seq_dict:
             z_tahmo = F.silu(z_dict['tahmo'])
-            # Softplus bounds precipitation to physical reality [0, inf) preventing log(Negative) crashing
-            reconstructed_flat = F.softplus(self.decoder(z_tahmo))
-
-            # D. Unflatten back to physical reality [Nodes, Horizon, Channels]
-            return reconstructed_flat.reshape(-1, self.horizon_size, self.tahmo_params)
+            h_seq_tahmo = h_seq_dict['tahmo']
+            
+            logits, intensity = self.decoder(z_tahmo, h_seq_tahmo)
+            
+            return logits, intensity
         
         # Fallback if predicting diverse target grids instead of specific stations
         return z_dict
