@@ -18,35 +18,64 @@ class TweedieDevianceLoss(nn.Module):
         self.eps = eps
         self.reduction = reduction
 
-    def forward(self, mu: torch.Tensor, y: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, 
+        mu: torch.Tensor, 
+        y: torch.Tensor, 
+        valid_mask: torch.Tensor = None, 
+        mae_mask: torch.Tensor = None
+    ) -> torch.Tensor:
         """
         mu: The predicted mean (emitted strictly post-SoftplusLink), must be > 0.
         y: The true raw observation, bounding at 0.0.
-        mask: Boolean mask indicating physical valid sensors vs hardware outages.
+        valid_mask: Boolean mask indicating physical valid sensors vs hardware outages.
+        mae_mask: Boolean mask indicating artificially hidden patches for MAE.
         """
         # Clamp bounds strictly preventing exponential `NaN` logic crashes
         mu = torch.clamp(mu, min=self.eps)
         
         # Guard against unpadded NaNs bypassing dataloader
+        # Update valid mask before zeroing NaNs so they aren't scored as 0mm
+        finite_mask = torch.isfinite(y) & torch.isfinite(mu)
+        if valid_mask is not None:
+            valid_mask = valid_mask & finite_mask
+        else:
+            valid_mask = finite_mask
+            
         y = torch.nan_to_num(y, nan=0.0)
         y = torch.clamp(y, min=0.0)
 
-        a = y * (torch.pow(y + self.eps, 1 - self.p) - torch.pow(mu, 1 - self.p)) / (1 - self.p)
-        b = (torch.pow(y + self.eps, 2 - self.p) - torch.pow(mu, 2 - self.p)) / (2 - self.p)
+        a = y * (torch.pow(y, 1 - self.p) - torch.pow(mu, 1 - self.p)) / (1 - self.p)
+        b = (torch.pow(y, 2 - self.p) - torch.pow(mu, 2 - self.p)) / (2 - self.p)
+        
+        # Where y == 0, the first term (a) is analytically 0. Force it to avoid NaN.
+        a = torch.where(y == 0, torch.zeros_like(a), a)
+        b = torch.where(y == 0, - torch.pow(mu, 2 - self.p) / (2 - self.p), b)
         
         deviance = 2 * (a - b)
         
-        # Apply sparse valid sensor boolean mask
-        if mask is not None:
-            deviance = deviance * mask.float()
-            return deviance.sum() / (mask.float().sum() + self.eps)
+        # Combine hardware validity mask and optional MAE corruption mask
+        combined_mask = torch.ones_like(deviance)
+        if valid_mask is not None:
+            combined_mask = combined_mask * valid_mask.float()
+        if mae_mask is not None:
+            # Squeeze channel/feature dim if needed to match broadcasting
+            if mae_mask.ndim < combined_mask.ndim:
+                mae_mask = mae_mask.unsqueeze(-1)
+            combined_mask = combined_mask * mae_mask.float() # Evaluate ONLY on masked-out tokens
+            
+        deviance = deviance * combined_mask
+        sum_mask = combined_mask.sum()
         
-        if self.reduction == 'mean':
-            return deviance.mean()
-        elif self.reduction == 'sum':
-            return deviance.sum()
+        if sum_mask > 0:
+            if self.reduction == 'mean':
+                return deviance.sum() / (sum_mask + self.eps)
+            elif self.reduction == 'sum':
+                return deviance.sum()
+            else:
+                return deviance
         else:
-            return deviance
+            return torch.tensor(0.0, device=mu.device, requires_grad=True)
 
 class RMSELoss(nn.Module):
     """
