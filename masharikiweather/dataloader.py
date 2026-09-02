@@ -18,6 +18,7 @@ Graph Construction:
 import os
 import random
 import torch
+from torch_cluster import knn
 import torch.distributed as dist
 from torch.utils.data import Dataset, DistributedSampler
 import numpy as np
@@ -163,10 +164,12 @@ class EarthSystemAdapter(Dataset):
         k_grid: int = 4,
         n_regime_nodes: int = 16,
         tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
+        projection_type: Literal["graphcast_3d", "esfm_fourier", "raw"] = "esfm_fourier",
     ):
         self.windows = windows
         self.ml_task = ml_task
         self.n_regime_nodes = n_regime_nodes
+        self.projection_type = projection_type
 
         # Station-graph geometry: n_stations and n_params for PyG reshape.
         station_labels = getattr(windows, 'station_labels', None)
@@ -209,26 +212,8 @@ class EarthSystemAdapter(Dataset):
         self.window_size = self.station_x.shape[1] if self.station_x is not None else 0
         self.horizon_size = self.station_y.shape[1] if self.station_y is not None else 0
 
-        # 2. Pre-cast Topographic Priors: Stations
-        self.station_static = None
-        if windows.station_static is not None:
-            self.station_static = torch.as_tensor(
-                windows.station_static, dtype=torch.float32
-            )
-
-        # 3. Pre-cast Topographic Priors: Native High-Resolution Bipartite DEM Nodes
-        self.native_topography = None
-        self.native_topography_categorical = None
-
-        if getattr(windows, 'native_topography', None) is not None:
-            raw_topo = windows.native_topography
-            if hasattr(raw_topo, 'to_array'):
-                raw_topo = raw_topo.to_array().values
-            self.native_topography = torch.as_tensor(raw_topo, dtype=torch.float32)
-
-        if getattr(windows, 'native_topography_categorical', None) is not None:
-            raw_cat = windows.native_topography_categorical
-            self.native_topography_categorical = torch.as_tensor(raw_cat, dtype=torch.int64)
+        # 2 & 3. Pre-cast Topographic Priors & Build Node Spatial Features
+        self._build_node_features()
 
         # 4. Initialize Scientific Scaling Engine
         self.scaling_engine = ScalingEngine(
@@ -241,20 +226,102 @@ class EarthSystemAdapter(Dataset):
         self._cached_edges: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
         self._build_hetero_edges(k_stations=k_stations, k_grid=k_grid)
 
-    def _fetch_geotessera_embeddings(self, coords: np.ndarray, prefix: int = 16) -> np.ndarray:
+    def _build_node_features(self):
+        """Builds static node features, applying selected spatial projections."""
+        # 1. Point Station Nodes
+        self.station_static = None
+        if self.windows.station_static is not None:
+            station_features = [self.windows.station_static]
+            st_coords = getattr(self.windows, 'station_coords', None)
+            
+            if st_coords is not None:
+                proj_coords = self._project_coordinates(st_coords, self.projection_type)
+                station_features.append(proj_coords)
+                # Append raw coordinates for debugging metadata
+                station_features.append(st_coords)
+                
+            combined = np.concatenate(station_features, axis=1)
+            self.station_static = torch.as_tensor(combined, dtype=torch.float32)
+
+        # 2. Native High-Resolution Bipartite DEM Nodes
+        self.native_topography = None
+        self.native_topography_categorical = None
+        
+        if getattr(self.windows, 'native_topography', None) is not None:
+            raw_topo = self.windows.native_topography
+            if hasattr(raw_topo, 'to_array'):
+                raw_topo = raw_topo.to_array().values
+                
+            topo_features = [raw_topo]
+            
+            # Apply spatial projection to grid coordinates if available
+            t_lats = getattr(self.windows, 'native_topography_lats', None)
+            t_lons = getattr(self.windows, 'native_topography_lons', None)
+            
+            if t_lats is not None and t_lons is not None:
+                # Create meshgrid
+                t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
+                t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
+                
+                # Project
+                proj_coords = self._project_coordinates(t_coords, self.projection_type)
+                
+                # Reshape to match raw_topo (Channels, Lat, Lon)
+                n_lat, n_lon = len(t_lats), len(t_lons)
+                proj_coords_reshaped = proj_coords.T.reshape(-1, n_lat, n_lon)
+                t_coords_reshaped = t_coords.T.reshape(-1, n_lat, n_lon)
+                
+                topo_features.append(proj_coords_reshaped)
+                # Append raw coordinates as debugging metadata
+                topo_features.append(t_coords_reshaped)
+                
+            combined_topo = np.concatenate(topo_features, axis=0)
+            self.native_topography = torch.as_tensor(combined_topo, dtype=torch.float32)
+
+        if getattr(self.windows, 'native_topography_categorical', None) is not None:
+            raw_cat = self.windows.native_topography_categorical
+            self.native_topography_categorical = torch.as_tensor(raw_cat, dtype=torch.int64)
+
+    def _project_coordinates(self, coords: np.ndarray, projection_type: str) -> np.ndarray:
         """
-        Fetches TESSERA v2 16-D Matryoshka embeddings for given coordinates.
-        Uses a dummy fallback if the `geotessera` library is not installed.
+        Projects raw (lat, lon) coordinates into spatial embeddings based on the selected mode.
         """
-        try:
-            import geotessera
-            # Simulated client call
-            return geotessera.get_embeddings(coords, prefix=prefix)
-        except ImportError:
-            # Fallback for demo/development: zeros or deterministic pseudo-random features
-            # to preserve architecture shape [N, 16]
-            np.random.seed(42)
-            return np.random.randn(len(coords), prefix).astype(np.float32) * 0.1
+        if coords is None or len(coords) == 0:
+            return coords
+
+        lat, lon = coords[:, 0], coords[:, 1]
+
+        if projection_type == "graphcast_3d":
+            # Option A: GraphCast 3D Cartesian (Unit Sphere)
+            lat_rad = np.radians(lat)
+            lon_rad = np.radians(lon)
+            x = np.cos(lat_rad) * np.cos(lon_rad)
+            y = np.cos(lat_rad) * np.sin(lon_rad)
+            z = np.sin(lat_rad)
+            return np.stack([x, y, z], axis=1).astype(np.float32)
+            
+        elif projection_type == "esfm_fourier":
+            # Option B: ESFM High-Resolution 2D Sine-Cosine (Fourier)
+            # Scaling down frequency to 10^-5 degrees for point-scale locality
+            scale = 1e-5
+            lat_scaled = lat / scale
+            lon_scaled = lon / scale
+            
+            # Using 4 frequencies to capture varying scales of locality
+            freqs = np.array([1.0, 2.0, 4.0, 8.0])
+            
+            emb = []
+            for f in freqs:
+                emb.append(np.sin(2 * np.pi * lat_scaled / f))
+                emb.append(np.cos(2 * np.pi * lat_scaled / f))
+                emb.append(np.sin(2 * np.pi * lon_scaled / f))
+                emb.append(np.cos(2 * np.pi * lon_scaled / f))
+                
+            return np.stack(emb, axis=1).astype(np.float32)
+            
+        else:
+            # "raw" or default
+            return coords.astype(np.float32)
 
     # ------------------------------------------------------------------
     # Graph Construction (Executed Once)
@@ -265,25 +332,21 @@ class EarthSystemAdapter(Dataset):
         Implements 3D Anisotropic Distance: 
           d = sqrt( d_geo^2 + lambda * d_alt^2 )
         """
-        from sklearn.neighbors import NearestNeighbors
-        
+        pass
         # Override K for scientific density alignment (k=12 provides better multi-modal convergence)
         k_grid = max(k_grid, 12)
 
         # 1. Discover all spatial sources
         sources = {} 
         
-        # Station Coords (Lat, Lon, Alt, + 16D TESSERA)
+        # Station Coords (Lat, Lon, Alt)
         st_coords = getattr(self.windows, 'station_coords', None)
         if st_coords is not None:
             # Assuming station_static contains Altitude at index 0 (Standard in Mashariki dataset)
             # If not, we fall back to 2D
             st_alt = self.windows.station_static[:, :1] if self.windows.station_static is not None else np.zeros((len(st_coords), 1))
             
-            # Fetch TESSERA v2 16-D embeddings
-            tessera_16d = self._fetch_geotessera_embeddings(st_coords, prefix=16)
-            
-            sources['tahmo'] = np.concatenate([st_coords, st_alt, tessera_16d], axis=1)
+            sources['tahmo'] = np.concatenate([st_coords, st_alt], axis=1)
 
         # Grid Coords (Lat, Lon) - No altitude interpolation for coarse grids
         for g_name in getattr(self.windows, 'grids_x', {}).keys():
@@ -411,9 +474,23 @@ class EarthSystemAdapter(Dataset):
 
                     if k_final < 1: continue
                     
-                    # KNN Search
-                    nbrs = NearestNeighbors(n_neighbors=k_final, algorithm='ball_tree').fit(knn_src)
-                    distances_scaled, indices = nbrs.kneighbors(knn_dst)
+                    # KNN Search via torch_cluster (CUDA Accelerated)
+                    
+                    knn_src_t = torch.tensor(knn_src, dtype=torch.float32)
+                    knn_dst_t = torch.tensor(knn_dst, dtype=torch.float32)
+                    
+                    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                    edge_index = knn(knn_src_t.to(device), knn_dst_t.to(device), k=k_final)
+                    
+                    dst_idx = edge_index[0].cpu().numpy()
+                    src_idx = edge_index[1].cpu().numpy()
+                    
+                    # Ensure deterministic sorting for reshaping
+                    sort_order = np.argsort(dst_idx, kind='mergesort')
+                    src_idx = src_idx[sort_order]
+                    
+                    indices = src_idx.reshape(len(dst_coords), k_final)
+                    distances_scaled = np.linalg.norm(knn_src[indices] - knn_dst[:, None, :], axis=-1)
                     
                     # Initialize similarities and mask
                     sigma = np.std(distances_scaled) if np.std(distances_scaled) > 0 else 1.0
@@ -682,9 +759,6 @@ class EarthSystemAdapter(Dataset):
             target_tensor = torch.cat([target_tensor, time_y_expanded], dim=1)
 
             data[target_node].y = self._reshape_grid_for_pyg(target_tensor)
-
-        # 3. Global Coordinates Mapping (Temporal Encodings)
-        # Moved to Step 0 to physically inject time into all PyG Spatial Nodes natively.
 
         # 4. Point-Station Nodes
         # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
