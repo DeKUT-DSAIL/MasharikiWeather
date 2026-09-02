@@ -10,8 +10,8 @@ to simulate Earth System advection dynamics over heterogeneous meshes.
 import torch
 from torch import nn
 from torch_geometric.nn import MessagePassing
-
 from torch_geometric.utils import softmax
+from typing import Optional
 
 class PhysicsInteractionBlock(MessagePassing):
     """
@@ -73,10 +73,6 @@ class PhysicsInteractionBlock(MessagePassing):
         """
         Constructs messages along every edge natively and applies spatial attention.
         """
-        # Sanitize scalar edge attributes into 2D matrices
-        if edge_attr.dim() == 1:
-            edge_attr = edge_attr.view(-1, 1)
-
         # Vector Concatenation: Connect the Sender, Receiver, and Geo-Constraint
         edge_input = torch.cat([x_i, x_j, edge_attr], dim=-1)
         
