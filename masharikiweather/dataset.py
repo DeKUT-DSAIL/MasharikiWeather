@@ -1915,10 +1915,15 @@ class MasharikiWeatherDataset:
                 copy=True,
             )
 
+        station_static_whitelist = [
+            'dem', 'Slope', 'Aspect_sin', 'Aspect_cos', 
+            'LandCover', 'DistanceToWater', 'TPI_2000M'
+        ]
+        available_static = [c for c in station_static_whitelist if c in self.stations_table.columns]
+        
         cat_cols = ['LandCover']
-        all_static = [c for c in self.stations_table.columns if c not in ['latitude', 'longitude', 'network']]
-        valid_cat = [c for c in cat_cols if c in all_static]
-        valid_cont = [c for c in all_static if c not in valid_cat]
+        valid_cat = [c for c in cat_cols if c in available_static]
+        valid_cont = [c for c in available_static if c not in valid_cat]
 
         windows = Windows(
             station_x=np.array([]), station_mask_x=np.array([]),
