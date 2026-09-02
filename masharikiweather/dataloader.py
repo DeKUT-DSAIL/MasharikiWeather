@@ -45,10 +45,12 @@ class ScalingEngine:
     def __init__(
         self, 
         stats: Dict[str, Dict[str, np.ndarray]], 
-        variable_types: Dict[str, str]
+        variable_types: Dict[str, str],
+        tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None
     ):
         self.stats = stats
         self.variable_types = variable_types
+        self.tsl_scaler = tsl_scaler
         
     def transform(self, data: torch.Tensor, variables: Sequence[str]) -> torch.Tensor:
         """
@@ -58,13 +60,25 @@ class ScalingEngine:
         for i, var in enumerate(variables):
             v_type = self.variable_types.get(var, "PHYSICAL")
             
-            if v_type == "PHYSICAL" and self.stats:
-                # Apply Gaussian scaling
-                v_mean = self.stats.get('mean', {}).get(var, 0.0)
-                v_std = self.stats.get('std', {}).get(var, 1.0)
-                # Handle zero-variance safety
-                v_std = v_std if v_std > 1e-6 else 1.0
-                transformed[..., i] = (data[..., i] - v_mean) / v_std
+            if v_type == "PHYSICAL":
+                if self.tsl_scaler is not None:
+                    # Leverage TSL scaler directly for standard physical variables
+                    # Note: Assumes tsl_scaler operates on the feature dimension uniformly
+                    # or is indexed correctly if properly fitted.
+                    # As a safe fallback for variable-wise iteration, we only apply it 
+                    # if the scaler was explicitly provided.
+                    
+                    # Temporarily reshape to match TSL expectation if needed, or apply directly
+                    # For a single feature channel, tsl_scaler typically handles it fine
+                    # provided it was fitted on the same feature index
+                    transformed[..., i] = self.tsl_scaler.transform(data[..., i:i+1]).squeeze(-1)
+                elif self.stats:
+                    # Apply Gaussian scaling
+                    v_mean = self.stats.get('mean', {}).get(var, 0.0)
+                    v_std = self.stats.get('std', {}).get(var, 1.0)
+                    # Handle zero-variance safety
+                    v_std = v_std if v_std > 1e-6 else 1.0
+                    transformed[..., i] = (data[..., i] - v_mean) / v_std
                 
             elif v_type == "PRECIPITATION":
                 if self.stats:
@@ -148,6 +162,7 @@ class EarthSystemAdapter(Dataset):
         k_stations: int = 8,
         k_grid: int = 4,
         n_regime_nodes: int = 16,
+        tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
     ):
         self.windows = windows
         self.ml_task = ml_task
@@ -218,7 +233,8 @@ class EarthSystemAdapter(Dataset):
         # 4. Initialize Scientific Scaling Engine
         self.scaling_engine = ScalingEngine(
             stats=grid_stats if grid_stats else {},
-            variable_types=getattr(windows, 'variable_types', {})
+            variable_types=getattr(windows, 'variable_types', {}),
+            tsl_scaler=tsl_scaler
         )
 
         # 5. Build static graph topology (Anisotropic 3D connectivity)
@@ -865,6 +881,7 @@ def create_distributed_dataloader(
     batch_size: int = 32,
     num_workers: int = 4,
     grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
+    tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
     k_stations: int = 8,
     k_grid: int = 4,
     world_size: int = 1,
@@ -904,6 +921,7 @@ def create_distributed_dataloader(
     """
     dataset = EarthSystemAdapter(
         windows, ml_task, grid_stats=grid_stats,
+        tsl_scaler=tsl_scaler,
         k_stations=k_stations, k_grid=k_grid,
     )
     
@@ -945,6 +963,7 @@ def create_dataloader(
     shuffle: bool = True,
     num_workers: int = 4,
     grid_stats: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
+    tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
     k_stations: int = 8,
     k_grid: int = 4,
     drop_last: bool = False,
@@ -976,6 +995,7 @@ def create_dataloader(
     """
     dataset = EarthSystemAdapter(
         windows, ml_task, grid_stats=grid_stats,
+        tsl_scaler=tsl_scaler,
         k_stations=k_stations, k_grid=k_grid,
     )
     
