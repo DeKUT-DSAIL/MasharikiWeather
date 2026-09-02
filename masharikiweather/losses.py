@@ -297,3 +297,36 @@ class BootstrapTweediePower(nn.Module):
              p_values.append(max(1.1, min(1.9, p_est)))
              
         return sum(p_values) / len(p_values) if p_values else 1.5
+
+class HurdleLoss(nn.Module):
+    """
+    Combined Hurdle Loss:
+    - BCEWithLogitsLoss for precipitation occurrence across all spatial points.
+    - Masked MSE (or Gamma Deviance) evaluated exclusively where target > epsilon.
+    """
+    def __init__(self, eps: float = 0.1, pos_weight: float = 2.0):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=torch.tensor([pos_weight]))
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, intensity_pred: torch.Tensor, y_true: torch.Tensor, mask: torch.Tensor = None):
+        # Create binary occurrence target: 1 if precipitation occurred, 0 otherwise
+        target_bin = (y_true > self.eps).float()
+        
+        # 1. Occurrence Loss (BCE)
+        bce_loss = self.bce(logits, target_bin)
+        if mask is not None:
+            bce_loss = bce_loss * mask.float()
+        occurrence_loss = bce_loss.mean()
+        
+        # 2. Intensity Loss (Evaluated ONLY on positive precipitation points)
+        pos_mask = (target_bin > 0.5)
+        if mask is not None:
+            pos_mask = pos_mask & mask.bool()
+            
+        if pos_mask.sum() > 0:
+            intensity_loss = F.mse_loss(intensity_pred[pos_mask], y_true[pos_mask], reduction='mean')
+        else:
+            intensity_loss = torch.tensor(0.0, device=y_true.device)
+            
+        return occurrence_loss + intensity_loss
