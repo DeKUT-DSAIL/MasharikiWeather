@@ -45,7 +45,7 @@ from masharikiweather import MasharikiWeatherDataset
 ds = MasharikiWeatherDataset(
     repo_id="DeKUT-DSAIL/weather-data",
     token="YOUR_HF_TOKEN", 
-    source_obs=["tahmo", "ghcnd"], # Fusing hourly and daily networks
+    source_obs=["tahmo", "ghcnd"],
     freq="h", 
     years=[2023, 2024]
 )
@@ -63,8 +63,7 @@ ml_tensors = ds.get_windows(
     window_size=24,  # 24 hours of historical context
     horizon_size=6,  # 6 hours of prediction
     stations=['TA00001', 'TA00283'],
-    gridded_url=["era5"],
-    spatial_mode="grid"
+    gridded_url=["era5"]
 )
 
 print(ml_tensors.x) # Your aligned features
@@ -114,6 +113,24 @@ MasharikiWeather seeks to **bridge these gaps** through:
 | **IMERG** | Satellite | Global | Precipitation | Half-houly rainfall |
 | **Static Priors (EE)** | Earth Engine Layers | Africa | Elevation, Slope, Aspect, Land Cover, Distance to Water | Geophysical context |
 | **(Future)** ECMWF ML, FuXi, GraphCast, FourCastNet | Global | Precip, Temp, Wind, Radiation | ML & hybrid forecasts |
+
+---
+
+## Project Structure & Architecture
+
+The core logic is modularized inside the `masharikiweather` directory. Our current architecture emphasizes physical consistency, dynamic topological advection, and statistical rigor for handling highly skewed, zero-inflated weather data.
+
+### Core Data & Preprocessing (`masharikiweather/`)
+- **`dataset.py`**: The entry point for data ingestion. Manages the fusion of sparse ground stations (TAHMO/GHCNd) with gridded reanalysis/satellite products (ERA5, CHIRPS) and static priors, handling caching and variable alignment.
+- **`dataloader.py`**: Constructs the PyTorch Geometric (PyG) `HeteroData` tensors. Implements our graph topology (bipartite edges, 30-50km bounds) and computes terrain-steered wind advection scalars.
+- **`losses.py`**: Contains loss functions.
+- **`metrics.py`**: Contains evaluation metrics.
+- **`rechunker.py` / `utils.py`**: Core utilities for optimizing Dask/Zarr chunking for memory-efficient I/O and spatial bounding.
+- **`visualize_graph.py` / `visualize_graph_plotly.py`**: Tools for rendering the graph structures.
+
+### Deep Learning Models (`masharikiweather/models/`)
+- **`base_models.py`**: Contains our deep neural network architectures.
+- **`interaction_network.py`**: Implements our GNN logic.
 
 ---
 
