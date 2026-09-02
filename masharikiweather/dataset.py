@@ -1941,15 +1941,18 @@ class MasharikiWeatherDataset:
             # window_size is total context (e.g. 48h). Y is the midpoint.
             mid = window_size // 2
             
-            # X extracted from full sequence
-            windows.station_x = sliding_window_view(obs_np, window_size, axis=0)[::stride]
-            windows.station_mask_x = sliding_window_view(mask_np, window_size, axis=0)[::stride]
-            windows.index_x = sliding_window_view(observations.index.values, window_size, axis=0)[::stride]
+            x_slice = slice(None)
+            windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
+            windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index.values[x_slice], window_size, axis=0)[::stride]
+            
+            y_slice = slice(mid, len(obs_np) - (window_size - mid - 1))
+            y_is_single_point = True
             
             # Y extracted as the midpoint observation
-            y_pts = obs_np[mid : len(obs_np) - (window_size - mid - 1)]
-            m_pts = mask_np[mid : len(mask_np) - (window_size - mid - 1)]
-            i_pts = observations.index[mid : len(observations) - (window_size - mid - 1)].values
+            y_pts = obs_np[y_slice]
+            m_pts = mask_np[y_slice]
+            i_pts = observations.index.values[y_slice]
             
             # Ensure batch alignment (stride applied after slicing)
             windows.station_y = y_pts[::stride][:, np.newaxis, ...]
@@ -1968,12 +1971,15 @@ class MasharikiWeatherDataset:
             x_slice = slice(None, len(obs_np) - horizon_size - delay)
             windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
             windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
-            windows.index_x = sliding_window_view(observations.index[x_slice].values, window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index.values[x_slice], window_size, axis=0)[::stride]
             
             y_start = window_size + delay
-            windows.station_y = sliding_window_view(obs_np[y_start:], horizon_size, axis=0)[::stride]
-            windows.station_mask_y = sliding_window_view(mask_np[y_start:], horizon_size, axis=0)[::stride]
-            windows.index_y = sliding_window_view(observations.index[y_start:].values, horizon_size, axis=0)[::stride]
+            y_slice = slice(y_start, None)
+            y_is_single_point = False
+            
+            windows.station_y = sliding_window_view(obs_np[y_slice], horizon_size, axis=0)[::stride]
+            windows.station_mask_y = sliding_window_view(mask_np[y_slice], horizon_size, axis=0)[::stride]
+            windows.index_y = sliding_window_view(observations.index.values[y_slice], horizon_size, axis=0)[::stride]
             windows.valid_batch_indices = np.arange(0, len(observations) - sample_span + 1, stride)
             
         if valid_cont:
@@ -2102,7 +2108,10 @@ class MasharikiWeatherDataset:
                            grid_np = self._export_df(g_df, as_numpy=True, copy=False).astype(np.float32, copy=False)
                            windows.grids_features[g_name] = g_df.columns.unique(level=1).tolist()
                            windows.grids_x[g_name] = sliding_window_view(grid_np[x_slice], window_size, axis=0)[::stride][x_idx_mask]
-                           windows.grids_y[g_name] = sliding_window_view(grid_np[y_start:], horizon_size, axis=0)[::stride][x_idx_mask]
+                           if y_is_single_point:
+                               windows.grids_y[g_name] = grid_np[y_slice][::stride][x_idx_mask][:, np.newaxis, ...]
+                           else:
+                               windows.grids_y[g_name] = sliding_window_view(grid_np[y_slice], horizon_size, axis=0)[::stride][x_idx_mask]
                       else:
                            # Native Scale Preservation and Alignment
                            if group == "imerg":
