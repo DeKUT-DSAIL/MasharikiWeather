@@ -55,7 +55,7 @@ gridded_data = ds.get_gridded_for_stations(
     groups=["era5"], 
     stations=['TA00001', 'TA00283'], 
     variables=['total_precipitation'],
-    method="linear" # Bilinear interpolation
+    method_overrides={"total_precipitation": "linear"} # bilinear interpolation
 )
 
 # 3. Generate ML Tensors (Aligned and Windowed)
