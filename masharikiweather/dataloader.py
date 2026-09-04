@@ -30,6 +30,7 @@ from torch_geometric.data import HeteroData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from tsl.data.preprocessing import StandardScaler
 import dask
+import xarray as xr
 from .dataset import Windows
 
 
