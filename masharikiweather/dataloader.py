@@ -723,7 +723,7 @@ class EarthSystemAdapter(Dataset):
                 
                 # Permute to PyG node-feature standard: (Stations, Time, Params)
                 if tensor_x.dim() == 3:
-                    tensor_x = tensor_x.permute(1, 0, 2)
+                    tensor_x = tensor_x.permute(0, 2, 1)
                     # INJECT TEMPORAL ENCODINGS
                     S, T, P = tensor_x.shape
                     time_expanded = encoded_time.view(1, T, 6).expand(S, T, 6)
