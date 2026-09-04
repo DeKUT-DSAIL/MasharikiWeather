@@ -210,16 +210,16 @@ class PrecipAnomalyDetector(torch.nn.Module):
         tweedie = TweedieDevianceLoss(p=p)
         
         # Determine continuous daily clusters from 1D boolean array or assume continuous 24h strides
-        if hasattr(data, 'day_index') and data.day_index is not None:
+        if hasattr(data, 'constraint_time_index') and data.constraint_time_index is not None:
             # Flexible temporal mappings
-            num_days = int(data.day_index.max().item()) + 1
+            num_days = int(data.constraint_time_index.max().item()) + 1
             daily_preds = []
             for d in range(num_days):
-                mask = (data.day_index == d)
+                mask = (data.constraint_time_index == d)
                 daily_preds.append(pred_hourly[:, mask].sum(dim=1))
             daily_pred = torch.stack(daily_preds, dim=1)
         else:
-            # Assume naive 24-hr multiples if day_index isn't provided
+            # Assume naive 24-hr multiples if constraint_time_index isn't provided
             n_nodes, horizon, channels = pred_hourly.shape
             daily_pred = pred_hourly.view(n_nodes, -1, 24, channels).sum(dim=2)
             

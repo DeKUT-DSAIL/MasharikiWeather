@@ -70,9 +70,10 @@ class Windows:
     # These are NEVER used as sequential inputs. They exist solely for
     # physics-informed loss constraints in the training loop.
     # Keys are group names (e.g. 'chirps', 'tamsat').
-    daily_constraints: Dict[str, np.ndarray] = field(default_factory=dict)
-    daily_masks: Dict[str, np.ndarray] = field(default_factory=dict)
-    daily_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> day index
+    constraint_targets: Dict[str, np.ndarray] = field(default_factory=dict)
+    temporal_masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    constraint_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> constraint step index
+    constraint_resolution: Optional[str] = None
 
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
     """
@@ -92,6 +93,86 @@ def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
         windows = np_swv(a, window_shape, axis=0)
     # Force contiguous memory layout for safe PyTorch tensor conversion
     return np.ascontiguousarray(np.moveaxis(windows, -1, 1))
+
+def infer_temporal_metadata(ds: xr.Dataset, time_dim: str = "time") -> dict:
+    time_coord = ds[time_dim]
+    time_start = pd.Timestamp(time_coord[0].values)
+    time_end = pd.Timestamp(time_coord[-1].values)
+    
+    time_index = pd.DatetimeIndex(time_coord.values)
+    inferred_freq = pd.infer_freq(time_index)
+    
+    if inferred_freq is None and len(time_index) > 1:
+        deltas = pd.Series(time_index).diff().dropna()
+        median_delta = deltas.median()
+        inferred_freq = pd.tseries.frequencies.to_offset(median_delta).freqstr
+
+    return {
+        "native_temporal_freq": inferred_freq,
+        "time_start": time_start,
+        "time_end": time_end,
+    }
+
+def infer_spatial_metadata(ds: xr.Dataset, lat_dim: str = "lat", lon_dim: str = "lon") -> dict:
+    lat = ds[lat_dim]
+    lon = ds[lon_dim]
+    
+    return {
+        "lat_bounds": (float(lat.min().values), float(lat.max().values)),
+        "lon_bounds": (float(lon.min().values), float(lon.max().values)),
+    }
+
+def check_station_grid_resolution_compatibility(
+    station_freq: Optional[str],
+    grid_freq: Optional[str],
+    product_name: str,
+) -> None:
+    if station_freq is None or grid_freq is None:
+        return
+    try:
+        station_td = pd.Timedelta(pd.tseries.frequencies.to_offset(station_freq))
+        grid_td = pd.Timedelta(pd.tseries.frequencies.to_offset(grid_freq))
+    except Exception:
+        return
+
+    if grid_td < station_td:
+        warnings.warn(
+            f"[{product_name}] Grid resolution ({grid_freq}) is finer than "
+            f"station resolution ({station_freq}). Constraints or modeling "
+            f"at sub-station resolution will rely on assumptions.",
+            UserWarning,
+        )
+    elif station_td < grid_td:
+        warnings.warn(
+            f"[{product_name}] Station resolution ({station_freq}) is finer than "
+            f"grid resolution ({grid_freq}). You are requesting sub-native "
+            f"grid resolution which may involve unsafe upsampling.",
+            UserWarning,
+        )
+
+def validate_gridded_dataset(ds: xr.Dataset, product_name: str, requested_freq: Optional[str], bbox: Optional[Tuple[float, float, float, float]]) -> None:
+    # Validate spatial bounds
+    if bbox is not None:
+        spatial_meta = infer_spatial_metadata(ds)
+        lat_min, lon_min, lat_max, lon_max = bbox
+        grid_lat_min, grid_lat_max = spatial_meta["lat_bounds"]
+        grid_lon_min, grid_lon_max = spatial_meta["lon_bounds"]
+        
+        # If the requested bbox is entirely outside the dataset bounds, it's an error.
+        if (lat_max < grid_lat_min or lat_min > grid_lat_max or 
+            lon_max < grid_lon_min or lon_min > grid_lon_max):
+            raise ValueError(
+                f"[{product_name}] Requested bbox {bbox} is completely outside "
+                f"the dataset's native bounds: lats={spatial_meta['lat_bounds']}, "
+                f"lons={spatial_meta['lon_bounds']}."
+            )
+
+    # Validate temporal frequencies
+    temporal_meta = infer_temporal_metadata(ds)
+    native_freq = temporal_meta["native_temporal_freq"]
+    
+    if native_freq and requested_freq:
+        check_station_grid_resolution_compatibility(requested_freq, native_freq, product_name)
 
 def df_add_missing_columns(df: pd.DataFrame, col0, col1, fill_value=np.nan) -> pd.DataFrame:
     idx = pd.MultiIndex.from_product([col0, col1], names=['station_id', 'parameter'])
@@ -1263,6 +1344,14 @@ class MasharikiWeatherDataset:
                 if ds is None:
                     continue
                 
+                # Validate constraints dynamically
+                validate_gridded_dataset(
+                    ds, 
+                    product_name=group, 
+                    requested_freq=self.freq,
+                    bbox=None
+                )
+                
                 if pressure_levels is not None and 'level' in ds.coords:
                     v_levels = [l for l in pressure_levels if l in ds.level.values]
                     if v_levels:
@@ -1549,21 +1638,22 @@ class MasharikiWeatherDataset:
         stations: Optional[Union[str, List[str]]] = None,
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
+        constraint_freq: str = "1D",
     ) -> Windows:
         """
-        Optional: Extract daily precipitation totals from CHIRPS/TAMSAT and
+        Optional: Extract aggregated precipitation totals from CHIRPS/TAMSAT and
         attach them to an existing Windows object as mass conservation targets.
 
         This method does NOT modify the sequential inputs (station_x, grids_x).
-        It populates windows.daily_constraints and windows.daily_masks exclusively.
+        It populates windows.constraint_targets and windows.temporal_masks exclusively.
 
         Only groups in ["chirps", "tamsat"] are accepted. All others raise ValueError.
 
         Mathematical justification:
             The mass conservation constraint enforces:
-                sum_{t in day} P_hat(t) = P_daily
-            where P_hat(t) are the hourly predictions and P_daily is the
-            observed daily total from CHIRPS or TAMSAT. This is evaluated
+                sum_{t in constraint_freq} P_hat(t) = P_target
+            where P_hat(t) are the hourly predictions and P_target is the
+            observed aggregated total from CHIRPS or TAMSAT. This is evaluated
             via Tweedie Deviance Loss in the training loop.
 
         Args:
@@ -1573,9 +1663,10 @@ class MasharikiWeatherDataset:
             stations: Stations to extract for. Defaults to windows.station_labels.
             first_date: Optional temporal lower bound.
             last_date: Optional temporal upper bound.
+            constraint_freq: Pandas frequency string for mass conservation aggregation (e.g., '1D', 'W', 'ME').
 
         Returns:
-            The same Windows object with daily_constraints and daily_masks populated.
+            The same Windows object with constraint_targets and temporal_masks populated.
         """
         import warnings
 
@@ -1609,19 +1700,19 @@ class MasharikiWeatherDataset:
         if not ext_dfs:
             warnings.warn(
                 f"No data extracted for mass conservation groups {groups}. "
-                "Windows will have empty daily_constraints.",
+                "Windows will have empty constraint_targets.",
                 UserWarning
             )
             return windows
 
-        # Align daily totals to the hourly window temporal extent
-        # Use the hourly observation index from the windows to determine day boundaries
+        # Align target totals to the hourly window temporal extent
+        # Use the hourly observation index from the windows to determine constraint boundaries
         if windows.index_x is not None and len(windows.index_x) > 0:
             # The last timestamp of each window defines its reference time
             hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
         else:
             warnings.warn(
-                "Cannot align daily constraints: windows.index_x is empty.",
+                "Cannot align constraints: windows.index_x is empty.",
                 UserWarning
             )
             return windows
@@ -1639,51 +1730,51 @@ class MasharikiWeatherDataset:
             if mask_df.index.tz is not None:
                 mask_df.index = mask_df.index.tz_localize(None)
 
-            # Resample to daily sums (native resolution for CHIRPS/TAMSAT)
-            # For products already at daily resolution, this is a no-op identity
-            daily_df = df.resample("1D").sum(min_count=1)
-            daily_mask = mask_df.resample("1D").max()  # Missing if ANY hour is missing
+            # Resample to requested constraint freq
+            target_df = df.resample(constraint_freq).sum(min_count=1)
+            target_mask = mask_df.resample(constraint_freq).max()  # Missing if ANY timestep is missing
 
-            # Map each hourly window reference time to its corresponding day
-            ref_dates = hourly_index.normalize()  # Floor to day
-            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
+            # Map each hourly window reference time to its corresponding constraint interval
+            ref_dates = hourly_index.floor(constraint_freq) if hasattr(hourly_index, 'floor') else pd.DatetimeIndex([d.floor(constraint_freq) for d in hourly_index])
+            unique_targets = pd.DatetimeIndex(sorted(ref_dates.unique()))
 
-            # Find overlapping days between the daily product and the window span
-            overlap_days = unique_days.intersection(daily_df.index)
-            if len(overlap_days) == 0:
+            # Find overlapping intervals between the aggregated product and the window span
+            overlap_targets = unique_targets.intersection(target_df.index)
+            if len(overlap_targets) == 0:
                 warnings.warn(
-                    f"No temporal overlap between {group} daily data and window span. "
+                    f"No temporal overlap between {group} {constraint_freq} aggregated data and window span. "
                     f"Skipping constraint for {group}.",
                     UserWarning
                 )
                 continue
 
-            # Build the day_index mapping: for each window sample, which day does it belong to?
-            day_to_idx = {d: i for i, d in enumerate(overlap_days)}
-            day_index = np.array([day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64)
+            # Build the constraint_index mapping: for each window sample, which interval does it belong to?
+            target_to_idx = {d: i for i, d in enumerate(overlap_targets)}
+            target_index = np.array([target_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64)
 
-            # Filter windows that have valid day mappings
-            valid_mask = day_index >= 0
+            # Filter windows that have valid interval mappings
+            valid_mask = target_index >= 0
 
             # Extract the constraint values as numpy arrays
-            # Shape: (n_days, n_stations * n_params)
-            constraint_vals = daily_df.loc[overlap_days].values.astype(np.float32)
-            constraint_mask_vals = daily_mask.loc[overlap_days].values.astype(np.float32)
+            # Shape: (n_intervals, n_stations * n_params)
+            constraint_vals = target_df.loc[overlap_targets].values.astype(np.float32)
+            constraint_mask_vals = target_mask.loc[overlap_targets].values.astype(np.float32)
 
             # Replace NaN with 0 in constraint values (masked out by the mask anyway)
             constraint_vals = np.nan_to_num(constraint_vals, nan=0.0)
 
-            windows.daily_constraints[group] = constraint_vals
-            windows.daily_masks[group] = constraint_mask_vals
+            windows.constraint_targets[group] = constraint_vals
+            windows.temporal_masks[group] = constraint_mask_vals
+            windows.constraint_resolution = constraint_freq
 
-        # Build the day_index from the last processed group (shared temporal axis)
+        # Build the constraint_index from the last processed group (shared temporal axis)
         if windows.index_x is not None and len(windows.index_x) > 0:
             hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
-            ref_dates = hourly_index.normalize()
-            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
-            day_to_idx = {d: i for i, d in enumerate(unique_days)}
-            windows.daily_time_index = np.array(
-                [day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64
+            ref_dates = hourly_index.floor(constraint_freq) if hasattr(hourly_index, 'floor') else pd.DatetimeIndex([d.floor(constraint_freq) for d in hourly_index])
+            unique_targets = pd.DatetimeIndex(sorted(ref_dates.unique()))
+            target_to_idx = {d: i for i, d in enumerate(unique_targets)}
+            windows.constraint_time_index = np.array(
+                [target_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64
             )
 
         return windows
@@ -2057,6 +2148,14 @@ class MasharikiWeatherDataset:
                       for year in target_years:
                            ds = self._open_gridded_zarr(group, year, lazy=True)
                            if ds is None: continue
+                           
+                           # Validate constraints dynamically
+                           validate_gridded_dataset(
+                               ds, 
+                               product_name=group, 
+                               requested_freq=temporal_resolution or self.freq,
+                               bbox=bbox
+                           )
                            
                            if first_date or last_date:
                                f_dt = pd.to_datetime(first_date, utc=True).tz_localize(None) if first_date else None
