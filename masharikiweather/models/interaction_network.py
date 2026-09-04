@@ -71,7 +71,7 @@ class PhysicsInteractionBlock(MessagePassing):
         """
         Constructs messages along every edge natively and applies spatial attention.
         
-        Dynamic Terrain-Steered Wind Alignment:
+        Terrain-Steered Wind Alignment:
         If raw wind (u, v) and topographic gradients (slope, aspect) are explicitly provided
         (either embedded at known indices in x_i/x_j, or appended to edge_attr dynamically 
         in the dataloader), we can compute a dot product scalar. 
@@ -127,3 +127,41 @@ class PhysicsInteractionBlock(MessagePassing):
         
         # Residual connection avoids over-smoothing across deep message passing steps
         return x_target + self.node_mlp(node_input)
+
+class BaselineInteractionBlock(nn.Module):
+    """
+    A simplified baseline GNN block for spatial processing.
+    Uses standard PyG HeteroConv with SAGEConv for straightforward neighbor aggregation,
+    bypassing complex physics-informed edge advection.
+    """
+    def __init__(self, channels: int, edge_types: list):
+        """
+        Args:
+            channels (int): Dimensionality of node embeddings.
+            edge_types (list): List of edge type tuples in the heterogeneous graph, 
+                               e.g., [('grid', 'to', 'station'), ('station', 'to', 'station')]
+        """
+        super().__init__()
+        from torch_geometric.nn import HeteroConv, SAGEConv
+        
+        # Build a simple dictionary of SAGEConv layers for each edge type
+        convs = {
+            edge_type: SAGEConv(
+                in_channels=(channels, channels), 
+                out_channels=channels,
+                aggr='mean'
+            )
+            for edge_type in edge_types
+        }
+        
+        # HeteroConv aggregates messages across different edge types targeting the same node type
+        self.hetero_conv = HeteroConv(convs, aggr='sum')
+        
+    def forward(self, x_dict, edge_index_dict, edge_attr_dict=None):
+        """
+        Args:
+            x_dict (dict): Dictionary of node embeddings.
+            edge_index_dict (dict): Dictionary of edge indices.
+            edge_attr_dict (dict, optional): Ignored in this simple baseline.
+        """
+        return self.hetero_conv(x_dict, edge_index_dict)

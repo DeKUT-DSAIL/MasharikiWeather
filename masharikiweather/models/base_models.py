@@ -225,3 +225,99 @@ class PrecipAnomalyDetector(torch.nn.Module):
             
         loss = tweedie(daily_pred, data.mass_constraint, mask=getattr(data, 'mass_mask', None))
         return loss * lambda_mass
+
+
+class BaselinePrecipAnomalyDetector(torch.nn.Module):
+    """
+    A simple baseline Spatiotemporal GNN for Precipitation Anomaly Detection.
+    Uses basic GRU encoding (last state), standard HeteroConv spatial processing,
+    and a simple Linear/MLP decoder predicting raw precipitation directly via Softplus.
+    Designed for straightforward MAE/MSE demonstration.
+    """
+    def __init__(
+        self,
+        in_channels_dict: Dict[str, int],
+        edge_dim_dict: Dict[Tuple[str, str, str], int],
+        hidden_channels: int,
+        window_size: int,
+        horizon_size: int,
+        tahmo_params: int
+    ):
+        super().__init__()
+        self.window_size = window_size
+        self.horizon_size = horizon_size
+        self.tahmo_params = tahmo_params
+
+        # 1. Node Encoder (Basic 1-layer GRU, keeping only the final state)
+        self.temporal_encoders = ModuleDict({
+            node_type: RNN(
+                input_size=in_channels, 
+                hidden_size=hidden_channels, 
+                return_only_last_state=True,
+                n_layers=1,
+                dropout=0.0,
+                cell='gru'
+            )
+            for node_type, in_channels in in_channels_dict.items()
+        })
+        
+        self.static_encoders = ModuleDict({
+            node_type: Linear(in_channels, hidden_channels)
+            for node_type, in_channels in in_channels_dict.items()
+        })
+
+        self.norms = ModuleDict({
+            node_type: LayerNorm(hidden_channels)
+            for node_type in in_channels_dict.keys()
+        })
+
+        # 2. Spatial Processor (Simple HeteroConv with SAGEConv)
+        from .interaction_network import SimpleInteractionBlock
+        self.processor = SimpleInteractionBlock(
+            channels=hidden_channels,
+            edge_types=list(edge_dim_dict.keys())
+        )
+
+        # 3. Decoder (Simple MLP to raw precipitation)
+        self.decoder = torch.nn.Sequential(
+            Linear(hidden_channels, hidden_channels),
+            torch.nn.ReLU(),
+            Linear(hidden_channels, self.horizon_size * self.tahmo_params),
+            torch.nn.Softplus() # Ensure precipitation is non-negative
+        )
+
+    def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict = None):
+        """
+        Baseline forward pass returning a single intensity tensor.
+        """
+        # A. Encode
+        z_dict = {}
+        for node_type, x in x_dict.items():
+            z = None
+            if x.dim() == 3:
+                if node_type in self.temporal_encoders:
+                    z = self.temporal_encoders[node_type](x)
+            else:
+                if node_type in self.static_encoders:
+                    z = self.static_encoders[node_type](x)
+
+            if z is not None and node_type in self.norms:
+                z = self.norms[node_type](z)
+                z_dict[node_type] = F.relu(z)
+
+        # B. Process
+        z_dict = self.processor(
+            x_dict=z_dict, 
+            edge_index_dict=edge_index_dict
+        )
+
+        # C. Decode
+        if 'tahmo' in z_dict:
+            z_tahmo = F.relu(z_dict['tahmo'])
+            n_nodes = z_tahmo.shape[0]
+            
+            # Predict intensity directly [Nodes, Horizon, Params]
+            intensity = self.decoder(z_tahmo).reshape(n_nodes, self.horizon_size, self.tahmo_params)
+            return intensity
+        
+        return z_dict
