@@ -241,7 +241,8 @@ class BaselinePrecipAnomalyDetector(torch.nn.Module):
         hidden_channels: int,
         window_size: int,
         horizon_size: int,
-        tahmo_params: int
+        tahmo_params: int,
+        static_channels_dict: Dict[str, int] = None
     ):
         super().__init__()
         self.window_size = window_size
@@ -265,6 +266,20 @@ class BaselinePrecipAnomalyDetector(torch.nn.Module):
             node_type: Linear(in_channels, hidden_channels)
             for node_type, in_channels in in_channels_dict.items()
         })
+        
+        # Terrain Encoders and Fusion
+        self.terrain_encoders = ModuleDict()
+        self.fusion = ModuleDict()
+        
+        if static_channels_dict is not None:
+            for node_type, static_channels in static_channels_dict.items():
+                self.terrain_encoders[node_type] = torch.nn.Sequential(
+                    Linear(static_channels, 16),
+                    torch.nn.ReLU()
+                )
+                if node_type in self.temporal_encoders:
+                    # We will fuse the 16-dim terrain embedding with the hidden_channels dynamic embedding
+                    self.fusion[node_type] = Linear(hidden_channels + 16, hidden_channels)
 
         self.norms = ModuleDict({
             node_type: LayerNorm(hidden_channels)
@@ -272,8 +287,8 @@ class BaselinePrecipAnomalyDetector(torch.nn.Module):
         })
 
         # 2. Spatial Processor (Simple HeteroConv with SAGEConv)
-        from .interaction_network import SimpleInteractionBlock
-        self.processor = SimpleInteractionBlock(
+        from .interaction_network import BaselineInteractionBlock
+        self.processor = BaselineInteractionBlock(
             channels=hidden_channels,
             edge_types=list(edge_dim_dict.keys())
         )
@@ -286,10 +301,13 @@ class BaselinePrecipAnomalyDetector(torch.nn.Module):
             torch.nn.Softplus() # Ensure precipitation is non-negative
         )
 
-    def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict = None):
+    def forward(self, x_dict: Dict[str, torch.Tensor], edge_index_dict: Dict, edge_attr_dict: Dict = None, static_u_dict: Dict = None):
         """
         Baseline forward pass returning a single intensity tensor.
         """
+        if static_u_dict is None:
+            static_u_dict = {}
+            
         # A. Encode
         z_dict = {}
         for node_type, x in x_dict.items():
@@ -297,6 +315,12 @@ class BaselinePrecipAnomalyDetector(torch.nn.Module):
             if x.dim() == 3:
                 if node_type in self.temporal_encoders:
                     z = self.temporal_encoders[node_type](x)
+                    
+                    # Fuse static terrain features if available for this temporal node
+                    if node_type in self.terrain_encoders and node_type in static_u_dict:
+                        terrain_h = self.terrain_encoders[node_type](static_u_dict[node_type])
+                        z_fused = torch.cat([z, terrain_h], dim=-1)
+                        z = F.relu(self.fusion[node_type](z_fused))
             else:
                 if node_type in self.static_encoders:
                     z = self.static_encoders[node_type](x)
