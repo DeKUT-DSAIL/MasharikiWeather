@@ -213,10 +213,12 @@ class EarthSystemAdapter(Dataset):
         k_grid: int = 4,
         tsl_scaler: Optional['tsl.data.preprocessing.StandardScaler'] = None,
         projection_type: Literal["graphcast_3d", "esfm_fourier", "raw"] = "esfm_fourier",
+        n_regime_nodes: int = 0,
     ):
         self.windows = windows
         self.ml_task = ml_task
         self.projection_type = projection_type
+        self.n_regime_nodes = n_regime_nodes
 
         # Station-graph geometry: n_stations and n_params for PyG reshape.
         station_labels = getattr(windows, 'station_labels', None)
