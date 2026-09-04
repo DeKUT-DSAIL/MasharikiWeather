@@ -751,12 +751,21 @@ class EarthSystemAdapter(Dataset):
                 time_expanded = encoded_time.view(T, 6, 1, 1).expand(T, 6, H, W)
                 tensor_x = torch.cat([tensor_x, time_expanded], dim=1)
 
-                # Reshape (Time, Channels+6, Lat, Lon) -> (Lat*Lon, Time*(Channels+6))
-                tensor_x = self._reshape_grid_for_pyg(tensor_x)
+            # Reshape (Time, Channels+6, Lat, Lon) -> (Lat*Lon, Time*(Channels+6))
+            tensor_x = self._reshape_grid_for_pyg(tensor_x)
 
-            data[g_name].x = tensor_x
+        data[g_name].x = tensor_x
 
-        # 2. Universal Target Routing Modality
+        # Attach Spatial Coordinates for Grid Nodes (Critical for PyG Graph Visualization)
+        if g_name in self.windows.grids_lats and g_name in self.windows.grids_lons:
+            lats = self.windows.grids_lats[g_name]
+            lons = self.windows.grids_lons[g_name]
+            if lats is not None and lons is not None:
+                lon_grid, lat_grid = np.meshgrid(lons, lats)
+                coords_2d = np.stack([lat_grid.ravel(), lon_grid.ravel()], axis=1)
+                data[g_name].pos = torch.as_tensor(coords_2d, dtype=torch.float32)
+
+    # 2. Universal Target Routing Modality
         target_node = self.windows.target_node
 
         if target_node == "tahmo" or target_node is None:
@@ -824,6 +833,10 @@ class EarthSystemAdapter(Dataset):
             # Final shape: (n_stations, window_size, n_params + 6 + n_params)
             data['tahmo'].x = torch.cat([tahmo_x, time_expanded, mask_reshaped], dim=2)
             
+            # Attach Spatial Coordinates for Station Nodes
+            if getattr(self.windows, 'station_coords', None) is not None:
+                data['tahmo'].pos = torch.as_tensor(self.windows.station_coords, dtype=torch.float32)
+            
             # Retain separate mask for loss computation (sparse node-level feature mask)
             data['tahmo'].x_mask = tahmo_mask
         if self.station_static is not None:
@@ -838,6 +851,15 @@ class EarthSystemAdapter(Dataset):
                 data['topography'].x = self.native_topography.reshape(n_v, -1).T
             else:
                 data['topography'].x = self.native_topography.reshape(-1, 1)
+                
+            # Attach Spatial Coordinates for Topography Nodes
+            if getattr(self.windows, 'native_topography_lats', None) is not None and getattr(self.windows, 'native_topography_lons', None) is not None:
+                t_lats = self.windows.native_topography_lats
+                t_lons = self.windows.native_topography_lons
+                t_lon_grid, t_lat_grid = np.meshgrid(t_lons, t_lats)
+                t_coords = np.stack([t_lat_grid.ravel(), t_lon_grid.ravel()], axis=1)
+                data['topography'].pos = torch.as_tensor(t_coords, dtype=torch.float32)
+
         if self.native_topography_categorical is not None:
             if self.native_topography_categorical.dim() == 3:
                 data['topography'].x_categorical = self.native_topography_categorical.reshape(
