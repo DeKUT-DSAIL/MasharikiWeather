@@ -692,14 +692,18 @@ class EarthSystemAdapter(Dataset):
         end_time = start_time + self.window_size
 
         # 0. Global Coordinates Mapping (Temporal Encodings)
+        time_seq = None
         if len(self.windows.grids_x) > 0:
             first_grid_key = next(iter(self.windows.grids_x))
-            actual_time_slice = self.windows.grids_x[first_grid_key].isel(time=slice(start_time, end_time))
-            time_seq = pd.DatetimeIndex(actual_time_slice.time.values)
-        else:
-            time_seq = pd.DatetimeIndex(
-                self.windows.index_x[start_time : start_time + self.window_size]
-            )
+            grid_obj = self.windows.grids_x[first_grid_key]
+            if isinstance(grid_obj, xr.Dataset):
+                actual_time_slice = grid_obj.isel(time=slice(start_time, end_time))
+                time_seq = pd.DatetimeIndex(actual_time_slice.time.values)
+                
+        if time_seq is None:
+            # Eager mode (numpy arrays) or no grids present.
+            # index_x is pre-windowed, so we access it via idx
+            time_seq = pd.DatetimeIndex(self.windows.index_x[idx])
         encoded_time = torch.as_tensor(datetime_encoded(time_seq), dtype=torch.float32)
         data['global'].u = encoded_time  # Retain as global metadata
 
