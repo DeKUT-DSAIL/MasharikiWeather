@@ -12,6 +12,7 @@ from .rechunker import rechunk_dataset, get_zarr_encoding, DEFAULT_TIME_CHUNKS
 import dask
 from dask.diagnostics import ProgressBar
 from multiprocessing.pool import ThreadPool
+import warnings
 
 FrameArray = Union[pd.DataFrame, np.ndarray]
 
@@ -155,7 +156,6 @@ class MasharikiWeatherDataset:
         Returns:
             List of valid years within the configured range.
         """
-        import warnings
         valid = [y for y in years if y in self.years]
         invalid = [y for y in years if y not in self.years]
         if invalid:
@@ -1397,7 +1397,7 @@ class MasharikiWeatherDataset:
         Order-agnostic spatial selection utility. Auto-corrects flipped slices 
         (e.g., max to min) and emits a gentle warning, proceeding without failure.
         """
-        import warnings
+       
         sel_dict = {}
         
         lat_dim = 'lat' if 'lat' in ds.coords else ('latitude' if 'latitude' in ds.coords else None)
@@ -2097,11 +2097,10 @@ class MasharikiWeatherDataset:
                                 l_min, l_max = min(lat1, lat2), max(lat1, lat2)
                                 n_min, n_max = min(lon1, lon2), max(lon1, lon2)
                                 
-                                ds = self.spatial_sel(
-                                    ds[valid_vars],
-                                    lat_slice=slice(max(0, l_min), min(len(lats), l_max + 1)),
-                                    lon_slice=slice(max(0, n_min), min(len(lons), n_max + 1))
-                                )
+                                ds = ds[valid_vars].isel({
+                                    lat_dim: slice(max(0, l_min), min(len(lats), l_max + 1)),
+                                    lon_dim: slice(max(0, n_min), min(len(lons), n_max + 1))
+                                })
                            else:
                                 ds = ds[valid_vars]
                                 
