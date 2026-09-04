@@ -989,10 +989,10 @@ class MasharikiWeatherDataset:
     @staticmethod
     def infer_variable_types(
         variables: Sequence[str]
-    ) -> Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC"]]:
+    ) -> Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC", "FLUX"]]:
         """
         Classifies variables into physical (Gaussian), precipitation (Tweedie), 
-        or static (Topography) based on standard meteorological nomenclature.
+        static (Topography), or flux (Radiation/Accumulation) based on standard meteorological nomenclature.
         
         Args:
             variables: List of variable names to classify.
@@ -1006,10 +1006,13 @@ class MasharikiWeatherDataset:
             # 1. Precipitation (Non-Gaussian, zero-inflated)
             if any(kw in v_lower for kw in ['precip', 'rain', 'tp', 'pr', 'convective', 'snow']):
                 types[var] = "PRECIPITATION"
-            # 2. Static / Categorical variables
+            # 2. Fluxes and Accumulated Variables
+            elif any(kw in v_lower for kw in ['radiation', 'rad', 'ssrd', 'flux']):
+                types[var] = "FLUX"
+            # 3. Static / Categorical variables
             elif any(kw in v_lower for kw in ['dem', 'slope', 'aspect', 'mask', 'soil', 'veg', 'topo']):
                 types[var] = "STATIC"
-            # 3. Physical / Thermodynamic variables (Gaussian-like)
+            # 4. Physical / Thermodynamic variables (Gaussian-like)
             else:
                 types[var] = "PHYSICAL"
         return types
@@ -1814,6 +1817,7 @@ class MasharikiWeatherDataset:
         bbox: Optional[Tuple[float, float, float, float]] = None,
         interpolation: Optional[str] = None,
         as_xarray: bool = False,
+        temporal_resolution: Optional[str] = None,
     ) -> Windows:
         """
         N-Grid Heterogeneous Extraction mapping native resolutions organically.
@@ -1914,6 +1918,35 @@ class MasharikiWeatherDataset:
                 return_mask=True,
                 copy=True,
             )
+
+        # Unified Multi-Rate Temporal Resampling for Observations
+        if temporal_resolution is not None and temporal_resolution.lower() not in ["1h", "h", "native"]:
+            # Use permissive min_count=1 for all temporal resolutions (e.g. 3h, 6h, 1D) 
+            # to preserve partial precipitation accumulations for anomaly detection
+            precip_min_count = 1
+                
+            param_list = [parameters] if isinstance(parameters, str) else (parameters or self.parameters)
+            types = self.infer_variable_types(param_list)
+            
+            resampled_cols = {}
+            for param in param_list:
+                if param in observations.columns.get_level_values(1):
+                    param_df = observations.xs(param, axis=1, level=1, drop_level=False)
+                    p_type = types.get(param, "PHYSICAL")
+                    if p_type == "PRECIPITATION" or p_type == "FLUX":
+                        resampled_cols[param] = param_df.resample(temporal_resolution).sum(min_count=precip_min_count)
+                    elif p_type == "STATIC":
+                        resampled_cols[param] = param_df.resample(temporal_resolution).first()
+                    else:
+                        resampled_cols[param] = param_df.resample(temporal_resolution).mean()
+            
+            if resampled_cols:
+                observations = pd.concat(list(resampled_cols.values()), axis=1).sort_index(axis=1)
+                
+            # For the missing mask, if any timestamp within the interval was missing, the interval might be considered missing.
+            # Using max() correctly flags True if any sub-interval had True. But since we use min_count=21, 
+            # maybe we use sum() > (hours_in_res - precip_min_count). For now, strict max() is safest for physical fields.
+            mask = mask.resample(temporal_resolution).max()
 
         station_static_whitelist = [
             'dem', 'Slope', 'Aspect_sin', 'Aspect_cos', 
@@ -2083,6 +2116,36 @@ class MasharikiWeatherDataset:
                            per_grid_datasets[group] = concat_ds
 
             if per_grid_datasets:
+                 if temporal_resolution is not None and temporal_resolution.lower() not in ["1h", "h", "native"]:
+                     # Apply temporal resolution alignment to all loaded grid structures
+                     for g_name, g_ds in list(per_grid_datasets.items()):
+                         if isinstance(g_ds, pd.DataFrame):
+                             var_types = self.infer_variable_types(g_ds.columns.get_level_values(1).unique())
+                             resampled_cols = {}
+                             for param in g_ds.columns.get_level_values(1).unique():
+                                 param_df = g_ds.xs(param, axis=1, level=1, drop_level=False)
+                                 p_type = var_types.get(param, "PHYSICAL")
+                                 if p_type == "PRECIPITATION" or p_type == "FLUX":
+                                     resampled_cols[param] = param_df.resample(temporal_resolution).sum(min_count=1)
+                                 else:
+                                     resampled_cols[param] = param_df.resample(temporal_resolution).mean()
+                             if resampled_cols:
+                                 per_grid_datasets[g_name] = pd.concat(list(resampled_cols.values()), axis=1).sort_index(axis=1)
+                         else:
+                             # Xarray resampling
+                             var_types = self.infer_variable_types(list(g_ds.data_vars))
+                             precip_vars = [v for v, t in var_types.items() if t in ["PRECIPITATION", "FLUX"]]
+                             phys_vars = [v for v, t in var_types.items() if t not in ["PRECIPITATION", "FLUX"]]
+                             
+                             resampled_parts = []
+                             if precip_vars:
+                                 resampled_parts.append(g_ds[precip_vars].resample(time=temporal_resolution).sum(skipna=False))
+                             if phys_vars:
+                                 resampled_parts.append(g_ds[phys_vars].resample(time=temporal_resolution).mean(skipna=False))
+                             
+                             if resampled_parts:
+                                 per_grid_datasets[g_name] = xr.merge(resampled_parts, compat="override")
+
                  common_times = observations.index
                  for g_name, g_ds in per_grid_datasets.items():
                       if isinstance(g_ds, pd.DataFrame):
@@ -2118,10 +2181,6 @@ class MasharikiWeatherDataset:
                            else:
                                windows.grids_y[g_name] = sliding_window_view(grid_np[y_slice], horizon_size, axis=0)[::stride][x_idx_mask]
                       else:
-                           # Native Scale Preservation and Alignment
-                           if group == "imerg":
-                               g_ds = g_ds.resample(time="1h").sum(skipna=False)
-                           
                            g_ds = g_ds.sel(time=common_times)
                            windows.grids_features[g_name] = list(g_ds.data_vars)
                            windows.grids_x[g_name] = g_ds
