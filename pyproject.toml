@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "masharikiweather"
-version = "0.1.9"
-description = "A geostatistical extraction and alignment engine for East African weather and satellite data."
+version = "0.2.0"
+description = "A geostatistical extraction and alignment engine for East African and global weather data."
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [
@@ -20,6 +20,23 @@ ml = [
     "torch>=2.0.0",
     "torch-geometric>=2.5.0",
     "torchvision"
+]
+viz = [
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "folium>=0.14.0"
+]
+dev = [
+    "pytest>=8.0.0"
+]
+all = [
+    "torch>=2.0.0",
+    "torch-geometric>=2.5.0",
+    "torchvision",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "folium>=0.14.0",
+    "pytest>=8.0.0"
 ]
 
 # Point setuptools strictly to your requirements file
