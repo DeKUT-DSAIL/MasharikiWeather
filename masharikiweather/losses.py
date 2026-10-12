@@ -1,7 +1,6 @@
 """
-WeatherBench 2 Standardized Atmospheric Loss and Evaluation Metrics.
-Implementing exact differentiable and non-differentiable mathematically sound metrics 
-assessing generative sharpness, compound probability spaces, and true threshold skill limits.
+Atmospheric Loss and Evaluation Metrics.
+Implementing differentiable and non-differentiable mathematically sound metrics 
 """
 import torch
 import torch.nn as nn
@@ -19,35 +18,85 @@ class TweedieDevianceLoss(nn.Module):
         self.eps = eps
         self.reduction = reduction
 
-    def forward(self, mu: torch.Tensor, y: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, 
+        mu: torch.Tensor, 
+        y: torch.Tensor, 
+        valid_mask: torch.Tensor = None, 
+        mae_mask: torch.Tensor = None
+    ) -> torch.Tensor:
         """
         mu: The predicted mean (emitted strictly post-SoftplusLink), must be > 0.
         y: The true raw observation, bounding at 0.0.
-        mask: Boolean mask indicating physical valid sensors vs hardware outages.
+        valid_mask: Boolean mask indicating physical valid sensors vs hardware outages.
+        mae_mask: Boolean mask indicating artificially hidden patches for MAE.
         """
         # Clamp bounds strictly preventing exponential `NaN` logic crashes
         mu = torch.clamp(mu, min=self.eps)
         
         # Guard against unpadded NaNs bypassing dataloader
+        # Update valid mask before zeroing NaNs so they aren't scored as 0mm
+        finite_mask = torch.isfinite(y) & torch.isfinite(mu)
+        if valid_mask is not None:
+            valid_mask = valid_mask & finite_mask
+        else:
+            valid_mask = finite_mask
+            
         y = torch.nan_to_num(y, nan=0.0)
         y = torch.clamp(y, min=0.0)
 
-        a = y * (torch.pow(y + self.eps, 1 - self.p) - torch.pow(mu, 1 - self.p)) / (1 - self.p)
-        b = (torch.pow(y + self.eps, 2 - self.p) - torch.pow(mu, 2 - self.p)) / (2 - self.p)
+        a = y * (torch.pow(y, 1 - self.p) - torch.pow(mu, 1 - self.p)) / (1 - self.p)
+        b = (torch.pow(y, 2 - self.p) - torch.pow(mu, 2 - self.p)) / (2 - self.p)
+        
+        # Where y == 0, the first term (a) is analytically 0. Force it to avoid NaN.
+        a = torch.where(y == 0, torch.zeros_like(a), a)
+        b = torch.where(y == 0, - torch.pow(mu, 2 - self.p) / (2 - self.p), b)
         
         deviance = 2 * (a - b)
         
-        # Apply sparse valid sensor boolean mask
-        if mask is not None:
-            deviance = deviance * mask.float()
-            return deviance.sum() / (mask.float().sum() + self.eps)
+        # Combine hardware validity mask and optional MAE corruption mask
+        combined_mask = torch.ones_like(deviance)
+        if valid_mask is not None:
+            combined_mask = combined_mask * valid_mask.float()
+        if mae_mask is not None:
+            # Squeeze channel/feature dim if needed to match broadcasting
+            if mae_mask.ndim < combined_mask.ndim:
+                mae_mask = mae_mask.unsqueeze(-1)
+            combined_mask = combined_mask * mae_mask.float() # Evaluate ONLY on masked-out tokens
+            
+        deviance = deviance * combined_mask
+        sum_mask = combined_mask.sum()
         
-        if self.reduction == 'mean':
-            return deviance.mean()
-        elif self.reduction == 'sum':
-            return deviance.sum()
+        if sum_mask > 0:
+            if self.reduction == 'mean':
+                return deviance.sum() / (sum_mask + self.eps)
+            elif self.reduction == 'sum':
+                return deviance.sum()
+            else:
+                return deviance
         else:
-            return deviance
+            return torch.tensor(0.0, device=mu.device, requires_grad=True)
+
+class RMSELoss(nn.Module):
+    """
+    Standard Root Mean Square Error (RMSE).
+    Evaluates strictly the deterministic mean error spread across the physical domain.
+    """
+    def __init__(self, reduction: str = 'mean'):
+        super().__init__()
+        self.mse = nn.MSELoss(reduction=reduction)
+        
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        if mask is not None:
+            # Mask out missing sensors/pixels
+            preds = preds * mask.float()
+            targets = targets * mask.float()
+            # Calculate sum of squared errors
+            sse = torch.sum((preds - targets) ** 2)
+            # Divide by number of valid elements to get MSE
+            mse = sse / (mask.float().sum() + 1e-8)
+            return torch.sqrt(mse)
+        return torch.sqrt(self.mse(preds, targets))
 
 class DifferentiableFSSLoss(nn.Module):
     """
@@ -191,6 +240,7 @@ class SEEPSScore(nn.Module):
         score[t_heavy & p_light] = 1.0 / (1.0 - p1)
         
         return score.mean()
+        
 class BootstrapTweediePower(nn.Module):
     """
     Bootstrap utility to estimate the optimal Tweedie power parameter $p$.
@@ -247,3 +297,36 @@ class BootstrapTweediePower(nn.Module):
              p_values.append(max(1.1, min(1.9, p_est)))
              
         return sum(p_values) / len(p_values) if p_values else 1.5
+
+class HurdleLoss(nn.Module):
+    """
+    Combined Hurdle Loss:
+    - BCEWithLogitsLoss for precipitation occurrence across all spatial points.
+    - Masked MSE (or Gamma Deviance) evaluated exclusively where target > epsilon.
+    """
+    def __init__(self, eps: float = 0.1, pos_weight: float = 2.0):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=torch.tensor([pos_weight]))
+        self.eps = eps
+
+    def forward(self, logits: torch.Tensor, intensity_pred: torch.Tensor, y_true: torch.Tensor, mask: torch.Tensor = None):
+        # Create binary occurrence target: 1 if precipitation occurred, 0 otherwise
+        target_bin = (y_true > self.eps).float()
+        
+        # 1. Occurrence Loss (BCE)
+        bce_loss = self.bce(logits, target_bin)
+        if mask is not None:
+            bce_loss = bce_loss * mask.float()
+        occurrence_loss = bce_loss.mean()
+        
+        # 2. Intensity Loss (Evaluated ONLY on positive precipitation points)
+        pos_mask = (target_bin > 0.5)
+        if mask is not None:
+            pos_mask = pos_mask & mask.bool()
+            
+        if pos_mask.sum() > 0:
+            intensity_loss = F.mse_loss(intensity_pred[pos_mask], y_true[pos_mask], reduction='mean')
+        else:
+            intensity_loss = torch.tensor(0.0, device=y_true.device)
+            
+        return occurrence_loss + intensity_loss

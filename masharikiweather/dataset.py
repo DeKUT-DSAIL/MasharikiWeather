@@ -12,6 +12,7 @@ from .rechunker import rechunk_dataset, get_zarr_encoding, DEFAULT_TIME_CHUNKS
 import dask
 from dask.diagnostics import ProgressBar
 from multiprocessing.pool import ThreadPool
+import warnings
 
 FrameArray = Union[pd.DataFrame, np.ndarray]
 
@@ -69,9 +70,10 @@ class Windows:
     # These are NEVER used as sequential inputs. They exist solely for
     # physics-informed loss constraints in the training loop.
     # Keys are group names (e.g. 'chirps', 'tamsat').
-    daily_constraints: Dict[str, np.ndarray] = field(default_factory=dict)
-    daily_masks: Dict[str, np.ndarray] = field(default_factory=dict)
-    daily_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> day index
+    constraint_targets: Dict[str, np.ndarray] = field(default_factory=dict)
+    temporal_masks: Dict[str, np.ndarray] = field(default_factory=dict)
+    constraint_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> constraint step index
+    constraint_resolution: Optional[str] = None
 
 def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
     """
@@ -91,6 +93,86 @@ def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
         windows = np_swv(a, window_shape, axis=0)
     # Force contiguous memory layout for safe PyTorch tensor conversion
     return np.ascontiguousarray(np.moveaxis(windows, -1, 1))
+
+def infer_temporal_metadata(ds: xr.Dataset, time_dim: str = "time") -> dict:
+    time_coord = ds[time_dim]
+    time_start = pd.Timestamp(time_coord[0].values)
+    time_end = pd.Timestamp(time_coord[-1].values)
+    
+    time_index = pd.DatetimeIndex(time_coord.values)
+    inferred_freq = pd.infer_freq(time_index)
+    
+    if inferred_freq is None and len(time_index) > 1:
+        deltas = pd.Series(time_index).diff().dropna()
+        median_delta = deltas.median()
+        inferred_freq = pd.tseries.frequencies.to_offset(median_delta).freqstr
+
+    return {
+        "native_temporal_freq": inferred_freq,
+        "time_start": time_start,
+        "time_end": time_end,
+    }
+
+def infer_spatial_metadata(ds: xr.Dataset, lat_dim: str = "lat", lon_dim: str = "lon") -> dict:
+    lat = ds[lat_dim]
+    lon = ds[lon_dim]
+    
+    return {
+        "lat_bounds": (float(lat.min().values), float(lat.max().values)),
+        "lon_bounds": (float(lon.min().values), float(lon.max().values)),
+    }
+
+def check_station_grid_resolution_compatibility(
+    station_freq: Optional[str],
+    grid_freq: Optional[str],
+    product_name: str,
+) -> None:
+    if station_freq is None or grid_freq is None:
+        return
+    try:
+        station_td = pd.Timedelta(pd.tseries.frequencies.to_offset(station_freq))
+        grid_td = pd.Timedelta(pd.tseries.frequencies.to_offset(grid_freq))
+    except Exception:
+        return
+
+    if grid_td < station_td:
+        warnings.warn(
+            f"[{product_name}] Grid resolution ({grid_freq}) is finer than "
+            f"station resolution ({station_freq}). Constraints or modeling "
+            f"at sub-station resolution will rely on assumptions.",
+            UserWarning,
+        )
+    elif station_td < grid_td:
+        warnings.warn(
+            f"[{product_name}] Station resolution ({station_freq}) is finer than "
+            f"grid resolution ({grid_freq}). You are requesting sub-native "
+            f"grid resolution which may involve unsafe upsampling.",
+            UserWarning,
+        )
+
+def validate_gridded_dataset(ds: xr.Dataset, product_name: str, requested_freq: Optional[str], bbox: Optional[Tuple[float, float, float, float]]) -> None:
+    # Validate spatial bounds
+    if bbox is not None:
+        spatial_meta = infer_spatial_metadata(ds)
+        lat_min, lon_min, lat_max, lon_max = bbox
+        grid_lat_min, grid_lat_max = spatial_meta["lat_bounds"]
+        grid_lon_min, grid_lon_max = spatial_meta["lon_bounds"]
+        
+        # If the requested bbox is entirely outside the dataset bounds, it's an error.
+        if (lat_max < grid_lat_min or lat_min > grid_lat_max or 
+            lon_max < grid_lon_min or lon_min > grid_lon_max):
+            raise ValueError(
+                f"[{product_name}] Requested bbox {bbox} is completely outside "
+                f"the dataset's native bounds: lats={spatial_meta['lat_bounds']}, "
+                f"lons={spatial_meta['lon_bounds']}."
+            )
+
+    # Validate temporal frequencies
+    temporal_meta = infer_temporal_metadata(ds)
+    native_freq = temporal_meta["native_temporal_freq"]
+    
+    if native_freq and requested_freq:
+        check_station_grid_resolution_compatibility(requested_freq, native_freq, product_name)
 
 def df_add_missing_columns(df: pd.DataFrame, col0, col1, fill_value=np.nan) -> pd.DataFrame:
     idx = pd.MultiIndex.from_product([col0, col1], names=['station_id', 'parameter'])
@@ -155,7 +237,6 @@ class MasharikiWeatherDataset:
         Returns:
             List of valid years within the configured range.
         """
-        import warnings
         valid = [y for y in years if y in self.years]
         invalid = [y for y in years if y not in self.years]
         if invalid:
@@ -334,8 +415,30 @@ class MasharikiWeatherDataset:
 
     def _open_zipped_zarr(self, rel_path: str, lazy: bool = True) -> Optional[xr.Dataset]:
         """
-        Open a zipped Zarr dataset from Hugging Face.
+        Open a zipped Zarr dataset from Hugging Face or local path.
         """
+        # 1. Prioritize Local Zipped Archives if available (Offline Mode)
+        # Check both {root_dir}/obs/tahmo.zarr.zip and {root_dir}/data/obs/tahmo.zarr.zip
+        local_path_1 = f"{self.root_dir}/{rel_path.replace('data/', '')}"
+        local_path_2 = f"{self.root_dir}/{rel_path}"
+        
+        local_zip = None
+        if os.path.exists(local_path_1):
+            local_zip = local_path_1
+        elif os.path.exists(local_path_2):
+            local_zip = local_path_2
+            
+        if local_zip:
+            # Create fsspec mapper using local protocol chaining
+            zip_mapper = fsspec.get_mapper(f"zip://::file://{os.path.abspath(local_zip)}")
+            chunks = {} if lazy else None
+            try:
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
+            except Exception:
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+            return self._standardize_coordinates(ds)
+
+        # 2. Fallback to Hugging Face Remote Streaming
         full_path = f"hf://datasets/{self.repo_id}/{rel_path}"
         try:
             # Safety Check: Verify file exists and token is valid
@@ -344,7 +447,7 @@ class MasharikiWeatherDataset:
                 print("Check that your HF Token is correct and has access to the private repository.")
                 return None
                 
-            # Explicitly open the remote file object first
+            # Explicitly open the remote file object first using the authenticated filesystem
             remote_file = self.fs.open(full_path)
             
             # Pass the active file object to the zip mapper
@@ -353,9 +456,9 @@ class MasharikiWeatherDataset:
             chunks = {} if lazy else None
             
             try:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(zip_mapper, engine="zarr", chunks=chunks, backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
             
         except Exception as e:
@@ -373,11 +476,11 @@ class MasharikiWeatherDataset:
         # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
         if os.path.exists(optimized_path):
             try:
-                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
-                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
+                                  consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(optimized_path, engine="zarr", chunks={} if lazy else None, 
-                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
+                                  consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
         
         # 2. Check Raw Download Tier
@@ -389,11 +492,11 @@ class MasharikiWeatherDataset:
                 
             chunks = {} if lazy else None
             try:
-                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
-                                     backend_kwargs={"consolidated": True}, decode_timedelta=False)
+                ds = xr.open_zarr(local_path, chunks=chunks, 
+                                  consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_dataset(local_path, engine="zarr", chunks=chunks, 
-                                     backend_kwargs={"consolidated": False}, decode_timedelta=False)
+                ds = xr.open_zarr(local_path, chunks=chunks, 
+                                  consolidated=False, decode_timedelta=False, zarr_format=2)
             return self._standardize_coordinates(ds)
                 
         # 3. Fallback to Hugging Face lazy streaming pipeline
@@ -466,7 +569,7 @@ class MasharikiWeatherDataset:
                     # 3. Trigger Parallel Single-Pass Write
                     with dask.config.set(scheduler='threads', num_workers=num_workers):
                         with ProgressBar():
-                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True)
+                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True, zarr_format=2)
                     
                     # 4. Atomic Swap
                     if os.path.exists(target_write_path):
@@ -701,12 +804,11 @@ class MasharikiWeatherDataset:
     def interpolate_topography(self) -> None:
         """
         Interpolate topography data to the station locations.
-
-        Args:
-            filename (str): Name of the topography file.
         """
         if self._topo_ds is None:
+            # 1. Load the default static netCDF topography (Elevation, Slope, Aspect)
             self._topo_ds = self.load_topography()
+
         if self._topo_ds is None:
             return
 
@@ -756,6 +858,7 @@ class MasharikiWeatherDataset:
 
         self.stations_table = self.stations_table.join(df_topo)
 
+
     def validate_stations(self, stations: Optional[Union[str, List[str]]] = None) -> List[str]:
         """
         Validate that the requested stations are available in the dataset.
@@ -767,7 +870,7 @@ class MasharikiWeatherDataset:
         Returns:
             List[str]: List of valid station IDs.
         """
-        if stations is None:
+        if stations is None or stations == "all":
             return list(self.stations_table.index)
             
         if isinstance(stations, str):
@@ -967,10 +1070,10 @@ class MasharikiWeatherDataset:
     @staticmethod
     def infer_variable_types(
         variables: Sequence[str]
-    ) -> Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC"]]:
+    ) -> Dict[str, Literal["PHYSICAL", "PRECIPITATION", "STATIC", "FLUX"]]:
         """
         Classifies variables into physical (Gaussian), precipitation (Tweedie), 
-        or static (Topography) based on standard meteorological nomenclature.
+        static (Topography), or flux (Radiation/Accumulation) based on standard meteorological nomenclature.
         
         Args:
             variables: List of variable names to classify.
@@ -984,10 +1087,13 @@ class MasharikiWeatherDataset:
             # 1. Precipitation (Non-Gaussian, zero-inflated)
             if any(kw in v_lower for kw in ['precip', 'rain', 'tp', 'pr', 'convective', 'snow']):
                 types[var] = "PRECIPITATION"
-            # 2. Static / Categorical variables
+            # 2. Fluxes and Accumulated Variables
+            elif any(kw in v_lower for kw in ['radiation', 'rad', 'ssrd', 'flux']):
+                types[var] = "FLUX"
+            # 3. Static / Categorical variables
             elif any(kw in v_lower for kw in ['dem', 'slope', 'aspect', 'mask', 'soil', 'veg', 'topo']):
                 types[var] = "STATIC"
-            # 3. Physical / Thermodynamic variables (Gaussian-like)
+            # 4. Physical / Thermodynamic variables (Gaussian-like)
             else:
                 types[var] = "PHYSICAL"
         return types
@@ -1146,6 +1252,7 @@ class MasharikiWeatherDataset:
         variables: Optional[List[str]] = None,
         method_overrides: Optional[Dict[str, str]] = None,
         patch_radius: int = 1,
+        interpolation: Optional[str] = None,
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
         pressure_levels: Optional[List[int]] = None,
@@ -1162,6 +1269,7 @@ class MasharikiWeatherDataset:
             method_overrides (Optional[Dict[str, str]]): Dictionary of method overrides
             for specific variables (e.g. {"temperature": "patch_max", "wind_speed": "nearest", "total_precipitation": "linear"}).
             patch_radius (int): Radius of the patch to extract, 1 = 3x3 grid, 2 = 5x5 grid, etc.
+            interpolation (Optional[str]): Overall interpolation method for variables ("nearest", "bilinear", "peak_preserving", "patch").
             first_date (Optional[Union[str, pd.Timestamp]]): First date to extract data for.
             last_date (Optional[Union[str, pd.Timestamp]]): Last date to extract data for.
 
@@ -1175,6 +1283,21 @@ class MasharikiWeatherDataset:
         valid_stations = self.validate_stations(stations)
         if not valid_stations:
             return {}, {}
+            
+        if interpolation:
+            if method_overrides is None:
+                method_overrides = {}
+            interp_map = {
+                "patch": "patch_flat",
+                "peak_preserving": "patch_max",
+                "bilinear": "linear",
+                "nearest": "nearest"
+            }
+            mapped_method = interp_map.get(interpolation, interpolation)
+            if variables:
+                for var in variables:
+                    if var not in method_overrides:
+                        method_overrides[var] = mapped_method
 
         target_years = [years] if isinstance(years, int) else (years or self.years)
         target_years = self._validate_years(target_years)
@@ -1220,6 +1343,14 @@ class MasharikiWeatherDataset:
                 ds = self._open_gridded_zarr(group, year, lazy=True)
                 if ds is None:
                     continue
+                
+                # Validate constraints dynamically
+                validate_gridded_dataset(
+                    ds, 
+                    product_name=group, 
+                    requested_freq=self.freq,
+                    bbox=None
+                )
                 
                 if pressure_levels is not None and 'level' in ds.coords:
                     v_levels = [l for l in pressure_levels if l in ds.level.values]
@@ -1355,7 +1486,7 @@ class MasharikiWeatherDataset:
         Order-agnostic spatial selection utility. Auto-corrects flipped slices 
         (e.g., max to min) and emits a gentle warning, proceeding without failure.
         """
-        import warnings
+       
         sel_dict = {}
         
         lat_dim = 'lat' if 'lat' in ds.coords else ('latitude' if 'latitude' in ds.coords else None)
@@ -1507,21 +1638,22 @@ class MasharikiWeatherDataset:
         stations: Optional[Union[str, List[str]]] = None,
         first_date: Optional[Union[str, pd.Timestamp]] = None,
         last_date: Optional[Union[str, pd.Timestamp]] = None,
+        constraint_freq: str = "1D",
     ) -> Windows:
         """
-        Optional: Extract daily precipitation totals from CHIRPS/TAMSAT and
+        Optional: Extract aggregated precipitation totals from CHIRPS/TAMSAT and
         attach them to an existing Windows object as mass conservation targets.
 
         This method does NOT modify the sequential inputs (station_x, grids_x).
-        It populates windows.daily_constraints and windows.daily_masks exclusively.
+        It populates windows.constraint_targets and windows.temporal_masks exclusively.
 
         Only groups in ["chirps", "tamsat"] are accepted. All others raise ValueError.
 
         Mathematical justification:
             The mass conservation constraint enforces:
-                sum_{t in day} P_hat(t) = P_daily
-            where P_hat(t) are the hourly predictions and P_daily is the
-            observed daily total from CHIRPS or TAMSAT. This is evaluated
+                sum_{t in constraint_freq} P_hat(t) = P_target
+            where P_hat(t) are the hourly predictions and P_target is the
+            observed aggregated total from CHIRPS or TAMSAT. This is evaluated
             via Tweedie Deviance Loss in the training loop.
 
         Args:
@@ -1531,9 +1663,10 @@ class MasharikiWeatherDataset:
             stations: Stations to extract for. Defaults to windows.station_labels.
             first_date: Optional temporal lower bound.
             last_date: Optional temporal upper bound.
+            constraint_freq: Pandas frequency string for mass conservation aggregation (e.g., '1D', 'W', 'ME').
 
         Returns:
-            The same Windows object with daily_constraints and daily_masks populated.
+            The same Windows object with constraint_targets and temporal_masks populated.
         """
         import warnings
 
@@ -1567,19 +1700,19 @@ class MasharikiWeatherDataset:
         if not ext_dfs:
             warnings.warn(
                 f"No data extracted for mass conservation groups {groups}. "
-                "Windows will have empty daily_constraints.",
+                "Windows will have empty constraint_targets.",
                 UserWarning
             )
             return windows
 
-        # Align daily totals to the hourly window temporal extent
-        # Use the hourly observation index from the windows to determine day boundaries
+        # Align target totals to the hourly window temporal extent
+        # Use the hourly observation index from the windows to determine constraint boundaries
         if windows.index_x is not None and len(windows.index_x) > 0:
             # The last timestamp of each window defines its reference time
             hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
         else:
             warnings.warn(
-                "Cannot align daily constraints: windows.index_x is empty.",
+                "Cannot align constraints: windows.index_x is empty.",
                 UserWarning
             )
             return windows
@@ -1597,51 +1730,51 @@ class MasharikiWeatherDataset:
             if mask_df.index.tz is not None:
                 mask_df.index = mask_df.index.tz_localize(None)
 
-            # Resample to daily sums (native resolution for CHIRPS/TAMSAT)
-            # For products already at daily resolution, this is a no-op identity
-            daily_df = df.resample("1D").sum(min_count=1)
-            daily_mask = mask_df.resample("1D").max()  # Missing if ANY hour is missing
+            # Resample to requested constraint freq
+            target_df = df.resample(constraint_freq).sum(min_count=1)
+            target_mask = mask_df.resample(constraint_freq).max()  # Missing if ANY timestep is missing
 
-            # Map each hourly window reference time to its corresponding day
-            ref_dates = hourly_index.normalize()  # Floor to day
-            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
+            # Map each hourly window reference time to its corresponding constraint interval
+            ref_dates = hourly_index.floor(constraint_freq) if hasattr(hourly_index, 'floor') else pd.DatetimeIndex([d.floor(constraint_freq) for d in hourly_index])
+            unique_targets = pd.DatetimeIndex(sorted(ref_dates.unique()))
 
-            # Find overlapping days between the daily product and the window span
-            overlap_days = unique_days.intersection(daily_df.index)
-            if len(overlap_days) == 0:
+            # Find overlapping intervals between the aggregated product and the window span
+            overlap_targets = unique_targets.intersection(target_df.index)
+            if len(overlap_targets) == 0:
                 warnings.warn(
-                    f"No temporal overlap between {group} daily data and window span. "
+                    f"No temporal overlap between {group} {constraint_freq} aggregated data and window span. "
                     f"Skipping constraint for {group}.",
                     UserWarning
                 )
                 continue
 
-            # Build the day_index mapping: for each window sample, which day does it belong to?
-            day_to_idx = {d: i for i, d in enumerate(overlap_days)}
-            day_index = np.array([day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64)
+            # Build the constraint_index mapping: for each window sample, which interval does it belong to?
+            target_to_idx = {d: i for i, d in enumerate(overlap_targets)}
+            target_index = np.array([target_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64)
 
-            # Filter windows that have valid day mappings
-            valid_mask = day_index >= 0
+            # Filter windows that have valid interval mappings
+            valid_mask = target_index >= 0
 
             # Extract the constraint values as numpy arrays
-            # Shape: (n_days, n_stations * n_params)
-            constraint_vals = daily_df.loc[overlap_days].values.astype(np.float32)
-            constraint_mask_vals = daily_mask.loc[overlap_days].values.astype(np.float32)
+            # Shape: (n_intervals, n_stations * n_params)
+            constraint_vals = target_df.loc[overlap_targets].values.astype(np.float32)
+            constraint_mask_vals = target_mask.loc[overlap_targets].values.astype(np.float32)
 
             # Replace NaN with 0 in constraint values (masked out by the mask anyway)
             constraint_vals = np.nan_to_num(constraint_vals, nan=0.0)
 
-            windows.daily_constraints[group] = constraint_vals
-            windows.daily_masks[group] = constraint_mask_vals
+            windows.constraint_targets[group] = constraint_vals
+            windows.temporal_masks[group] = constraint_mask_vals
+            windows.constraint_resolution = constraint_freq
 
-        # Build the day_index from the last processed group (shared temporal axis)
+        # Build the constraint_index from the last processed group (shared temporal axis)
         if windows.index_x is not None and len(windows.index_x) > 0:
             hourly_index = pd.DatetimeIndex(windows.index_x[:, -1])
-            ref_dates = hourly_index.normalize()
-            unique_days = pd.DatetimeIndex(sorted(ref_dates.unique()))
-            day_to_idx = {d: i for i, d in enumerate(unique_days)}
-            windows.daily_time_index = np.array(
-                [day_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64
+            ref_dates = hourly_index.floor(constraint_freq) if hasattr(hourly_index, 'floor') else pd.DatetimeIndex([d.floor(constraint_freq) for d in hourly_index])
+            unique_targets = pd.DatetimeIndex(sorted(ref_dates.unique()))
+            target_to_idx = {d: i for i, d in enumerate(unique_targets)}
+            windows.constraint_time_index = np.array(
+                [target_to_idx.get(d, -1) for d in ref_dates], dtype=np.int64
             )
 
         return windows
@@ -1773,7 +1906,9 @@ class MasharikiWeatherDataset:
         spatial_mode: Literal["stations", "grid"] = "stations",
         target_node: Optional[str] = None,
         bbox: Optional[Tuple[float, float, float, float]] = None,
+        interpolation: Optional[str] = None,
         as_xarray: bool = False,
+        temporal_resolution: Optional[str] = None,
     ) -> Windows:
         """
         N-Grid Heterogeneous Extraction mapping native resolutions organically.
@@ -1800,13 +1935,14 @@ class MasharikiWeatherDataset:
             spatial_mode (Literal["stations", "grid"]): Spatial mode to use for the data.
             target_node (Optional[str]): Target node to extract data for.
             bbox (Optional[Tuple[float, float, float, float]]): Bounding box to extract data for.
+            interpolation (Optional[str]): Global interpolation method overriding default ("nearest", "bilinear", "peak_preserving", "patch").
             as_xarray (bool): Whether to return the data as xarray datasets.
             
         Returns:
             Windows: Windows of data.
         """
-        if split is not None and split not in ["train", "test"]:
-            raise ValueError(f"Invalid split value: {split}. Expected 'train' or 'test'.")
+        if split is not None and split not in ["train", "val", "test"]:
+            raise ValueError(f"Invalid split value: {split}. Expected 'train', 'val', or 'test'.")
 
         if ml_task not in ["downscaling", "forecasting", "correction", "anomaly_detection"]:
             raise ValueError("ml_task must be 'downscaling', 'forecasting', 'correction', or 'anomaly_detection'.")
@@ -1817,6 +1953,22 @@ class MasharikiWeatherDataset:
         if not lazy:
             lazy = True # Mandatory logic enforcing isolated VRAM handling Dask per dict entry
             print("Warning: N-Grid architectures natively map `lazy=True`. Eager is bypassed.")
+            
+        if interpolation:
+            if method_overrides is None:
+                method_overrides = {}
+            interp_map = {
+                "patch": "patch_flat",
+                "peak_preserving": "patch_max",
+                "bilinear": "linear",
+                "nearest": "nearest"
+            }
+            mapped_method = interp_map.get(interpolation, interpolation)
+            if gridded_variables:
+                for grp, vars_list in (gridded_variables.items() if isinstance(gridded_variables, dict) else {g: gridded_variables for g in (gridded_url if isinstance(gridded_url, list) else [gridded_url])}.items()):
+                    for var in vars_list:
+                        if var not in method_overrides:
+                            method_overrides[var] = mapped_method
 
         from numpy.lib.stride_tricks import sliding_window_view
         observations, mask = self.get_observations(
@@ -1858,10 +2010,44 @@ class MasharikiWeatherDataset:
                 copy=True,
             )
 
+        # Unified Multi-Rate Temporal Resampling for Observations
+        if temporal_resolution is not None and temporal_resolution.lower() not in ["1h", "h", "native"]:
+            # Use permissive min_count=1 for all temporal resolutions (e.g. 3h, 6h, 1D) 
+            # to preserve partial precipitation accumulations for anomaly detection
+            precip_min_count = 1
+                
+            param_list = [parameters] if isinstance(parameters, str) else (parameters or self.parameters)
+            types = self.infer_variable_types(param_list)
+            
+            resampled_cols = {}
+            for param in param_list:
+                if param in observations.columns.get_level_values(1):
+                    param_df = observations.xs(param, axis=1, level=1, drop_level=False)
+                    p_type = types.get(param, "PHYSICAL")
+                    if p_type == "PRECIPITATION" or p_type == "FLUX":
+                        resampled_cols[param] = param_df.resample(temporal_resolution).sum(min_count=precip_min_count)
+                    elif p_type == "STATIC":
+                        resampled_cols[param] = param_df.resample(temporal_resolution).first()
+                    else:
+                        resampled_cols[param] = param_df.resample(temporal_resolution).mean()
+            
+            if resampled_cols:
+                observations = pd.concat(list(resampled_cols.values()), axis=1).sort_index(axis=1)
+                
+            # For the missing mask, if any timestamp within the interval was missing, the interval might be considered missing.
+            # Using max() correctly flags True if any sub-interval had True. But since we use min_count=21, 
+            # maybe we use sum() > (hours_in_res - precip_min_count). For now, strict max() is safest for physical fields.
+            mask = mask.resample(temporal_resolution).max()
+
+        station_static_whitelist = [
+            'dem', 'Slope', 'Aspect_sin', 'Aspect_cos', 
+            'LandCover', 'DistanceToWater', 'TPI_2000M'
+        ]
+        available_static = [c for c in station_static_whitelist if c in self.stations_table.columns]
+        
         cat_cols = ['LandCover']
-        all_static = [c for c in self.stations_table.columns if c not in ['latitude', 'longitude', 'network']]
-        valid_cat = [c for c in cat_cols if c in all_static]
-        valid_cont = [c for c in all_static if c not in valid_cat]
+        valid_cat = [c for c in cat_cols if c in available_static]
+        valid_cont = [c for c in available_static if c not in valid_cat]
 
         windows = Windows(
             station_x=np.array([]), station_mask_x=np.array([]),
@@ -1884,15 +2070,18 @@ class MasharikiWeatherDataset:
             # window_size is total context (e.g. 48h). Y is the midpoint.
             mid = window_size // 2
             
-            # X extracted from full sequence
-            windows.station_x = sliding_window_view(obs_np, window_size, axis=0)[::stride]
-            windows.station_mask_x = sliding_window_view(mask_np, window_size, axis=0)[::stride]
-            windows.index_x = sliding_window_view(observations.index.values, window_size, axis=0)[::stride]
+            x_slice = slice(None)
+            windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
+            windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index.values[x_slice], window_size, axis=0)[::stride]
+            
+            y_slice = slice(mid, len(obs_np) - (window_size - mid - 1))
+            y_is_single_point = True
             
             # Y extracted as the midpoint observation
-            y_pts = obs_np[mid : len(obs_np) - (window_size - mid - 1)]
-            m_pts = mask_np[mid : len(mask_np) - (window_size - mid - 1)]
-            i_pts = observations.index[mid : len(observations) - (window_size - mid - 1)].values
+            y_pts = obs_np[y_slice]
+            m_pts = mask_np[y_slice]
+            i_pts = observations.index.values[y_slice]
             
             # Ensure batch alignment (stride applied after slicing)
             windows.station_y = y_pts[::stride][:, np.newaxis, ...]
@@ -1911,12 +2100,15 @@ class MasharikiWeatherDataset:
             x_slice = slice(None, len(obs_np) - horizon_size - delay)
             windows.station_x = sliding_window_view(obs_np[x_slice], window_size, axis=0)[::stride]
             windows.station_mask_x = sliding_window_view(mask_np[x_slice], window_size, axis=0)[::stride]
-            windows.index_x = sliding_window_view(observations.index[x_slice].values, window_size, axis=0)[::stride]
+            windows.index_x = sliding_window_view(observations.index.values[x_slice], window_size, axis=0)[::stride]
             
             y_start = window_size + delay
-            windows.station_y = sliding_window_view(obs_np[y_start:], horizon_size, axis=0)[::stride]
-            windows.station_mask_y = sliding_window_view(mask_np[y_start:], horizon_size, axis=0)[::stride]
-            windows.index_y = sliding_window_view(observations.index[y_start:].values, horizon_size, axis=0)[::stride]
+            y_slice = slice(y_start, None)
+            y_is_single_point = False
+            
+            windows.station_y = sliding_window_view(obs_np[y_slice], horizon_size, axis=0)[::stride]
+            windows.station_mask_y = sliding_window_view(mask_np[y_slice], horizon_size, axis=0)[::stride]
+            windows.index_y = sliding_window_view(observations.index.values[y_slice], horizon_size, axis=0)[::stride]
             windows.valid_batch_indices = np.arange(0, len(observations) - sample_span + 1, stride)
             
         if valid_cont:
@@ -1931,12 +2123,9 @@ class MasharikiWeatherDataset:
             # Physically Prohibit Daily Products as Sequential PyG Inputs
             daily_conflicts = [g for g in groups if g in ["chirps", "tamsat"]]
             if daily_conflicts:
-                raise ValueError(
-                    f"Invalid gridded input for temporal windowing: {daily_conflicts}. "
-                    "CHIRPS and TAMSAT are native daily products. Including them as sequential "
-                    "inputs structurally destroys spatiotemporal intermittency and introduces "
-                    "artificial impulse constraints. Please explicitly remove them from `gridded_url` "
-                    "and handle them independently as mass-conservation targets in your loss pipeline."
+                import warnings
+                warnings.warn(
+                    "CHIRPS and TAMSAT are native daily products"
                 )
 
             target_years = list(set(observations.index.year)) if not observations.empty else self.years
@@ -1959,6 +2148,14 @@ class MasharikiWeatherDataset:
                       for year in target_years:
                            ds = self._open_gridded_zarr(group, year, lazy=True)
                            if ds is None: continue
+                           
+                           # Validate constraints dynamically
+                           validate_gridded_dataset(
+                               ds, 
+                               product_name=group, 
+                               requested_freq=temporal_resolution or self.freq,
+                               bbox=bbox
+                           )
                            
                            if first_date or last_date:
                                f_dt = pd.to_datetime(first_date, utc=True).tz_localize(None) if first_date else None
@@ -1999,11 +2196,10 @@ class MasharikiWeatherDataset:
                                 l_min, l_max = min(lat1, lat2), max(lat1, lat2)
                                 n_min, n_max = min(lon1, lon2), max(lon1, lon2)
                                 
-                                ds = self.spatial_sel(
-                                    ds[valid_vars],
-                                    lat_slice=slice(max(0, l_min), min(len(lats), l_max + 1)),
-                                    lon_slice=slice(max(0, n_min), min(len(lons), n_max + 1))
-                                )
+                                ds = ds[valid_vars].isel({
+                                    lat_dim: slice(max(0, l_min), min(len(lats), l_max + 1)),
+                                    lon_dim: slice(max(0, n_min), min(len(lons), n_max + 1))
+                                })
                            else:
                                 ds = ds[valid_vars]
                                 
@@ -2018,6 +2214,36 @@ class MasharikiWeatherDataset:
                            per_grid_datasets[group] = concat_ds
 
             if per_grid_datasets:
+                 if temporal_resolution is not None and temporal_resolution.lower() not in ["1h", "h", "native"]:
+                     # Apply temporal resolution alignment to all loaded grid structures
+                     for g_name, g_ds in list(per_grid_datasets.items()):
+                         if isinstance(g_ds, pd.DataFrame):
+                             var_types = self.infer_variable_types(g_ds.columns.get_level_values(1).unique())
+                             resampled_cols = {}
+                             for param in g_ds.columns.get_level_values(1).unique():
+                                 param_df = g_ds.xs(param, axis=1, level=1, drop_level=False)
+                                 p_type = var_types.get(param, "PHYSICAL")
+                                 if p_type == "PRECIPITATION" or p_type == "FLUX":
+                                     resampled_cols[param] = param_df.resample(temporal_resolution).sum(min_count=1)
+                                 else:
+                                     resampled_cols[param] = param_df.resample(temporal_resolution).mean()
+                             if resampled_cols:
+                                 per_grid_datasets[g_name] = pd.concat(list(resampled_cols.values()), axis=1).sort_index(axis=1)
+                         else:
+                             # Xarray resampling
+                             var_types = self.infer_variable_types(list(g_ds.data_vars))
+                             precip_vars = [v for v, t in var_types.items() if t in ["PRECIPITATION", "FLUX"]]
+                             phys_vars = [v for v, t in var_types.items() if t not in ["PRECIPITATION", "FLUX"]]
+                             
+                             resampled_parts = []
+                             if precip_vars:
+                                 resampled_parts.append(g_ds[precip_vars].resample(time=temporal_resolution).sum(skipna=False))
+                             if phys_vars:
+                                 resampled_parts.append(g_ds[phys_vars].resample(time=temporal_resolution).mean(skipna=False))
+                             
+                             if resampled_parts:
+                                 per_grid_datasets[g_name] = xr.merge(resampled_parts, compat="override")
+
                  common_times = observations.index
                  for g_name, g_ds in per_grid_datasets.items():
                       if isinstance(g_ds, pd.DataFrame):
@@ -2048,12 +2274,11 @@ class MasharikiWeatherDataset:
                            grid_np = self._export_df(g_df, as_numpy=True, copy=False).astype(np.float32, copy=False)
                            windows.grids_features[g_name] = g_df.columns.unique(level=1).tolist()
                            windows.grids_x[g_name] = sliding_window_view(grid_np[x_slice], window_size, axis=0)[::stride][x_idx_mask]
-                           windows.grids_y[g_name] = sliding_window_view(grid_np[y_start:], horizon_size, axis=0)[::stride][x_idx_mask]
+                           if y_is_single_point:
+                               windows.grids_y[g_name] = grid_np[y_slice][::stride][x_idx_mask][:, np.newaxis, ...]
+                           else:
+                               windows.grids_y[g_name] = sliding_window_view(grid_np[y_slice], horizon_size, axis=0)[::stride][x_idx_mask]
                       else:
-                           # Native Scale Preservation and Alignment
-                           if group == "imerg":
-                               g_ds = g_ds.resample(time="1h").sum(skipna=False)
-                           
                            g_ds = g_ds.sel(time=common_times)
                            windows.grids_features[g_name] = list(g_ds.data_vars)
                            windows.grids_x[g_name] = g_ds

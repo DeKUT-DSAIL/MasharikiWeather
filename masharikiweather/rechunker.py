@@ -42,7 +42,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         raise FileNotFoundError(f"Input Zarr not found: {input_path}")
         
     print(f"Optimizing Mashariki I/O: {input_path} -> {output_path}")
-    ds = xr.open_zarr(input_path, decode_timedelta=False)
+    ds = xr.open_zarr(input_path, decode_timedelta=False, zarr_format=2)
     
     # Define new chunks using ONLY actual dimensions (ds.dims),
     # not ds.coords which includes scalar metadata like 'number', 'step', 'surface'.
@@ -69,7 +69,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         
     try:
         with ProgressBar():
-            ds_rechunked.to_zarr(temp_path, mode='w', encoding=encoding, consolidated=True)
+            ds_rechunked.to_zarr(temp_path, mode='w', encoding=encoding, consolidated=True, zarr_format=2)
         
         # Rename tmp to final
         if os.path.exists(output_path):
