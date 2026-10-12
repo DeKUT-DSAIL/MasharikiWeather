@@ -76,6 +76,37 @@ AFRICAN_REGIONS: Dict[str, List[str]] = {
     "central_africa": ["CG", "CF", "CM", "GB", "CT", "CD", "EK"],
 }
 
+# Extended continent and global presets (Africa is priority, but global queries supported)
+CONTINENT_REGIONS: Dict[str, List[str]] = {
+    "africa": list({c for cs in AFRICAN_REGIONS.values() for c in cs}),
+    "all_africa": list({c for cs in AFRICAN_REGIONS.values() for c in cs}),
+    "europe": [
+        "NL", "GM", "FR", "UK", "IT", "SP", "BE", "SW", "SZ", "AU", "PL",
+        "NO", "FI", "DA", "EI", "PO", "GR", "HU", "CZ", "LO", "RO", "BU",
+        "HR", "SI", "BK", "EN", "LG", "LH", "MD", "AL", "IC", "LU", "MT"
+    ],
+    "north_america": [
+        "US", "CA", "MX", "GL", "CU", "JM", "HA", "DR", "BF", "BH",
+        "CS", "GT", "HO", "ES", "NU", "PM"
+    ],
+    "south_america": [
+        "BR", "AR", "CI", "CO", "PE", "VE", "BL", "EC", "PA", "UY",
+        "GY", "SR", "GF"
+    ],
+    "asia": [
+        "CH", "IN", "JA", "KS", "KN", "ID", "TH", "VM", "RP", "MY",
+        "PK", "BG", "SA", "AE", "TU", "IS", "IR", "IZ", "KU", "QA",
+        "OM", "YE", "SY", "LE", "JO"
+    ],
+    "oceania": ["AS", "NZ", "FJ", "PP", "NC", "VA", "WS", "TO"],
+}
+
+GLOBAL_REGIONS: Dict[str, List[str]] = {
+    **AFRICAN_REGIONS,
+    **CONTINENT_REGIONS,
+}
+
+
 # Standard GHCN-Daily Lexicon mapping canonical aliases to (NOAA element, unit conversion)
 GHCNDailyLexicon: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # 1. Temperature metrics
@@ -415,9 +446,10 @@ class _GHCNBase:
 
         selected_stations: Set[str] = set(stations or [])
 
-        # Dynamic African region / country / bounding box station discovery
+        # Global station discovery (Africa-first default, with global country/continent support)
         if region or countries or country_codes:
-            african_df = self.get_african_stations(
+            disc_func = getattr(self, "get_stations", self.get_african_stations)
+            disc_df = disc_func(
                 region=region,
                 countries=countries,
                 country_codes=country_codes,
@@ -426,8 +458,8 @@ class _GHCNBase:
                 min_year=min_year,
                 active_only=active_only,
             )
-            id_col = "ID" if "ID" in african_df.columns else "Station_ID"
-            selected_stations.update(african_df[id_col].dropna().tolist())
+            id_col = "ID" if "ID" in disc_df.columns else "Station_ID"
+            selected_stations.update(disc_df[id_col].dropna().tolist())
         elif bounds is not None:
             bbox_stations = self.get_stations_bbox(bounds, cache_dir=cache_dir)
             selected_stations.update(bbox_stations)
@@ -812,7 +844,7 @@ class GHCNDaily(_GHCNBase):
         return pd.DataFrame(rows)
 
     @classmethod
-    def get_african_stations(
+    def get_stations(
         cls,
         region: Optional[str] = None,
         countries: Optional[Union[str, List[str]]] = None,
@@ -824,16 +856,19 @@ class GHCNDaily(_GHCNBase):
         active_only: bool = False,
     ) -> pd.DataFrame:
         """
-        Dynamically discover and filter African GHCN stations.
+        Dynamically discover and filter GHCN stations globally or by region.
+        Supports any country worldwide (e.g. 'Netherlands', 'Germany', 'Kenya', 'Japan'),
+        continent presets ('europe', 'north_america', 'south_america', 'asia', 'oceania', 'africa'),
+        or African regional presets ('kenya', 'east_africa', 'west_africa', etc.).
 
         Parameters
         ----------
         region : str, optional
-            African region preset ('kenya', 'east_africa', 'west_africa', 'southern_africa', etc.).
+            Region preset (e.g. 'kenya', 'east_africa', 'africa', 'europe', 'asia', 'north_america').
         countries : str or list of str, optional
-            Country names (e.g. 'Nigeria', 'Botswana', ['Kenya', 'Tanzania']).
+            Country names (e.g. 'Netherlands', 'Kenya', ['Germany', 'France']).
         country_codes : str or list of str, optional
-            NOAA 2-letter country prefixes (e.g. 'NI', 'BC', 'KE').
+            NOAA 2-letter country prefixes (e.g. 'NL', 'GM', 'KE').
         bounds : dict or tuple, optional
             Bounding box coordinates.
         cache_dir : str, default './ghcn_cache'
@@ -855,27 +890,28 @@ class GHCNDaily(_GHCNBase):
 
         if region:
             reg_clean = region.strip().lower().replace("-", "_").replace(" ", "_")
-            if reg_clean in ["africa", "all_africa"]:
-                for code_list in AFRICAN_REGIONS.values():
-                    target_codes.update(code_list)
-            elif reg_clean in AFRICAN_REGIONS:
-                target_codes.update(AFRICAN_REGIONS[reg_clean])
+            if reg_clean in GLOBAL_REGIONS:
+                target_codes.update(GLOBAL_REGIONS[reg_clean])
             else:
-                available = list(AFRICAN_REGIONS.keys()) + ["africa"]
+                available = list(GLOBAL_REGIONS.keys())
                 raise ValueError(f"Unknown region '{region}'. Available presets: {available}")
 
         if countries:
             if isinstance(countries, str):
                 countries = [countries]
             for c in countries:
-                c_low = c.strip().lower()
-                matched = country_meta[
-                    country_meta["country_name"].str.lower().str.contains(c_low, regex=False)
-                ]
-                if not matched.empty:
-                    target_codes.update(matched["country_code"].tolist())
+                c_clean = c.strip()
+                if len(c_clean) == 2:
+                    target_codes.add(c_clean.upper())
                 else:
-                    target_codes.add(c.upper())
+                    c_low = c_clean.lower()
+                    matched = country_meta[
+                        country_meta["country_name"].str.lower().str.contains(c_low, regex=False)
+                    ]
+                    if not matched.empty:
+                        target_codes.update(matched["country_code"].tolist())
+                    else:
+                        target_codes.add(c_clean.upper())
 
         if country_codes:
             if isinstance(country_codes, str):
@@ -984,6 +1020,35 @@ class GHCNDaily(_GHCNBase):
             meta = meta.reset_index(drop=True)
 
         return meta
+
+    @classmethod
+    def get_african_stations(
+        cls,
+        region: Optional[str] = None,
+        countries: Optional[Union[str, List[str]]] = None,
+        country_codes: Optional[Union[str, List[str]]] = None,
+        bounds: Optional[Union[Dict[str, float], Tuple[float, float, float, float]]] = None,
+        cache_dir: str = "./ghcn_cache",
+        include_inventory: bool = True,
+        min_year: Optional[int] = None,
+        active_only: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Dynamically discover African GHCN stations across East, West, North, Southern, and Central Africa.
+        Defaults to all Africa if no regional filters are provided.
+        """
+        if region is None and countries is None and country_codes is None and bounds is None:
+            region = "africa"
+        return cls.get_stations(
+            region=region,
+            countries=countries,
+            country_codes=country_codes,
+            bounds=bounds,
+            cache_dir=cache_dir,
+            include_inventory=include_inventory,
+            min_year=min_year,
+            active_only=active_only,
+        )
 
     async def _fetch_parquet_keys(self, keys: List[str]) -> List[pd.DataFrame]:
         frames = []
@@ -1746,7 +1811,7 @@ class GHCNHourly(_GHCNBase):
         return sub["ID"].tolist()
 
     @classmethod
-    def get_african_stations(
+    def get_stations(
         cls,
         region: Optional[str] = None,
         countries: Optional[Union[str, List[str]]] = None,
@@ -1757,20 +1822,27 @@ class GHCNHourly(_GHCNBase):
         min_year: Optional[int] = None,
         **kwargs,
     ) -> pd.DataFrame:
+        """
+        Dynamically discover and filter GHCN-Hourly stations worldwide or by region.
+        Supports global presets ('europe', 'north_america', 'south_america', 'asia', 'oceania', 'africa'),
+        country names (e.g. 'Netherlands', 'Germany', 'Kenya'), or NOAA country codes.
+        """
         meta = cls.get_station_metadata(cache_dir=cache_dir).copy()
         if "country_code" not in meta.columns:
-            meta["country_code"] = meta["ID"].str[:2]
+            if "ISO_CODE" in meta.columns:
+                meta["country_code"] = meta["ISO_CODE"].fillna(meta["ID"].str[:2])
+            else:
+                meta["country_code"] = meta["ID"].str[:2]
+
+        country_meta = GHCNDaily.get_country_metadata(cache_dir=cache_dir)
 
         target_codes: Set[str] = set()
         if region:
             reg_clean = region.strip().lower().replace("-", "_").replace(" ", "_")
-            if reg_clean in ["africa", "all_africa"]:
-                for code_list in AFRICAN_REGIONS.values():
-                    target_codes.update(code_list)
-            elif reg_clean in AFRICAN_REGIONS:
-                target_codes.update(AFRICAN_REGIONS[reg_clean])
+            if reg_clean in GLOBAL_REGIONS:
+                target_codes.update(GLOBAL_REGIONS[reg_clean])
             else:
-                available = list(AFRICAN_REGIONS.keys()) + ["africa"]
+                available = list(GLOBAL_REGIONS.keys())
                 raise ValueError(f"Unknown region '{region}'. Available presets: {available}")
 
         if country_codes:
@@ -1781,15 +1853,27 @@ class GHCNHourly(_GHCNBase):
         if countries:
             if isinstance(countries, str):
                 countries = [countries]
-            for c_name in [c.strip().upper() for c in countries]:
-                if len(c_name) == 2:
-                    target_codes.add(c_name)
+            for c in countries:
+                c_clean = c.strip()
+                if len(c_clean) == 2:
+                    target_codes.add(c_clean.upper())
                 else:
-                    matched_ids = meta[meta["NAME"].astype(str).str.upper().str.contains(c_name, regex=False)]["ID"].tolist()
+                    c_low = c_clean.lower()
+                    matched = country_meta[
+                        country_meta["country_name"].str.lower().str.contains(c_low, regex=False)
+                    ]
+                    if not matched.empty:
+                        target_codes.update(matched["country_code"].tolist())
+                    matched_ids = meta[meta["NAME"].astype(str).str.upper().str.contains(c_clean.upper(), regex=False)]["ID"].tolist()
                     target_codes.update([m[:2] for m in matched_ids])
 
         if target_codes:
-            meta = meta[meta["country_code"].isin(target_codes) | meta["ID"].str[:2].isin(target_codes)].copy()
+            iso_col = meta["ISO_CODE"] if "ISO_CODE" in meta.columns else pd.Series(index=meta.index, dtype=str)
+            meta = meta[
+                meta["country_code"].isin(target_codes)
+                | meta["ID"].str[:2].isin(target_codes)
+                | iso_col.isin(target_codes)
+            ].copy()
 
         if bounds is not None:
             if isinstance(bounds, dict):
@@ -1805,6 +1889,35 @@ class GHCNHourly(_GHCNBase):
             ].copy()
 
         return meta.reset_index(drop=True)
+
+    @classmethod
+    def get_african_stations(
+        cls,
+        region: Optional[str] = None,
+        countries: Optional[Union[str, List[str]]] = None,
+        country_codes: Optional[Union[str, List[str]]] = None,
+        bounds: Optional[Union[Dict[str, float], Tuple[float, float, float, float]]] = None,
+        cache_dir: str = "./ghcn_cache",
+        active_only: bool = False,
+        min_year: Optional[int] = None,
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Dynamically discover African GHCN-Hourly stations across East, West, North, Southern, and Central Africa.
+        Defaults to all Africa if no regional filters are provided.
+        """
+        if region is None and countries is None and country_codes is None and bounds is None:
+            region = "africa"
+        return cls.get_stations(
+            region=region,
+            countries=countries,
+            country_codes=country_codes,
+            bounds=bounds,
+            cache_dir=cache_dir,
+            active_only=active_only,
+            min_year=min_year,
+            **kwargs,
+        )
 
     async def _fetch_station_year(self, station: str, year: int, access_method: str = "auto") -> pd.DataFrame:
         """
@@ -2713,6 +2826,9 @@ def query_ghcn_hourly(
     cache_dir : str, default './ghcn_cache'
         Local directory for caching downloaded NOAA archives.
     """
+    if stations is None and region is None and countries is None:
+        region = "kenya"
+
     vars_to_fetch = variables or ["t2m", "ws10m", "dew_point"]
     pipeline = GHCNHourly(
         stations=stations,
@@ -2752,5 +2868,101 @@ def check_ghcn_availability(
     if hasattr(pipeline, "validate_station_coverage"):
         return pipeline.validate_station_coverage(variables=variables)
     return pipeline.get_stations_dataframe()
+
+
+def get_stations(
+    resolution: str = "daily",
+    region: Optional[str] = None,
+    countries: Optional[Union[str, List[str]]] = None,
+    country_codes: Optional[Union[str, List[str]]] = None,
+    bounds: Optional[Union[Dict[str, float], Tuple[float, float, float, float]]] = None,
+    cache_dir: str = "./ghcn_cache",
+    include_inventory: bool = True,
+    min_year: Optional[int] = None,
+    active_only: bool = False,
+) -> pd.DataFrame:
+    """
+    Dynamically discover weather stations anywhere in the world or by region/country.
+    Defaults to African coverage when no location parameters are specified, while fully
+    supporting global discovery for any country (e.g. 'Netherlands', 'Germany', 'USA'),
+    continent presets ('europe', 'north_america', 'south_america', 'asia', 'oceania', 'africa'),
+    or bounding box coordinates worldwide.
+
+    Parameters
+    ----------
+    resolution : str, default 'daily'
+        'daily' (GHCN-Daily) or 'hourly' (GHCN-Hourly).
+    region : str, optional
+        Preset region or continent ('kenya', 'east_africa', 'africa', 'europe', 'north_america', 'asia', etc.).
+    countries : str or list of str, optional
+        Country name(s) (e.g. 'Netherlands', 'Kenya', ['Germany', 'France']).
+    country_codes : str or list of str, optional
+        NOAA 2-letter country code(s) (e.g. 'NL', 'GM', 'KE').
+    bounds : dict or tuple, optional
+        Bounding box coordinates (min_lat, min_lon, max_lat, max_lon) or dict with keys.
+    cache_dir : str, default './ghcn_cache'
+        Local directory for metadata and station list caching.
+    include_inventory : bool, default True
+        If True, enriches daily stations with observation lifecycle (active status, start/end years).
+    min_year : int, optional
+        Only return stations active in or after this year (e.g. 2020).
+    active_only : bool, default False
+        Filter to actively reporting stations.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame of matching stations with metadata and operational coordinates.
+    """
+    res = str(resolution).lower().strip()
+    if res in ("hourly", "ghcnh"):
+        return GHCNHourly.get_stations(
+            region=region,
+            countries=countries,
+            country_codes=country_codes,
+            bounds=bounds,
+            cache_dir=cache_dir,
+            active_only=active_only,
+            min_year=min_year,
+        )
+    return GHCNDaily.get_stations(
+        region=region,
+        countries=countries,
+        country_codes=country_codes,
+        bounds=bounds,
+        cache_dir=cache_dir,
+        include_inventory=include_inventory,
+        min_year=min_year,
+        active_only=active_only,
+    )
+
+
+def get_african_stations(
+    resolution: str = "daily",
+    region: Optional[str] = None,
+    countries: Optional[Union[str, List[str]]] = None,
+    country_codes: Optional[Union[str, List[str]]] = None,
+    bounds: Optional[Union[Dict[str, float], Tuple[float, float, float, float]]] = None,
+    cache_dir: str = "./ghcn_cache",
+    include_inventory: bool = True,
+    min_year: Optional[int] = None,
+    active_only: bool = False,
+) -> pd.DataFrame:
+    """
+    Discover African weather stations across East, West, North, Southern, and Central Africa.
+    Defaults to all Africa if no regional filters are provided.
+    """
+    return get_stations(
+        resolution=resolution,
+        region=region or "africa",
+        countries=countries,
+        country_codes=country_codes,
+        bounds=bounds,
+        cache_dir=cache_dir,
+        include_inventory=include_inventory,
+        min_year=min_year,
+        active_only=active_only,
+    )
+
 
 

@@ -378,6 +378,56 @@ class TestGHCNApiWrapper(unittest.TestCase):
         self.assertFalse(s_hkjk.empty)
         self.assertTrue(10.0 <= s_hkjk.mean() <= 30.0)
 
+    def test_global_station_discovery_and_queries(self):
+        """Verify global querying anywhere in the world (e.g. Netherlands / Europe) while maintaining African priority."""
+        from masharikiweather import (
+            get_stations,
+            get_african_stations,
+            query_ghcn_daily,
+            query_ghcn_hourly,
+            GLOBAL_REGIONS,
+            CONTINENT_REGIONS,
+        )
+
+        # 1. Preset dictionaries exist and contain Europe, Asia, Americas, etc.
+        self.assertIn("europe", CONTINENT_REGIONS)
+        self.assertIn("NL", CONTINENT_REGIONS["europe"])
+        self.assertIn("africa", CONTINENT_REGIONS)
+        self.assertIn("kenya", GLOBAL_REGIONS)
+
+        # 2. Discover Netherlands stations (Daily and Hourly)
+        nl_daily = get_stations(countries="Netherlands", resolution="daily", include_inventory=False)
+        self.assertFalse(nl_daily.empty)
+        self.assertGreaterEqual(len(nl_daily), 50)
+        self.assertTrue((nl_daily["country_code"] == "NL").all())
+
+        nl_hourly = get_stations(countries="Netherlands", resolution="hourly")
+        self.assertFalse(nl_hourly.empty)
+        self.assertGreaterEqual(len(nl_hourly), 20)
+        self.assertTrue((nl_hourly["country_code"] == "NL").all())
+
+        # 3. African discovery default
+        af_daily = get_african_stations(resolution="daily", include_inventory=False)
+        self.assertFalse(af_daily.empty)
+
+        # 4. Global observations query: Daily Netherlands (De Bilt)
+        df_nl_daily = query_ghcn_daily(
+            stations=["NLM00006260"],
+            variables=["t2m_max", "tp"],
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+        )
+        self.assertFalse(df_nl_daily.empty)
+
+        # 5. Global observations query: Hourly Amsterdam Schiphol (ICAO: EHAM)
+        df_nl_hourly = query_ghcn_hourly(
+            stations=["EHAM"],
+            variables=["t2m"],
+            start_date="2024-01-01",
+            end_date="2024-01-02",
+        )
+        self.assertFalse(df_nl_hourly.empty)
+
 
 if __name__ == "__main__":
     unittest.main()
