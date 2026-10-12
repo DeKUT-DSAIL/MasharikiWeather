@@ -226,3 +226,8 @@ mashariki_data/
 
 # log
 agent_interaction_log.json
+
+# Cache & Environments
+.venv/
+ghcn_cache/
+ghcn_notebook.ipynb

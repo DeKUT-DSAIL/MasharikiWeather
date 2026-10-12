@@ -12,8 +12,10 @@ except ImportError:
     HAS_TORCH = False
     print("WARNING: torch/torch_geometric not found. Skipping HeteroData validation.")
 
+import pytest
 from masharikiweather.dataset import MasharikiWeatherDataset
 
+@pytest.mark.skipif(not os.getenv("HF_TOKEN"), reason="HF_TOKEN not set; skipping live HuggingFace integration test")
 def test_bias_correction_scenario():
     print("\n--- TEST: Multi-Grid Precipitation Bias Correction (ERA5 + IMERG + TAHMO) ---")
     

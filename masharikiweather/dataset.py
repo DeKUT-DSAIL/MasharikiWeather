@@ -73,24 +73,74 @@ class Windows:
     daily_masks: Dict[str, np.ndarray] = field(default_factory=dict)
     daily_time_index: Optional[np.ndarray] = None  # Maps hourly steps -> day index
 
-def sliding_window_view(a: np.ndarray, window_shape: int) -> np.ndarray:
+    @property
+    def x(self):
+        return self.station_x
+
+    @x.setter
+    def x(self, val):
+        self.station_x = val
+
+    @property
+    def y(self):
+        return self.station_y
+
+    @y.setter
+    def y(self, val):
+        self.station_y = val
+
+    @property
+    def mask_x(self):
+        return self.station_mask_x
+
+    @mask_x.setter
+    def mask_x(self, val):
+        self.station_mask_x = val
+
+    @property
+    def mask_y(self):
+        return self.station_mask_y
+
+    @mask_y.setter
+    def mask_y(self, val):
+        self.station_mask_y = val
+
+    @property
+    def static_stations(self):
+        return self.station_static
+
+    @static_stations.setter
+    def static_stations(self, val):
+        self.station_static = val
+
+    @property
+    def static_stations_categorical(self):
+        return self.station_static_categorical
+
+    @static_stations_categorical.setter
+    def static_stations_categorical(self, val):
+        self.station_static_categorical = val
+
+
+def sliding_window_view(a: np.ndarray, window_shape: int, axis: int = 0) -> np.ndarray:
     """
     Create a sliding window view of an array.
 
     Args:
         a (np.ndarray): Input array.
         window_shape (int): Shape of the sliding window.
+        axis (int): Axis along which sliding window is computed.
 
     Returns:
-        np.ndarray: Sliding window view of the array.
+        np.ndarray: Sliding window view of the array with window dimension at axis 1.
     """
     from numpy.lib.stride_tricks import sliding_window_view as np_swv
-    if hasattr(a, "values"):
-        windows = np_swv(a.values, window_shape, axis=0)
-    else:
-        windows = np_swv(a, window_shape, axis=0)
+    val = a.values if hasattr(a, "values") else a
+    windows = np_swv(val, window_shape, axis=axis)
+    if windows.ndim > 2:
+        windows = np.moveaxis(windows, -1, 1)
     # Force contiguous memory layout for safe PyTorch tensor conversion
-    return np.ascontiguousarray(np.moveaxis(windows, -1, 1))
+    return np.ascontiguousarray(windows)
 
 def df_add_missing_columns(df: pd.DataFrame, col0, col1, fill_value=np.nan) -> pd.DataFrame:
     idx = pd.MultiIndex.from_product([col0, col1], names=['station_id', 'parameter'])
@@ -413,7 +463,7 @@ class MasharikiWeatherDataset:
         target_years = [years] if isinstance(years, int) else (years or self.years)
         target_years = self._validate_years(target_years)
         # Use class preference if caller doesn't specify swap
-        should_swap = swap if swap is not None else self.swap
+        should_swap = swap if swap is not None else getattr(self, "swap", False)
         
         if not force:
             print(f"WARNING: You are about to statically download dense Zarr arrays for {len(groups)} groups across {len(target_years)} years.")
@@ -874,7 +924,7 @@ class MasharikiWeatherDataset:
 
         for cluster_id in range(actual_clusters):
             cluster_mask = labels == cluster_id
-            cluster_stations = station_ids[cluster_mask]
+            cluster_stations = np.array(station_ids[cluster_mask], copy=True)
             rng.shuffle(cluster_stations)
 
             n_test = max(1, int(len(cluster_stations) * test_fraction))
@@ -1818,7 +1868,6 @@ class MasharikiWeatherDataset:
             lazy = True # Mandatory logic enforcing isolated VRAM handling Dask per dict entry
             print("Warning: N-Grid architectures natively map `lazy=True`. Eager is bypassed.")
 
-        from numpy.lib.stride_tricks import sliding_window_view
         observations, mask = self.get_observations(
             stations=stations,
             parameters=parameters,
@@ -1880,7 +1929,7 @@ class MasharikiWeatherDataset:
 
         # RETROSPECTIVE TASKS: Symmetric Windowing [t-tau, t, t+tau] 
         # This allows the GNN to "scan" the sequence to align ERA5 phase/timing errors.
-        if ml_task in ["correction", "downscaling", "anomaly_detection"]:
+        if ml_task in ["correction", "anomaly_detection"] and horizon_size == 0:
             # window_size is total context (e.g. 48h). Y is the midpoint.
             mid = window_size // 2
             
@@ -1895,14 +1944,24 @@ class MasharikiWeatherDataset:
             i_pts = observations.index[mid : len(observations) - (window_size - mid - 1)].values
             
             # Ensure batch alignment (stride applied after slicing)
-            windows.station_y = y_pts[::stride][:, np.newaxis, ...]
-            windows.station_mask_y = m_pts[::stride][:, np.newaxis, ...]
-            windows.index_y = i_pts[::stride][:, np.newaxis]
+            y_mid = y_pts[::stride]
+            m_mid = m_pts[::stride]
+            i_mid = i_pts[::stride]
+            if y_mid.ndim == 2:
+                windows.station_y = y_mid[:, np.newaxis, :]
+                windows.station_mask_y = m_mid[:, np.newaxis, :]
+            else:
+                windows.station_y = y_mid[:, np.newaxis, ...]
+                windows.station_mask_y = m_mid[:, np.newaxis, ...]
+            windows.index_y = i_mid[:, np.newaxis]
             
             # Valid indices: 0 to len - window_size
             windows.valid_batch_indices = np.arange(0, len(obs_np) - window_size + 1, stride)
+            x_slice = slice(None, len(obs_np) - window_size + 1)
+            y_start = mid
             
-        # FORECASTING: Strict Causal Windowing [t-tau, t] -> [t+delay, t+delay+horizon]
+        # CAUSAL / PREDICTIVE TASKS: [t-tau, t] -> [t+delay, t+delay+horizon]
+        # Applies to forecasting, downscaling, and any task with horizon_size > 0
         else:
             sample_span = window_size + delay + horizon_size
             if len(observations) < sample_span:

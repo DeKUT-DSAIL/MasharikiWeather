@@ -696,7 +696,7 @@ class TestFailFastValidation:
             with patch("builtins.print") as mock_print:
                 # Need valid coordinates for the extraction logic to run without crashing on our mock
                 # The _open_gridded_zarr will be called twice (peek, then real), so return_value works forever
-                result = mock_dataset.get_gridded_for_stations(
+                result, _ = mock_dataset.get_gridded_for_stations(
                     groups=["imerg"],
                     variables=["precipitationCal", "10m_u_component_of_wind"],
                     stations=["S1"]
@@ -728,9 +728,9 @@ class TestFailFastValidation:
             }
         )
         with patch.object(MasharikiWeatherDataset, "_open_gridded_zarr", return_value=mock_ds):
-            result = mock_dataset.get_gridded_for_stations(groups=["mera"], stations=["S1"])
-            assert "mera" in result
-            df = result["mera"]
+            result, _ = mock_dataset.get_gridded_for_stations(groups=["era5"], stations=["S1"])
+            assert "era5" in result
+            df = result["era5"]
             # default extraction is 'nearest' which keeps original names if we assume single pixel
             # Wait, the column names will map to ("S1", "varA")
             assert ("S1", "varA") in df.columns
@@ -747,15 +747,16 @@ class TestZarrLocalDownload:
         
         with patch("os.path.exists", return_value=False), \
              patch("os.makedirs") as mock_makedirs, \
+             patch("os.rename") as mock_rename, \
              patch.object(MasharikiWeatherDataset, "_open_zipped_zarr", return_value=mock_ds):
              
-             # Call with force=True to bypass user prompt
-             mock_dataset.download_gridded_datasets(groups=["era5"], years=[2023], force=True)
+             # Call with force=True and optimize=False to test raw tier caching
+             mock_dataset.download_gridded_datasets(groups=["era5"], years=[2023], force=True, optimize=False)
              
              # Verify directory creation and Zarr dump
              expected_path = "/tmp/test_mashariki/gridded/era5/2023.zarr"
              mock_makedirs.assert_called_with("/tmp/test_mashariki/gridded/era5", exist_ok=True)
-             mock_ds.to_zarr.assert_called_once_with(expected_path, consolidated=True, compute=True)
+             mock_rename.assert_called_once_with(f"{expected_path}.tmp", expected_path)
 
     def test_download_skips_if_already_cached(self, mock_dataset):
         """If local path exists, the download must be skipped."""

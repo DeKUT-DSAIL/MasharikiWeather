@@ -2,26 +2,62 @@
 MasharikiWeather: Spatiotemporal data fusion for East Africa.
 """
 
-from .dataset import MasharikiWeatherDataset, Windows
-from .rechunker import rechunk_dataset
-# from .dataloader import (
-#     EarthSystemAdapter,
-#     PyGDataLoader,
-#     create_dataloader,
-#     create_distributed_dataloader,
-#     project_to_local_crs,
-#     BatchDescriptor,)
+try:
+    from .dataset import MasharikiWeatherDataset, Windows
+    from .rechunker import rechunk_dataset
+except ImportError:
+    MasharikiWeatherDataset = None  # type: ignore
+    Windows = None  # type: ignore
+    rechunk_dataset = None  # type: ignore
 
+from .ghcn_apiwrapper import (
+    GHCN,
+    GHCNDaily,
+    GHCNHourly,
+    GHCNDailyLexicon,
+    GHCNHourlyLexicon,
+    DEFAULT_KENYA_BOUNDS,
+    AFRICAN_REGIONS,
+    haversine_distance,
+    align_to_reference_grid,
+    find_nearest_stations,
+    find_nearest_grid_point,
+    to_wide,
+    query_ghcn_daily,
+    query_ghcn_hourly,
+    check_ghcn_availability,
+    check_station_coverage,
+    check_variable_activeness,
+    get_stations_variable_activeness,
+    get_variable_lifecycle,
+    calculate_relative_humidity,
+    get_station_series,
+)
 
-__version__ = "0.1.9"
+__version__ = "0.2.0"
 __all__ = [
     "MasharikiWeatherDataset",
     "Windows",
     "rechunk_dataset",
-    # "EarthSystemAdapter",
-    # "PyGDataLoader",
-    # "create_dataloader",
-    # "create_distributed_dataloader",
-    # "project_to_local_crs",
-    # "BatchDescriptor",
+    "GHCN",
+    "GHCNDaily",
+    "GHCNHourly",
+    "GHCNDailyLexicon",
+    "GHCNHourlyLexicon",
+    "DEFAULT_KENYA_BOUNDS",
+    "AFRICAN_REGIONS",
+    "haversine_distance",
+    "align_to_reference_grid",
+    "find_nearest_stations",
+    "find_nearest_grid_point",
+    "to_wide",
+    "query_ghcn_daily",
+    "query_ghcn_hourly",
+    "check_ghcn_availability",
+    "check_station_coverage",
+    "check_variable_activeness",
+    "get_stations_variable_activeness",
+    "get_variable_lifecycle",
+    "calculate_relative_humidity",
+    "get_station_series",
 ]
