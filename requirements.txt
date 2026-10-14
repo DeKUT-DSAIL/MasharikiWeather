@@ -1,18 +1,16 @@
-numpy>=1.24.0
-pandas>=2.0.0
-xarray>=2023.0.0
-dask>=2023.10.0
-distributed>=2023.10.0
-fsspec==2025.3.0
-huggingface_hub>=0.19.0
-tqdm>=4.65.0
-zarr>=3.0.0
-netCDF4>=1.6.4
-h5netcdf>=1.2.0
-pyarrow>=14.0.0
-fastparquet>=2023.10.0
-h5py>=3.12.1
-scipy>=1.11.0
-filter-stations>=0.7.1
-pytest>=8.0.0
-scikit-learn>=1.4.2
+# IMERG toolkit requirements
+# Python >= 3.11 is required (zarr 3 does not support older Pythons).
+#   conda create -n imerg python=3.12 -y && conda activate imerg
+#   pip install -r requirements.txt
+
+earthaccess>=0.14.0
+h5py>=3.8
+numpy>=1.24
+pandas>=2.0
+xarray>=2025.1.0
+dask>=2024.1.0
+tqdm>=4.65
+zarr>=3
+
+# optional: only for the plot at the end of example.py
+# matplotlib>=3.7
