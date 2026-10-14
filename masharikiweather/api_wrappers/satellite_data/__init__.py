@@ -28,23 +28,23 @@ from .pvgis import (
 from .sarah3 import (
     SARAH3,
     query_sarah3,
-    search_parameters as search_sarah3_parameters,
-    list_parameters as list_sarah3_parameters,
+    search_sarah3_parameters,
+    list_sarah3_parameters,
     get_sarah3_metadata,
 )
 from .landsaf import (
     LANDSAF,
     query_landsaf,
-    search_parameters as search_landsaf_parameters,
-    list_parameters as list_landsaf_parameters,
+    search_landsaf_parameters,
+    list_landsaf_parameters,
     get_landsaf_metadata,
     list_landsaf_products,
 )
 from .tropomi import (
     TROPOMI,
     query_tropomi,
-    search_parameters as search_tropomi_parameters,
-    list_parameters as list_tropomi_parameters,
+    search_tropomi_parameters,
+    list_tropomi_parameters,
     get_tropomi_metadata,
 )
 

@@ -301,25 +301,29 @@ The wrappers are cleanly organized inside the package as follows:
 ```
 masharikiweather/
 ├── __init__.py                                 # Unified package exports
-├── api_wrappers.py                             # High-level API wrappers interface
-├── api-wrappers/
-│   ├── USAGE.md                                # This documentation file
-│   ├── weather-station-data/                   # Ground weather stations
+├── api_wrappers/                               # Single unified wrappers package
+│   ├── __init__.py                             # Package exports & universal query dispatcher
+│   ├── USAGE.md                                # Comprehensive API usage guide
+│   ├── weather_station_data/                   # Ground weather stations
 │   │   ├── __init__.py
 │   │   └── ghcn_apiwrapper.py                  # NOAA GHCN-D & GHCN-H pipeline
-│   ├── satellite-data/                         # Earth observation satellites
+│   ├── satellite_data/                         # Earth observation satellites
 │   │   ├── __init__.py
+│   │   ├── base.py
 │   │   ├── nasa_power.py                       # NASA POWER (CERES SYN1deg)
 │   │   ├── pvgis.py                            # EU JRC PVGIS (SARAH-2/3, ERA5)
 │   │   ├── sarah3.py                           # EUMETSAT CM SAF SARAH-3
 │   │   ├── landsaf.py                          # EUMETSAT LSA SAF MSG SEVIRI
 │   │   └── tropomi.py                          # Copernicus Sentinel-5P Level-2
-│   └── reanalysis-data/                        # Atmospheric reanalyses & NWP
+│   └── reanalysis_data/                        # Atmospheric reanalyses & NWP
 │       ├── __init__.py
+│       ├── base.py
 │       ├── cams.py                             # Copernicus Atmosphere (CAMS)
 │       ├── merra2.py                           # NASA GMAO MERRA-2
 │       └── open_meteo.py                       # Multi-model NWP & Soil physics
-└── wrappers/                                   # Core backward-compatible engine
-    ├── base.py
+└── notebooks/                                  # Interactive Jupyter demonstration notebooks
+    ├── README.md                               # Demonstration notebooks catalog
+    ├── Demonstrate_GHCN_Pipeline.ipynb
+    ├── Demonstrate_NASA_POWER.ipynb
     └── ...
 ```

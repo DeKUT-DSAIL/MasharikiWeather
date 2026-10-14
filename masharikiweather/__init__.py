@@ -72,9 +72,9 @@ except ImportError:
     pass
 
 try:
-    from . import wrappers
-    for _name in getattr(wrappers, "__all__", []):
-        globals()[_name] = getattr(wrappers, _name)
+    from . import api_wrappers
+    for _name in getattr(api_wrappers, "__all__", []):
+        globals()[_name] = getattr(api_wrappers, _name)
         if _name not in __all__:
             __all__.append(_name)
 except ImportError:
