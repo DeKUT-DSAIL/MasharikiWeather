@@ -71,7 +71,7 @@ try:
 except ImportError:
     pass
 
-# --- Satellite Data ---
+# --- NASA POWER ---
 try:
     from .satellite_data import (
         NASAPower,
@@ -80,28 +80,6 @@ try:
         search_nasa_power_parameters,
         get_nasa_power_latest_dates,
         get_nasa_power_parameter_latency,
-        PVGIS,
-        query_pvgis,
-        simulate_pvgis_pv,
-        query_pvgis_tmy,
-        search_pvgis_parameters,
-        list_pvgis_databases,
-        SARAH3,
-        query_sarah3,
-        search_sarah3_parameters,
-        list_sarah3_parameters,
-        get_sarah3_metadata,
-        LANDSAF,
-        query_landsaf,
-        search_landsaf_parameters,
-        list_landsaf_parameters,
-        get_landsaf_metadata,
-        list_landsaf_products,
-        TROPOMI,
-        query_tropomi,
-        search_tropomi_parameters,
-        list_tropomi_parameters,
-        get_tropomi_metadata,
     )
     __all__.extend([
         "NASAPower",
@@ -110,23 +88,81 @@ try:
         "search_nasa_power_parameters",
         "get_nasa_power_latest_dates",
         "get_nasa_power_parameter_latency",
+    ])
+except ImportError:
+    pass
+
+# --- PVGIS ---
+try:
+    from .satellite_data import (
+        PVGIS,
+        query_pvgis,
+        simulate_pvgis_pv,
+        query_pvgis_tmy,
+        search_pvgis_parameters,
+        list_pvgis_databases,
+    )
+    __all__.extend([
         "PVGIS",
         "query_pvgis",
         "simulate_pvgis_pv",
         "query_pvgis_tmy",
         "search_pvgis_parameters",
         "list_pvgis_databases",
+    ])
+except ImportError:
+    pass
+
+# --- SARAH-3 ---
+try:
+    from .satellite_data import (
+        SARAH3,
+        query_sarah3,
+        search_sarah3_parameters,
+        list_sarah3_parameters,
+        get_sarah3_metadata,
+    )
+    __all__.extend([
         "SARAH3",
         "query_sarah3",
         "search_sarah3_parameters",
         "list_sarah3_parameters",
         "get_sarah3_metadata",
+    ])
+except ImportError:
+    pass
+
+# --- LANDSAF ---
+try:
+    from .satellite_data import (
+        LANDSAF,
+        query_landsaf,
+        search_landsaf_parameters,
+        list_landsaf_parameters,
+        get_landsaf_metadata,
+        list_landsaf_products,
+    )
+    __all__.extend([
         "LANDSAF",
         "query_landsaf",
         "search_landsaf_parameters",
         "list_landsaf_parameters",
         "get_landsaf_metadata",
         "list_landsaf_products",
+    ])
+except ImportError:
+    pass
+
+# --- TROPOMI ---
+try:
+    from .satellite_data import (
+        TROPOMI,
+        query_tropomi,
+        search_tropomi_parameters,
+        list_tropomi_parameters,
+        get_tropomi_metadata,
+    )
+    __all__.extend([
         "TROPOMI",
         "query_tropomi",
         "search_tropomi_parameters",
@@ -136,7 +172,7 @@ try:
 except ImportError:
     pass
 
-# --- Reanalysis Data ---
+# --- CAMS ---
 try:
     from .reanalysis_data import (
         CAMS,
@@ -148,20 +184,6 @@ try:
         search_cams_parameters,
         list_cams_parameters,
         get_cams_metadata,
-        MERRA2,
-        query_merra2,
-        search_merra2_parameters,
-        list_merra2_parameters,
-        get_merra2_metadata,
-        list_merra2_collections,
-        OpenMeteo,
-        query_open_meteo,
-        query_open_meteo_forecast,
-        query_open_meteo_soil,
-        decode_weather_code,
-        search_open_meteo_parameters,
-        list_open_meteo_parameters,
-        get_open_meteo_metadata,
     )
     __all__.extend([
         "CAMS",
@@ -173,12 +195,44 @@ try:
         "search_cams_parameters",
         "list_cams_parameters",
         "get_cams_metadata",
+    ])
+except ImportError:
+    pass
+
+# --- MERRA-2 ---
+try:
+    from .reanalysis_data import (
+        MERRA2,
+        query_merra2,
+        search_merra2_parameters,
+        list_merra2_parameters,
+        get_merra2_metadata,
+        list_merra2_collections,
+    )
+    __all__.extend([
         "MERRA2",
         "query_merra2",
         "search_merra2_parameters",
         "list_merra2_parameters",
         "get_merra2_metadata",
         "list_merra2_collections",
+    ])
+except ImportError:
+    pass
+
+# --- Open-Meteo ---
+try:
+    from .reanalysis_data import (
+        OpenMeteo,
+        query_open_meteo,
+        query_open_meteo_forecast,
+        query_open_meteo_soil,
+        decode_weather_code,
+        search_open_meteo_parameters,
+        list_open_meteo_parameters,
+        get_open_meteo_metadata,
+    )
+    __all__.extend([
         "OpenMeteo",
         "query_open_meteo",
         "query_open_meteo_forecast",
