@@ -24,7 +24,7 @@ ds = result.open()                      # lazy xarray.Dataset, cropped to your d
 | `imerg_wrapper.py` | The toolkit. Download, HDF5 to Zarr conversion and reader in one file. |
 | `example.py` | End-to-end demo: download, open, area-mean, accumulation, plot. |
 | `requirements.txt` | Python dependencies. |
-| `reference_scripts/` | Your original `download_imerg.py` and `access.py`, kept for reference only. **Not needed** to run the toolkit. |
+
 
 ## Install
 
