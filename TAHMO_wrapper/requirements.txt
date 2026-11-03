@@ -1,0 +1,11 @@
+requests
+numpy
+pandas
+python-dateutil
+# Saving to Parquet
+pyarrow
+# Saving to Zarr
+xarray
+zarr
+# Only needed for example.ipynb
+jupyter

@@ -1,0 +1,30 @@
+# Credentials - never commit these
+.env
+*.env
+secrets.*
+credentials.*
+
+# Downloaded data
+output/
+*.csv
+*.parquet
+*.zarr/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
