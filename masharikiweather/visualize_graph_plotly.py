@@ -1,14 +1,33 @@
 import os
-import networkx as nx
-import plotly.graph_objects as go
+from typing import Any, Optional
 import numpy as np
 
-def visualize_interactive_graph(batch, output_dir="plots", filename="interactive_bipartite_graph.html"):
+try:
+    import networkx as nx
+except ImportError:
+    nx = None
+
+try:
+    import plotly.graph_objects as go
+except ImportError:
+    go = None
+
+def visualize_interactive_graph(batch: Any, output_dir: str = "plots", filename: str = "interactive_bipartite_graph.html") -> Optional[str]:
     """
     Creates an interactive Plotly visualization of the Heterogeneous Bipartite Graph.
     Uses physics-informed layouts (Kamada-Kawai) if true geographic coordinates (.pos) 
     are missing from the batch.
     """
+    if nx is None:
+        raise ImportError(
+            "networkx is required for graph visualization. "
+            "Please install it with: pip install networkx"
+        )
+    if go is None:
+        raise ImportError(
+            "plotly is required for interactive graph visualization. "
+            "Please install it with: pip install plotly"
+        )
     os.makedirs(output_dir, exist_ok=True)
     
     instance_G = nx.DiGraph()

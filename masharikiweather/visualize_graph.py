@@ -1,9 +1,19 @@
 import os
-import networkx as nx
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
+from typing import Any, Optional
 
-def visualize_weather_graph(batch, max_nodes_per_type=15, output_dir="plots"):
+try:
+    import networkx as nx
+except ImportError:
+    nx = None
+
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+except ImportError:
+    plt = None
+    Line2D = None
+
+def visualize_weather_graph(batch: Any, max_nodes_per_type: int = 15, output_dir: str = "plots") -> None:
     """
     Generates and saves two visualizations: The Graph Schema and a Subsampled Instance.
     
@@ -12,6 +22,16 @@ def visualize_weather_graph(batch, max_nodes_per_type=15, output_dir="plots"):
         max_nodes_per_type (int): Maximum number of nodes to render per modality.
         output_dir (str): Directory where the high-resolution plots will be saved.
     """
+    if nx is None:
+        raise ImportError(
+            "networkx is required for graph visualization. "
+            "Please install it with: pip install networkx"
+        )
+    if plt is None:
+        raise ImportError(
+            "matplotlib is required for graph visualization. "
+            "Please install it with: pip install matplotlib"
+        )
     # Ensure the output directory exists
     os.makedirs(output_dir, exist_ok=True)
 

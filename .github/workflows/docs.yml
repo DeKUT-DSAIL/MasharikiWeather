@@ -1,27 +1,24 @@
-name: Build and Deploy Documentation
+name: Build Documentation
 
 on:
   push:
     branches:
       - main
-      - feature/merge-apis
   pull_request:
     branches:
       - main
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: "documentation"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    name: Build & Deploy Documentation
+  build-docs:
+    name: Build Documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Source Code
@@ -41,30 +38,3 @@ jobs:
       - name: Build Sphinx Documentation
         run: |
           sphinx-build -b html docs docs/_build/html -W --keep-going
-
-      - name: Deploy to GitHub Pages Branch (gh-pages)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/merge-apis')
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/_build/html
-          force_orphan: true
-
-      - name: Upload Pages Artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/_build/html
-
-  deploy-pages:
-    name: Deploy to GitHub Pages Environment
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: build-and-deploy
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
