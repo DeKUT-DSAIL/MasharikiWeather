@@ -12,6 +12,7 @@ Run via: python -m pytest tests/test_dataset.py -v
 """
 import copy
 import math
+from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
 import numpy as np
@@ -24,7 +25,11 @@ from masharikiweather.dataset import (
     Windows,
     sliding_window_view,
     df_add_missing_columns,
+    pull_station_data,
+    pull_gridded_data,
+    pull_weather_data,
 )
+from masharikiweather.extract.apis.base import SpatialBoundingBox
 
 
 # ---------------------------------------------------------------------------
@@ -777,10 +782,10 @@ class TestZarrLocalDownload:
 
 @pytest.fixture
 def many_stations_dataset():
-    """Dataset with 20 stations spread across East Africa for spatial split tests."""
+    """Dataset with 20 stations spread across Africa for spatial split tests."""
     n_stations = 20
     rng = np.random.default_rng(123)
-    # Realistic East Africa lat/lon ranges
+    # Realistic African lat/lon ranges
     lats = rng.uniform(-4.0, 2.0, size=n_stations)
     lons = rng.uniform(34.0, 42.0, size=n_stations)
     station_ids = [f"ST{i:03d}" for i in range(n_stations)]
@@ -880,6 +885,380 @@ class TestSpatialSplit:
                 overlap = test_sets[i] & test_sets[j]
                 assert len(overlap) == 0, f"Fold {i} and {j} overlap: {overlap}"
 
+
+class TestPullEntrypoints:
+    """Tests for module-level data extraction entrypoints and offline initialization."""
+
+    @patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor")
+    def test_pull_station_data_tahmo_parquet(self, mock_tahmo_cls, tmp_path):
+        """pull_station_data with source='tahmo' and save_parquet=True returns dict of Paths."""
+        mock_instance = MagicMock()
+        mock_tahmo_cls.return_value = mock_instance
+        mock_instance.extract.return_value = {"TA00001": tmp_path / "TA00001.parquet"}
+
+        res = pull_station_data(
+            source="tahmo",
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            bbox=[-2.0, 36.0, 1.0, 38.0],
+            output_dir=tmp_path,
+            save_parquet=True,
+        )
+        assert isinstance(res, dict)
+        assert "TA00001" in res
+        assert isinstance(res["TA00001"], Path)
+        mock_instance.extract.assert_called_once()
+
+    @patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor")
+    def test_pull_station_data_tahmo_dataframe(self, mock_tahmo_cls, tmp_path):
+        """pull_station_data with save_parquet=False returns DataFrame."""
+        mock_instance = MagicMock()
+        mock_tahmo_cls.return_value = mock_instance
+        df_sample = pd.DataFrame(
+            {"temperature": [20.0, 21.0]},
+            index=pd.date_range("2023-01-01", periods=2, freq="h"),
+        )
+        mock_instance.extract.return_value = {"TA00001": df_sample}
+
+        res = pull_station_data(
+            source="tahmo",
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            output_dir=tmp_path,
+            save_parquet=False,
+        )
+        assert isinstance(res, pd.DataFrame)
+        assert not res.empty
+        assert "station_id" in res.columns
+
+    def test_pull_station_data_invalid_source(self, tmp_path):
+        """pull_station_data raises ValueError on unsupported source."""
+        with pytest.raises(ValueError, match="Unsupported station data source"):
+            pull_station_data(source="unknown_sensor_net", output_dir=tmp_path)
+
+    def test_pull_station_data_invalid_bbox(self, tmp_path):
+        """pull_station_data raises ValueError on invalid bbox shape."""
+        with pytest.raises(ValueError, match="Invalid bbox format"):
+            pull_station_data(source="tahmo", bbox=[1.0, 2.0], output_dir=tmp_path)
+
+    @patch("masharikiweather.extract.apis.era5.ERA5Extractor")
+    def test_pull_gridded_data_era5_zarr(self, mock_era5_cls, tmp_path):
+        """pull_gridded_data with source='era5' and save_zarr=True returns Path."""
+        mock_instance = MagicMock()
+        mock_era5_cls.return_value = mock_instance
+        expected_path = tmp_path / "era5.zarr"
+        mock_instance.extract.return_value = expected_path
+
+        res = pull_gridded_data(
+            source="era5",
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            bbox=[-2.0, 36.0, 1.0, 38.0],
+            output_dir=tmp_path,
+            save_zarr=True,
+        )
+        assert res == expected_path
+        mock_instance.extract.assert_called_once()
+
+    @patch("masharikiweather.extract.apis.era5.ERA5Extractor")
+    def test_pull_gridded_data_era5_dataset(self, mock_era5_cls, tmp_path):
+        """pull_gridded_data with save_zarr=False returns xr.Dataset."""
+        mock_instance = MagicMock()
+        mock_era5_cls.return_value = mock_instance
+        mock_ds = xr.Dataset({"t2m": (["time", "latitude", "longitude"], np.zeros((2, 3, 3)))})
+        mock_instance.extract.return_value = mock_ds
+
+        res = pull_gridded_data(
+            source="era5",
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            output_dir=tmp_path,
+            save_zarr=False,
+        )
+        assert isinstance(res, xr.Dataset)
+        assert "t2m" in res.data_vars
+
+    def test_pull_gridded_data_invalid_source(self, tmp_path):
+        """pull_gridded_data raises ValueError on unsupported source."""
+        with pytest.raises(ValueError, match="Unsupported gridded source"):
+            pull_gridded_data(source="unknown_model", output_dir=tmp_path)
+
+    @patch("masharikiweather.extract.apis.era5.ERA5Extractor")
+    def test_pull_gridded_data_cds_arco_options(self, mock_era5_cls, tmp_path):
+        """Verify pull_gridded_data forwards use_cds_arco and chunking to ERA5Extractor."""
+        mock_instance = MagicMock()
+        mock_era5_cls.return_value = mock_instance
+        mock_instance.extract.return_value = tmp_path / "cds_arco.zarr"
+
+        res = pull_gridded_data(
+            source="era5",
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            bbox=[-1.5, 36.5, -1.0, 37.0],
+            output_dir=tmp_path,
+            save_zarr=True,
+            use_cds_arco=True,
+            chunking="geo",
+            stream="sfc",
+        )
+        assert res == tmp_path / "cds_arco.zarr"
+        mock_era5_cls.assert_called_once()
+        assert mock_era5_cls.call_args[1]["use_cds_arco"] is True
+        assert mock_era5_cls.call_args[1]["chunking"] == "geo"
+        assert mock_era5_cls.call_args[1]["stream"] == "sfc"
+        mock_instance.extract.assert_called_once()
+        assert mock_instance.extract.call_args[1]["use_cds_arco"] is True
+        assert mock_instance.extract.call_args[1]["chunking"] == "geo"
+        assert mock_instance.extract.call_args[1]["stream"] == "sfc"
+
+    def test_cds_arco_query_aware_routing_matrix_contract(self):
+        """Validate query-aware routing matrix across surface, wave, and pressure stores."""
+        from masharikiweather.extract.apis.era5 import resolve_cds_arco_url, ECMWF_CDS_ARCO_URLS
+        from masharikiweather.extract.apis.base import SpatialBoundingBox, AFRICA_BBOX
+
+        # 1. Point request defaults to geoChunked
+        pt_box = SpatialBoundingBox(lat_min=-1.28, lat_max=-1.28, lon_min=36.82, lon_max=36.82)
+        url_pt, stream_pt, chunk_pt = resolve_cds_arco_url(
+            stream="sfc", bbox=pt_box, start_date="2023-01-01", end_date="2023-01-05"
+        )
+        assert chunk_pt == "geo"
+        assert url_pt == ECMWF_CDS_ARCO_URLS["sfc"]["geo"]
+
+        # 2. Wide continental bbox + single timestamp defaults to timeChunked
+        url_time, stream_time, chunk_time = resolve_cds_arco_url(
+            stream="sfc", bbox=AFRICA_BBOX, start_date="2023-01-01 00:00:00", end_date="2023-01-01 00:00:00"
+        )
+        assert chunk_time == "time"
+        assert url_time == ECMWF_CDS_ARCO_URLS["sfc"]["time"]
+
+        # 3. Wave store routing
+        url_wav, stream_wav, _ = resolve_cds_arco_url(
+            variables=["swh", "mwd"], bbox=pt_box, start_date="2023-01-01", end_date="2023-01-05"
+        )
+        assert stream_wav == "wav"
+        assert url_wav == ECMWF_CDS_ARCO_URLS["wav"]["geo"]
+
+        # 4. Pressure store routing
+        url_pl, stream_pl, _ = resolve_cds_arco_url(
+            levels=[850, 500], bbox=pt_box, start_date="2023-01-01", end_date="2023-01-05"
+        )
+        assert stream_pl == "pl"
+        assert url_pl == ECMWF_CDS_ARCO_URLS["pl"]["geo"]
+
+        # 5. Manual overrides
+        url_override, _, chunk_override = resolve_cds_arco_url(
+            stream="sfc", bbox=AFRICA_BBOX, start_date="2023-01-01", end_date="2023-01-01", chunking="geo"
+        )
+        assert chunk_override == "geo"
+        assert url_override == ECMWF_CDS_ARCO_URLS["sfc"]["geo"]
+
+    @patch("masharikiweather.dataset.pull_station_data")
+    @patch("masharikiweather.dataset.pull_gridded_data")
+    def test_pull_weather_data_orchestration(self, mock_gridded, mock_station, tmp_path):
+        """pull_weather_data orchestrates multi-source pulls and returns dictionary."""
+        mock_station.return_value = {"TA00001": tmp_path / "obs" / "TA00001.parquet"}
+        mock_gridded.return_value = tmp_path / "gridded" / "era5.zarr"
+
+        res = pull_weather_data(
+            start_date="2023-01-01",
+            end_date="2023-01-02",
+            station_source="tahmo",
+            gridded_source="era5",
+            output_dir=tmp_path,
+        )
+        assert isinstance(res, dict)
+        assert "stations" in res
+        assert "gridded" in res
+        assert "dataset" in res
+        assert "TA00001" in res["stations"]
+        assert res["gridded"] == tmp_path / "gridded" / "era5.zarr"
+
+    def test_dataset_offline_init_no_hf(self, tmp_path):
+        """MasharikiWeatherDataset initializes cleanly with empty cache without connecting to HF."""
+        ds = MasharikiWeatherDataset(
+            root_dir=str(tmp_path),
+            source_obs=["tahmo"],
+            use_hf=False,
+        )
+        assert ds.observations.empty
+        assert ds.mask.empty
+        assert ds.stations.size == 0
+        assert ds.parameters.size == 0
+
+
+# ===========================================================================
+# 4. PEAKWEATHER OOP DATASET INTERFACE TESTS
+# ===========================================================================
+
+class TestPeakWeatherOOPInterface:
+    """Rigorous verification of the PeakWeather-inspired OOP surface on MasharikiWeatherDataset."""
+
+    def test_peakweather_attributes_and_properties(self, tmp_path):
+        """Verify root, root_dir, available_parameters, available_years, installation, parameters, stations."""
+        # Setup local parquet files
+        obs_dir = tmp_path / "obs" / "tahmo"
+        obs_dir.mkdir(parents=True)
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir(parents=True)
+
+        idx = pd.date_range("2023-01-01", periods=5, freq="h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("TA00001", "2m_temperature"), ("TA00001", "total_precipitation")])
+        df = pd.DataFrame(np.ones((5, 2), dtype=np.float32), index=idx, columns=cols)
+        flat_df = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat_df.to_parquet(obs_dir / "2023.parquet")
+
+        inst_df = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1680.0]},
+            index=pd.Index(["TA00001"], name="station_id")
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        param_df = pd.DataFrame(
+            {"standard_name": ["air_temperature", "precipitation_amount"], "units": ["degC", "mm"]},
+            index=pd.Index(["2m_temperature", "total_precipitation"], name="parameter")
+        )
+        param_df.to_parquet(meta_dir / "parameters.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs="tahmo", use_hf=False)
+
+        # Property assertions
+        assert isinstance(ds.root, Path)
+        assert isinstance(ds.root_dir, Path)
+        assert ds.root == ds.root_dir == tmp_path
+        assert "2m_temperature" in ds.available_parameters
+        assert "total_precipitation" in ds.available_parameters
+        assert 2023 in ds.available_years
+        assert "TA00001" in ds.stations
+        assert ds.stations.size == 1
+        assert isinstance(ds.stations, list)
+        assert "2m_temperature" in ds.parameters
+        assert ds.parameters.size == 2
+        assert isinstance(ds.parameters, list)
+        assert isinstance(ds.installation, pd.DataFrame)
+        assert "TA00001" in ds.installation.index
+        assert isinstance(ds.parameters_table, pd.DataFrame)
+        assert "2m_temperature" in ds.parameters_table.index
+
+    def test_get_observations_multiindex_slicing(self, mock_dataset):
+        """Verify 2-level MultiIndex slicing idioms: df['S1', 'temperature'] and df['S1']['temperature']."""
+        df = mock_dataset.get_observations(stations=["S1", "S2"], parameters=["temperature"])
+        assert isinstance(df, pd.DataFrame)
+        assert isinstance(df.columns, pd.MultiIndex)
+        assert df.columns.names == ["station_id", "parameter"]
+
+        # Idiom 1: Direct multi-key tuple slicing: df['S1', 'temperature']
+        s1_series = df["S1", "temperature"]
+        assert isinstance(s1_series, pd.Series)
+        assert len(s1_series) == len(df)
+
+        # Idiom 2: Chained single-key slicing: df['S1']['temperature']
+        s1_df = df["S1"]
+        assert isinstance(s1_df, pd.DataFrame)
+        assert "temperature" in s1_df.columns
+        s1_chained = s1_df["temperature"]
+        pd.testing.assert_series_equal(s1_series, s1_chained, check_names=False)
+
+        # Idiom 3: Cross-station variable slicing: df['temperature']
+        cross_df = df["temperature"]
+        assert isinstance(cross_df, pd.DataFrame)
+        assert "S1" in cross_df.columns
+        assert "S2" in cross_df.columns
+
+    def test_get_observations_missing_station_warning(self, mock_dataset):
+        """Requesting unpermitted or missing station issues a soft warning and continues without crashing."""
+        with pytest.warns(UserWarning, match="Requested station.*not in dataset"):
+            df = mock_dataset.get_observations(stations=["S1", "UNPERMITTED_STATION"])
+        assert isinstance(df, pd.DataFrame)
+        assert "S1" in df.columns.get_level_values(0)
+        assert "UNPERMITTED_STATION" not in df.columns.get_level_values(0)
+
+    def test_resample_physical_conservation(self, mock_dataset):
+        """Resampling strictly enforces sum for flux/precipitation and mean for thermodynamic state."""
+        # Set synthetic observations with 2 timestamps per day
+        idx = pd.date_range("2023-01-01", periods=4, freq="12h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([
+            ("S1", "total_precipitation"),
+            ("S1", "2m_temperature"),
+            ("S1", "surface_solar_radiation_downwards"),
+        ], names=["station_id", "parameter"])
+        data = np.array([
+            [5.0, 20.0, 100.0],
+            [3.0, 24.0, 200.0],
+            [0.0, 18.0, 150.0],
+            [2.0, 22.0, 250.0],
+        ], dtype=np.float32)
+        mock_dataset.observations = pd.DataFrame(data, index=idx, columns=cols)
+        mock_dataset.mask = ~mock_dataset.observations.isna()
+
+        daily_ds = mock_dataset.resample("1D")
+        assert daily_ds.freq in ["1D", "D"]
+        res_df = daily_ds.observations
+
+        # Day 1: precipitation sum = 5.0 + 3.0 = 8.0 mm
+        np.testing.assert_allclose(res_df.loc["2023-01-01", ("S1", "total_precipitation")], 8.0)
+        # Day 1: solar radiation sum = 100.0 + 200.0 = 300.0
+        np.testing.assert_allclose(res_df.loc["2023-01-01", ("S1", "surface_solar_radiation_downwards")], 300.0)
+        # Day 1: temperature mean = (20.0 + 24.0) / 2 = 22.0 degC
+        np.testing.assert_allclose(res_df.loc["2023-01-01", ("S1", "2m_temperature")], 22.0)
+
+    def test_load_and_load_raw(self, tmp_path):
+        """load() eagerly loads harmonized observations; load_raw() loads unresampled unmasked data."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        obs_dir.mkdir(parents=True)
+        idx = pd.date_range("2023-01-01", periods=6, freq="30min", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("S1", "te"), ("S1", "pr")])
+        data = np.array([
+            [20.0, 1.0],
+            [np.nan, 2.0],
+            [22.0, np.nan],
+            [24.0, 0.0],
+            [26.0, 3.0],
+            [28.0, 1.0],
+        ], dtype=np.float32)
+        raw_df = pd.DataFrame(data, index=idx, columns=cols)
+        flat = raw_df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat.to_parquet(obs_dir / "2023.parquet")
+
+        # Instantiate hourly dataset
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], freq="h", use_hf=False)
+
+        raw = ds.load_raw()
+        assert len(raw) == 6  # Native 30-min length
+        assert raw.isna().sum().sum() > 0  # Raw NaNs preserved
+
+        processed = ds.load()
+        assert len(processed) == 3  # Resampled to hourly (6 * 30min -> 3 * 1h)
+        assert isinstance(processed, pd.DataFrame)
+
+    def test_init_native_freq_preservation(self, tmp_path):
+        """freq=None preserves native timestamps without resampling on instantiation."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        obs_dir.mkdir(parents=True)
+        idx = pd.date_range("2023-01-01", periods=5, freq="15min", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("S1", "temperature")])
+        df = pd.DataFrame(np.ones((5, 1), dtype=np.float32), index=idx, columns=cols)
+        flat = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat.to_parquet(obs_dir / "2023.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], freq=None, use_hf=False)
+        assert ds.freq is None
+        assert len(ds.observations) == 5
+
+    def test_collocated_sensors_preservation(self, tmp_path):
+        """Collocated sensors (rh_S001402, rh_S001403) are preserved non-destructively."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        obs_dir.mkdir(parents=True)
+        idx = pd.date_range("2023-01-01", periods=3, freq="h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("S1", "rh_S001402"), ("S1", "rh_S001403")])
+        df = pd.DataFrame([[50.0, 55.0], [52.0, 56.0], [51.0, 54.0]], index=idx, columns=cols)
+        flat = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat.to_parquet(obs_dir / "2023.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], use_hf=False)
+        obs = ds.load()
+        # Both collocated sensors must be preserved in distinct columns
+        assert ("S1", "relative_humidity_S001402") in obs.columns or ("S1", "rh_S001402") in obs.columns
+        assert ("S1", "relative_humidity_S001403") in obs.columns or ("S1", "rh_S001403") in obs.columns
 
 
 # Run via python -m pytest tests/test_dataset.py -v

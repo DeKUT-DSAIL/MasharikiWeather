@@ -923,7 +923,7 @@ class EarthSystemAdapter(Dataset):
 # ---------------------------------------------------------------------------
 # 2D CRS Local Cartesian Projection Utility (ML LAMs Standard)
 # For regional models, ML LAMs recommends 2D CRS map projections over
-# 3D Cartesian or icosahedral decomposition. At equatorial East Africa,
+# 3D Cartesian or icosahedral decomposition. At equatorial latitudes,
 # lat-lon grids have near-uniform spacing, but this utility provides
 # a formal projection framework for future extensibility.
 # ---------------------------------------------------------------------------
@@ -939,7 +939,7 @@ def project_to_local_crs(
     centered on the domain centroid. This avoids the 3D Cartesian training
     failures documented in ML LAMs DANRA experiments.
     
-    For East Africa (equatorial), cos(lat) ~ 1.0, so distortion is minimal.
+    For equatorial latitudes, cos(lat) ~ 1.0, so distortion is minimal.
     This becomes critical if the domain extends to higher latitudes.
     
     Mathematical formulation:
