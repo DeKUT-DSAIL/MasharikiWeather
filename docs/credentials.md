@@ -1,23 +1,23 @@
 # Credentials
 
-Some external weather data providers require free API accounts. MasharikiWeather discovers credentials automatically without requiring hardcoded keys.
+Some weather data providers require free API accounts. MasharikiWeather discovers credentials automatically without requiring hardcoded keys.
 
 ---
 
 ## Overview
 
-When an extractor needs an API key, it checks the following locations in order:
+When an extractor needs an API key, it checks the following in order:
 
-1. **Function Arguments:** Explicit parameters passed to extractors (e.g., `api_key="..."`, `cds_key="..."`).
-2. **Environment Variables:** Variables exported in your terminal session or script (e.g., `CDSAPI_KEY`, `TAHMO_API_KEY`).
-3. **Configuration Files:** Standard user configuration files in your home directory (`~/.cdsapirc`, `~/.netrc`).
+1. **Function Arguments:** Parameters passed to extractors (e.g., `api_key="..."`, `cds_key="..."`).
+2. **Environment Variables:** Variables set in your shell session or script (e.g., `CDSAPI_KEY`, `TAHMO_API_KEY`).
+3. **Configuration Files:** Standard configuration files in your home directory (`~/.cdsapirc`, `~/.netrc`).
 4. **Local `.env` File (Optional):** A `.env` file in the current working directory.
 
 If credentials are provided as arguments or environment variables, no configuration files are needed.
 
 ---
 
-## Required Credentials by Service
+## Service Credentials
 
 | Service | Environment Variables | Config File | Registration Link |
 |---|---|---|---|
@@ -30,7 +30,7 @@ If credentials are provided as arguments or environment variables, no configurat
 
 ---
 
-## Configuration Examples
+## Examples
 
 ### Environment Variables
 
@@ -55,11 +55,10 @@ key: your-cds-api-key
 machine urs.earthdata.nasa.gov login your-earthdata-username password your-earthdata-password
 ```
 
-### Explicit Function Arguments
+### Python Arguments
 
 ```python
 from masharikiweather.extract.apis.era5 import ERA5Extractor
 
-# Provide the key directly in Python code
 extractor = ERA5Extractor(cds_key="your-cds-api-key")
 ```
