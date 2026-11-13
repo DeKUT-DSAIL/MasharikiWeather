@@ -22,6 +22,21 @@ Developed at the **Centre for Data Science and Artificial Intelligence (DSAIL)**
 
 ---
 
+## Documentation
+
+Full API references, data models, architecture, and user guides are available at:
+- **Read the Docs:** [https://masharikiweather.readthedocs.io/](https://masharikiweather.readthedocs.io/)
+- **GitHub Pages:** [https://dekut-dsail.github.io/MasharikiWeather/](https://dekut-dsail.github.io/MasharikiWeather/)
+
+To build and view documentation locally:
+```bash
+pip install -e .[docs]
+sphinx-build -b html docs docs/_build/html
+python -m http.server 8080 --directory docs/_build/html
+```
+
+---
+
 ## Usage
 
 Create and activate a Python virtual environment:
