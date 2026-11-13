@@ -1,18 +1,16 @@
-# MasharikiWeather Documentation
+# MasharikiWeather
 
-Welcome to the documentation for **MasharikiWeather**, an open-source weather and climate data library designed for Africa.
-
-MasharikiWeather provides tools to download, align, and process weather observations, satellite data, and reanalysis products into formats ready for machine learning and statistical analysis.
+MasharikiWeather is a Python library for downloading, processing, and loading weather and climate data for Africa.
 
 ---
 
-## Key Features
+## Features
 
-* **Data Extraction:** Downloads data from weather station networks, satellite products, and atmospheric reanalysis models with retries and rate limits.
-* **Credentials:** Resolves API keys from function arguments, environment variables, or local configuration files.
-* **Dataset Interface:** Loads station data stored as Parquet files and gridded fields stored as Zarr directories.
-* **Temporal Resampling:** Resamples time series while preserving rainfall totals (sum) and averaging state variables (mean).
-* **Topography:** Provides elevation, slope, and aspect angles for station sites.
+* **Data Extraction:** Downloads station observations, satellite feeds, and gridded reanalysis with rate limiting and retries.
+* **Credentials:** Reads API keys from arguments, environment variables, or config files.
+* **Dataset Interface:** Loads station data from Parquet files and gridded data from Zarr directories.
+* **Resampling:** Aggregates time series with sum for precipitation and mean for state variables.
+* **Topography:** Slices elevation, slope, and aspect angles for station coordinates.
 
 ---
 
@@ -30,8 +28,6 @@ dataset_user_guide
 ---
 
 ## Citation
-
-If you use MasharikiWeather in your research, please cite:
 
 ```bibtex
 @misc{masharikiweather2026,

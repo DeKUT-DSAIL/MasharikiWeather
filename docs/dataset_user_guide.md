@@ -6,7 +6,7 @@ The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` cla
 
 ## 1. Getting Started
 
-### 1.1 Local Disk Loading
+### 1.1 Local Files
 By default, `MasharikiWeatherDataset` loads local files in `root` (or `root_dir`). It does not require internet connectivity or remote tokens if files are present:
 
 ```python
@@ -20,8 +20,8 @@ dataset = MasharikiWeatherDataset(
 )
 ```
 
-### 1.2 Automated Data Fetching
-If requested years or data files are not found on local disk, `MasharikiWeatherDataset` automatically fetches missing files, displaying progress bars:
+### 1.2 Remote Fetching
+If requested years or data files are not found on local disk, `MasharikiWeatherDataset` automatically fetches missing files:
 
 ```text
 Fetching tahmo_station_observations: 100%|██████████| 12/12 [01:14<00:00, 2023-12-01.parquet: 61.2MB [00:06, 4.12MB/s]]
@@ -29,7 +29,7 @@ Fetching tahmo_station_observations: 100%|██████████| 12/12 
 
 Remote Hugging Face streaming is opt-in via `use_hf=True` or by providing a Hugging Face `token`.
 
-### 1.3 Key Constructor Parameters
+### 1.3 Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
@@ -65,11 +65,11 @@ print("Active Stations (Count: {}):".format(len(dataset.stations)))
 print(dataset.stations[:5])
 ```
 
-### Metadata Catalogs (`installation.parquet` & `parameters.parquet`)
+### Metadata Tables
 
-Metadata catalogs are maintained under `{root}/metadata/`:
-* **Station Catalog (`dataset.installation`):** DataFrame containing station identifiers, geographic coordinates (latitude, longitude), elevation, station names, network provider, and operational date ranges.
-* **Parameter Catalog (`dataset.parameters_table`):** DataFrame containing canonical variable names, CF standard names, physical units, measurement types, and default temporal resampling methods.
+Metadata tables are stored in `{root}/metadata/`:
+* **Station Catalog (`dataset.installation`):** Station IDs, coordinates (lat, lon), elevation, and names.
+* **Parameter Catalog (`dataset.parameters_table`):** Variable names, units, and default aggregation methods.
 
 ```python
 # Inspect station installation catalog
@@ -83,16 +83,16 @@ print(params_df[["standard_name", "units", "resampling_method"]])
 
 ---
 
-## 3. Observation Retrieval by Strand
+## 3. Station Observations
 
-Rather than bundling all tabular data into a single method, MasharikiWeather provides dedicated methods for each observational network strand. Each method returns a standardized `pd.DataFrame` with a tz-naive `pd.DatetimeIndex` named `'time'` and a 2-level column `MultiIndex` formatted as `(station_id, parameter)`.
+MasharikiWeather provides methods for each observation network. Each returns a pandas DataFrame indexed by time with columns formatted as `(station_id, parameter)`.
 
-### 3.1 TAHMO Observations (`get_tahmo_observations`)
+### 3.1 TAHMO
 
-Retrieves in-situ observations from the Trans-African Hydro-Meteorological Observatory (TAHMO) network:
+Retrieves observations from the TAHMO network:
 
 ```python
-# Retrieve temperature and precipitation for realistic TAHMO stations
+# Retrieve temperature and precipitation for TAHMO stations
 df_tahmo, mask_tahmo = dataset.get_tahmo_observations(
     stations=["TA00001", "TA00016"],
     parameters=["temperature", "precipitation"],
@@ -114,9 +114,9 @@ time
 2023-01-01 01:00:00          20.8           0.2                       19.7           0.0
 ```
 
-### 3.2 Copernicus In-Situ Observations (`get_cds_insitu_observations`)
+### 3.2 Copernicus In-Situ
 
-Retrieves global WMO surface station measurements from the Copernicus Climate Data Store:
+Retrieves global surface station measurements from the Copernicus Climate Data Store:
 
 ```python
 df_cds = dataset.get_cds_insitu_observations(
@@ -128,9 +128,9 @@ df_cds = dataset.get_cds_insitu_observations(
 print(df_cds.head())
 ```
 
-### 3.3 NOAA GHCN Observations (`get_ghcn_observations`)
+### 3.3 NOAA GHCN
 
-Retrieves daily or hourly measurements from NOAA's Global Historical Climatology Network:
+Retrieves measurements from NOAA's Global Historical Climatology Network:
 
 ```python
 df_ghcn = dataset.get_ghcn_observations(
@@ -142,9 +142,9 @@ df_ghcn = dataset.get_ghcn_observations(
 print(df_ghcn.head())
 ```
 
-### 3.4 Unified Observation Retrieval (`get_observations`)
+### 3.4 Combined Observations
 
-The legacy entrypoint `get_observations()` remains available and returns all active observation sources combined:
+`get_observations()` returns observations from all active sources combined:
 
 ```python
 df_all = dataset.get_observations(
@@ -154,18 +154,18 @@ df_all = dataset.get_observations(
 )
 ```
 
-### 3.5 Handling Missing Station Permissions
-If a user requests stations outside their licensed API key coverage or absent from local storage, observation methods issue an advisory warning rather than aborting:
+### 3.5 Missing Stations
+If a requested station is not present in local storage, observation methods issue a warning and continue with available stations:
 
 ```python
 df = dataset.get_tahmo_observations(stations=["TA00001", "NONEXISTENT_STATION"])
 # UserWarning: Requested station(s) not in dataset: ['NONEXISTENT_STATION']. Continuing with available stations.
 ```
 
-### 3.6 Quality Masks and NumPy Export
-When `return_mask=True`, a parallel boolean mask DataFrame is returned where `True` indicates a valid measured value and `False` indicates missing or corrupted data.
+### 3.6 Quality Masks and NumPy
+When `return_mask=True`, a parallel boolean mask DataFrame is returned where `True` indicates a valid measured value and `False` indicates missing data.
 
-For tensor-oriented workflows, setting `as_numpy=True` exports 3D arrays:
+Setting `as_numpy=True` exports 3D arrays:
 
 ```python
 arr, mask_arr = dataset.get_tahmo_observations(
@@ -182,13 +182,13 @@ print("Mask Tensor Shape:", mask_arr.shape)
 
 ---
 
-## 4. Cross-Analysis and Multi-Strand Alignment
+## 4. Aligning Data Sources
 
-Because all separated methods share a consistent index (tz-naive `pd.DatetimeIndex` named `'time'`) and column schema (`pd.MultiIndex` with levels `['station_id', 'parameter']`), cross-analysis between strands is direct.
+All station methods share the same index (`time`) and columns formatted as `(station_id, parameter)`.
 
-### 4.1 Temporal Alignment via `align_observations`
+### 4.1 Aligning by Time
 
-The static method `MasharikiWeatherDataset.align_observations()` joins multiple observation strands onto a unified temporal grid with a 3-level MultiIndex `(source, station_id, parameter)`:
+`MasharikiWeatherDataset.align_observations()` joins multiple observation sources onto a unified time index:
 
 ```python
 strands = {
@@ -197,26 +197,26 @@ strands = {
     "cds_insitu": dataset.get_cds_insitu_observations(parameters=["temperature"]),
 }
 
-# Align strands across their temporal union
+# Align sources across their shared time range
 aligned_df = MasharikiWeatherDataset.align_observations(strands, how="outer")
 print("Aligned Columns (3 levels):", aligned_df.columns.names)
 # ['source', 'station_id', 'parameter']
 print(aligned_df.head())
 ```
 
-### 4.2 Standard Pandas Joins and Concat
+### 4.2 Joining DataFrames
 
 Standard pandas operations can also be used directly:
 
 ```python
-# Join two strands side by side
+# Join two DataFrames side by side
 joined_df = df_tahmo.join(df_ghcn, how="outer")
 
-# Concatenate across column axis
+# Concatenate across columns
 merged_df = pd.concat({"tahmo": df_tahmo, "ghcn": df_ghcn}, axis=1)
 ```
 
-### 4.3 Multi-Strand Plotting on a Single Axis
+### 4.3 Plotting Multiple Sources
 
 ```python
 import matplotlib.pyplot as plt
@@ -230,7 +230,7 @@ if not df_tahmo.empty:
 if not df_ghcn.empty:
     ax.plot(df_ghcn.index, df_ghcn["KE000063612", "2m_temperature"], label="GHCN KE000063612 Temp", color="#ff7f0e", linestyle="--")
 
-ax.set_title("Cross-Strand Temperature Comparison")
+ax.set_title("Temperature Comparison")
 ax.set_xlabel("Time (UTC)")
 ax.set_ylabel("Temperature (°C)")
 ax.legend(loc="upper right")
@@ -241,9 +241,9 @@ plt.show()
 
 ---
 
-## 5. TAHMO Zarr Store Loading
+## 5. Zarr Storage
 
-While station observations default to partitioned Apache Parquet on local disk, MasharikiWeather maintains the capability to load TAHMO data from a Zarr store when explicitly requested.
+Station observations default to Parquet files on disk. TAHMO data can also be loaded from a Zarr store when requested with `prefer_zarr=True`:
 
 ```python
 # Load TAHMO observations prioritizing local or remote Zarr store
@@ -259,64 +259,62 @@ df_tahmo = dataset_zarr.get_tahmo_observations(stations=["TA00001"])
 print("Loaded from Zarr:", df_tahmo.shape)
 ```
 
-Candidate locations searched when `prefer_zarr=True`:
-1. Explicit path passed via `zarr_path` or `tahmo_zarr_path` argument
+Search order when `prefer_zarr=True`:
+1. Path passed via `zarr_path` or `tahmo_zarr_path` argument
 2. `{root}/obs/tahmo.zarr`
 3. `{root}/obs/tahmo.zarr.zip`
 4. Remote Hugging Face store (when `use_hf=True`)
 
 ---
 
-## 6. Physical Temporal Resampling
+## 6. Temporal Resampling
 
-Atmospheric data transformations must respect thermodynamic sanity and fluid dynamic conservation laws. Simple uniform averaging distorts precipitation fluxes and radiative energy budgets.
+When resampling time series, precipitation totals are summed and state variables (like temperature) are averaged.
 
-The `resample()` method partitions variables into physical classes:
+The `resample()` method handles this automatically:
 
 ```python
-# Resample 5-minute raw observations to 3-hourly intervals
+# Resample observations to 3-hourly intervals
 dataset_3h = dataset.resample(freq="3h")
 ```
 
-### 6.1 Conservation Formulation
+### 6.1 Resampling Rules
 
 * **Flux Variables (Precipitation, Solar Radiation):**
-  Accumulated quantities are conserved via summation over each interval $\Delta t$:
+  Accumulated quantities are summed over each interval $\Delta t$:
 
   $$Y_{\text{flux}}[t] = \sum_{k \in \Delta t} X_{\text{flux}}[k]$$
 
   with `min_count=1` to prevent false zero totals when measurements are missing.
 
-* **Thermodynamic State Variables (Temperature, Dewpoint, Pressure, Wind Speed):**
-  Intensive continuous state variables are conserved via the arithmetic time mean:
+* **State Variables (Temperature, Dewpoint, Pressure, Wind Speed):**
+  State variables are averaged using the arithmetic mean:
 
   $$Y_{\text{state}}[t] = \frac{1}{|\Delta t|} \sum_{k \in \Delta t} X_{\text{state}}[k]$$
 
-* **Quality Mask Propagation:**
-  Quality validity is propagated using logical OR reduction:
+* **Quality Masks:**
+  Masks are combined using logical OR:
 
   $$M_{\text{out}}[t] = \bigvee_{k \in \Delta t} M_{\text{in}}[k]$$
 
 ---
 
-## 7. Non-Destructive Collocated Sensor Preservation
+## 7. Collocated Sensors
 
-TAHMO weather stations operate redundant physical sensors for high-reliability monitoring (for example, duplicate relative humidity probes `rh_S001402` and `rh_S001403`).
+When a station has multiple sensors measuring the same variable (such as redundant relative humidity probes `rh_S001402` and `rh_S001403`):
 
-* Rather than performing destructive averaging across sensors, MasharikiWeather preserves distinct sensor streams in dedicated columns named `<variable>_<sensor_id>`.
-* Quality-flagged data (where quality flag $\neq 1$) are converted to `NaN` without removing the sensor stream.
-* When requesting canonical parameters (such as `relative_humidity`), the dataset matches both primary and qualified sensor channels.
+* Each sensor stream is preserved in a dedicated column named `<variable>_<sensor_id>`.
+* Flagged values (where quality flag $\neq 1$) are set to `NaN`.
+* When requesting a canonical parameter (such as `relative_humidity`), both channels are matched.
 
 ---
 
-## 8. Static Topographic Priors (`load_topography`)
+## 8. Topography
 
-Complex terrain in Africa (such as the Great Rift Valley, Mount Kenya, Mount Kilimanjaro, and the Ethiopian Highlands) forces localized convection and precipitation patterns.
-
-The `load_topography()` method loads static digital elevation models, slope, aspect, and Topographic Position Index (TPI):
+The `load_topography()` method loads elevation, slope, aspect, and Topographic Position Index (TPI):
 
 ```python
-# Load 2D gridded topography dataset
+# Load gridded topography dataset
 topo_ds = dataset.load_topography(filename="africa_static_priors")
 print("Topographic Fields:", list(topo_ds.data_vars))
 
@@ -325,22 +323,20 @@ stations_with_topo = dataset.load_topography(filename="africa_static_priors", me
 print(stations_with_topo[["elevation", "slope", "aspect_sin", "aspect_cos", "TPI_2000M"]].head())
 ```
 
-### Cyclical Aspect Encoding
-Terrain aspect represents an angle in degrees $[0^\circ, 360^\circ)$. Standard linear representation creates an artificial mathematical discontinuity between $359^\circ$ and $1^\circ$ (which are physically adjacent).
+### Aspect Encoding
+Terrain aspect represents an angle in degrees $[0^\circ, 360^\circ)$. Linear values create an artificial discontinuity between $359^\circ$ and $1^\circ$.
 
-`load_topography()` decomposes aspect into continuous sine and cosine components:
+`load_topography()` decomposes aspect into sine and cosine components:
 
 $$\text{aspect\_sin} = \sin\left(\theta \cdot \frac{\pi}{180}\right), \quad \text{aspect\_cos} = \cos\left(\theta \cdot \frac{\pi}{180}\right)$$
 
-This cyclical encoding eliminates boundary jump artifacts.
-
 ---
 
-## 9. Comprehensive Extraction Coverage for All Data Strands
+## 9. Data Extraction
 
-MasharikiWeather interfaces with thirteen distinct ground station, reanalysis, and satellite data strands across Africa. Below are functional extraction examples for each strand.
+Extraction examples for each supported data source:
 
-### 9.1 TAHMO In-Situ Weather Stations
+### 9.1 TAHMO
 ```python
 from masharikiweather.dataset import extract_stations
 
@@ -354,7 +350,7 @@ tahmo_files = extract_stations(
 )
 ```
 
-### 9.2 Copernicus CDS In-Situ Global Observations
+### 9.2 Copernicus In-Situ
 ```python
 # Extract CDS In-Situ ground observations
 cds_files = extract_stations(
@@ -365,7 +361,7 @@ cds_files = extract_stations(
 )
 ```
 
-### 9.3 NOAA GHCN (Daily and Hourly)
+### 9.3 NOAA GHCN
 ```python
 # Extract daily NOAA GHCN observations for Africa
 ghcn_files = extract_stations(
@@ -377,7 +373,7 @@ ghcn_files = extract_stations(
 )
 ```
 
-### 9.4 ECMWF ERA5 Reanalysis (Legacy CDS API, CDS ARCO, and Google ARCO)
+### 9.4 ECMWF ERA5
 Extraction and integration of gridded ERA5 atmospheric fields across three supported backends:
 
 * **Legacy CDS API Backend (`use_legacy=True`, default):**
@@ -403,7 +399,7 @@ Extraction and integration of gridded ERA5 atmospheric fields across three suppo
      - Geo (Optimized for time-series at a single location): `https://arco.datastores.ecmwf.int/cadl-arco-geo-048/arco/reanalysis_era5_pressure_levels/pl/geoChunked.zarr`
      - Time (Optimized for global map at a single time step): `https://arco.datastores.ecmwf.int/cadl-arco-time-048/arco/reanalysis_era5_pressure_levels/pl/timeChunked.zarr`
 
-  Robust loading is performed via `obstore` using `HTTPStore` and `ObjectStore`:
+  Loading is performed with `obstore` using `HTTPStore` and `ObjectStore`:
   ```python
   from obstore.store import HTTPStore
   from zarr.storage import ObjectStore
@@ -489,7 +485,7 @@ print("Station-aligned ERA5 features:")
 print(gridded_station_df["era5"].head())
 ```
 
-### 9.5 NASA IMERG Satellite Precipitation (GPM V07 / V08)
+### 9.5 NASA IMERG
 NASA GPM IMERG satellite precipitation estimates retrieved via non-interactive NASA Earthdata authentication.
 Official authentication guide: [NASA earthaccess Documentation](https://earthaccess.readthedocs.io/en/stable/).
 
@@ -504,7 +500,7 @@ imerg_path = extract_gridded(
 )
 ```
 
-### 9.6 Copernicus Atmosphere Monitoring Service (CAMS)
+### 9.6 CAMS
 ```python
 # Extract atmospheric composition (PM2.5, PM10, dust, ozone)
 cams_path = extract_gridded(
@@ -517,7 +513,7 @@ cams_path = extract_gridded(
 )
 ```
 
-### 9.7 NASA MERRA-2 Atmospheric Reanalysis
+### 9.7 NASA MERRA-2
 ```python
 # Extract MERRA-2 meteorological and aerosol reanalysis fields
 merra2_path = extract_gridded(
@@ -529,7 +525,7 @@ merra2_path = extract_gridded(
 )
 ```
 
-### 9.8 Open-Meteo Historical Reanalysis & NWP
+### 9.8 Open-Meteo
 ```python
 # Extract Open-Meteo multi-model reanalysis parameters
 open_meteo_path = extract_gridded(
@@ -542,7 +538,7 @@ open_meteo_path = extract_gridded(
 )
 ```
 
-### 9.9 NASA POWER Agroclimatology & Solar
+### 9.9 NASA POWER
 ```python
 # Extract NASA POWER surface solar irradiance and meteorology
 power_path = extract_gridded(
@@ -555,7 +551,7 @@ power_path = extract_gridded(
 )
 ```
 
-### 9.10 PVGIS Photovoltaic Solar Radiation
+### 9.10 PVGIS
 ```python
 # Extract PVGIS solar radiation time series
 pvgis_path = extract_gridded(
@@ -567,7 +563,7 @@ pvgis_path = extract_gridded(
 )
 ```
 
-### 9.11 CM SAF SARAH-3 Surface Solar Radiation
+### 9.11 SARAH-3
 ```python
 # Extract EUMETSAT CM SAF SARAH-3 surface solar irradiance
 sarah3_path = extract_gridded(
@@ -579,7 +575,7 @@ sarah3_path = extract_gridded(
 )
 ```
 
-### 9.12 EUMETSAT LandSAF Land Surface Products
+### 9.12 LandSAF
 ```python
 # Extract LandSAF land surface temperature and radiation products
 landsaf_path = extract_gridded(
@@ -591,7 +587,7 @@ landsaf_path = extract_gridded(
 )
 ```
 
-### 9.13 Sentinel-5P TROPOMI Atmospheric Chemistry
+### 9.13 TROPOMI
 ```python
 # Extract TROPOMI trace gas concentrations (NO2, CO, O3)
 tropomi_path = extract_gridded(
@@ -603,7 +599,7 @@ tropomi_path = extract_gridded(
 )
 ```
 
-### 9.14 Unified Master Entrypoint (`pull_weather_data`)
+### 9.14 Combined Extraction
 Extract in-situ stations and gridded reanalysis together in a single call across the continental Africa bounding box:
 
 ```python

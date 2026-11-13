@@ -1,10 +1,10 @@
 # Architecture
 
-MasharikiWeather organizes data processing into two main parts: data extraction from external sources into local files, and an interface for loading and preparing those files for analysis.
+MasharikiWeather separates data downloading from data loading and preparation.
 
 ---
 
-## Architecture
+## Overview
 
 ```text
        External Data Providers
@@ -45,25 +45,25 @@ MasharikiWeather organizes data processing into two main parts: data extraction 
 
 ### Extraction Layer
 
-Located in `masharikiweather/extract/apis/`. This layer handles:
+Located in `masharikiweather/extract/apis/`.
 * **Credentials:** Reads API keys from arguments, environment variables, or config files.
-* **Network Requests:** Handles HTTP requests, retries on failures, and adheres to provider rate limits.
-* **File Storage:** Saves station observations as Apache Parquet files and gridded fields as Zarr stores.
+* **Network Requests:** Handles HTTP requests, retries on failures, and respects provider rate limits.
+* **File Storage:** Saves station observations as Parquet files and gridded fields as Zarr stores.
 
 ### Dataset Interface
 
-Located in `masharikiweather/dataset.py`. The `MasharikiWeatherDataset` class handles:
-* **Local Loading:** Loads Parquet and Zarr files from the local directory without requiring network access.
-* **Metadata:** Provides station lists (`installation.parquet`) and parameter lists (`parameters.parquet`).
-* **Observation Slicing:** Returns time series as pandas DataFrames with timestamps and station columns.
-* **Resampling:** Aggregates time series to different frequencies, using sums for rainfall and means for temperatures and other state variables.
+Located in `masharikiweather/dataset.py`.
+* **Local Loading:** Loads Parquet and Zarr files from disk.
+* **Metadata:** Exposes station (`installation.parquet`) and parameter (`parameters.parquet`) tables.
+* **Observations:** Returns time series as pandas DataFrames.
+* **Resampling:** Aggregates time series with sums for rainfall and means for state variables.
 * **Topography:** Loads elevation, slope, and aspect angles for station coordinates.
 
 ---
 
 ## Directory Layout
 
-MasharikiWeather stores downloaded and processed data on disk under the configured root directory (defaulting to `./mashariki_data`):
+Data is stored on disk under the configured root directory (`./mashariki_data` by default):
 
 ```text
 mashariki_data/
@@ -91,14 +91,14 @@ mashariki_data/
 ```
 
 ### Station Data (`obs/`)
-Station observations (TAHMO, CDS In-Situ, GHCNd) are saved as Parquet files partitioned by year. When multiple sensors measure the same variable at a single station, each sensor channel is kept as a separate column.
+Station observations (TAHMO, CDS In-Situ, GHCNd) are saved as Parquet files partitioned by year. When multiple sensors measure the same variable at a single station, each sensor channel is kept in a separate column.
 
 ### Gridded Data (`gridded/`)
-Reanalysis and satellite datasets (ERA5, IMERG, CAMS, MERRA-2) are saved in Zarr format, sliced to the African bounding box:
+Reanalysis and satellite datasets (ERA5, IMERG, CAMS, MERRA-2) are saved in Zarr format, cropped to the African bounding box:
 $$\text{Latitude} \in [-35.0^\circ, 38.0^\circ], \quad \text{Longitude} \in [-20.0^\circ, 55.0^\circ]$$
 
 ### Metadata (`metadata/`)
-Contains `installation.parquet` (station names, IDs, coordinates, elevation) and `parameters.parquet` (measurement variables, units, and default aggregation methods).
+Contains `installation.parquet` (station names, IDs, coordinates, elevation) and `parameters.parquet` (measurement variables, units, and aggregation rules).
 
 ### Static Priors (`static/`)
-Contains digital elevation model (DEM) variables, slope, aspect angles, and distance to water bodies across the African continent.
+Contains digital elevation model (DEM) variables, slope, aspect angles, and distance to water bodies across Africa.
