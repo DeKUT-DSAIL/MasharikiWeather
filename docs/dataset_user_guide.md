@@ -1,13 +1,13 @@
-# PeakWeather-Inspired Dataset User Guide
+# Dataset User Guide
 
-The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` class in `masharikiweather.dataset`. Modeled after MeteoSwiss's [PeakWeather](https://github.com/MeteoSwiss/peakweather) architecture, it offers an offline-first, object-oriented surface for reading, slicing, physically resampling, and visualizing multi-source weather observations across Africa.
+The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` class in `masharikiweather.dataset`. It offers an offline-first interface for reading, slicing, resampling, and visualizing weather observations across Africa.
 
 ---
 
-## 1. Instantiation and Offline-First Operation
+## 1. Getting Started
 
 ### 1.1 Local Disk Loading
-By default, `MasharikiWeatherDataset` operates offline from local disk files in `root` (or `root_dir`). It does not require internet connectivity or remote tokens if files are present:
+By default, `MasharikiWeatherDataset` loads local files in `root` (or `root_dir`). It does not require internet connectivity or remote tokens if files are present:
 
 ```python
 from masharikiweather.dataset import MasharikiWeatherDataset
@@ -20,11 +20,11 @@ dataset = MasharikiWeatherDataset(
 )
 ```
 
-### 1.2 Automated Dagster Materialization
-If requested years or partition files are not found on local disk, `MasharikiWeatherDataset` programmatically invokes the Dagster extraction pipeline to fetch missing partitions, displaying progress bars:
+### 1.2 Automated Data Fetching
+If requested years or data files are not found on local disk, `MasharikiWeatherDataset` automatically fetches missing files, displaying progress bars:
 
 ```text
-Materializing tahmo_station_observations: 100%|██████████| 12/12 [01:14<00:00, 2023-12-01.parquet: 61.2MB [00:06, 4.12MB/s]]
+Fetching tahmo_station_observations: 100%|██████████| 12/12 [01:14<00:00, 2023-12-01.parquet: 61.2MB [00:06, 4.12MB/s]]
 ```
 
 Remote Hugging Face streaming is opt-in via `use_hf=True` or by providing a Hugging Face `token`.
@@ -44,7 +44,7 @@ Remote Hugging Face streaming is opt-in via `use_hf=True` or by providing a Hugg
 
 ---
 
-## 2. PeakWeather OOP Dataset Attributes
+## 2. Dataset Properties
 
 An instantiated `MasharikiWeatherDataset` object exposes attributes and metadata catalogs:
 
