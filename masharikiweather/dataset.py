@@ -44,7 +44,7 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
         "physical_type": "PHYSICAL",
         "resampling_method": "mean",
         "description": "Near-surface dry air temperature at 2 meters",
-        "aliases": ["temperature", "temperature_2m", "temp", "te", "2t", "air_temperature"],
+        "aliases": ["temperature", "temperature_2m", "temp", "te", "2t", "t2m", "air_temperature"],
     },
     "2m_dewpoint_temperature": {
         "standard_name": "dew_point_temperature",
@@ -52,7 +52,7 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
         "physical_type": "PHYSICAL",
         "resampling_method": "mean",
         "description": "Near-surface dewpoint temperature at 2 meters",
-        "aliases": ["dewpoint", "dewpoint_temperature", "2d", "dew_point_temperature"],
+        "aliases": ["dewpoint", "dewpoint_temperature", "2d", "d2m", "dew_point_temperature"],
     },
     "10m_u_component_of_wind": {
         "standard_name": "eastward_wind",
@@ -116,7 +116,7 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
         "physical_type": "PRECIPITATION",
         "resampling_method": "sum",
         "description": "Cumulative total precipitation",
-        "aliases": ["precipitation", "precip", "pr", "tp", "precipitationcal", "precipitation_amount", "accumulated_precipitation"],
+        "aliases": ["precipitation", "precip", "prcp", "pr", "tp", "precipitationcal", "precipitation_amount", "accumulated_precipitation"],
     },
     "convective_precipitation": {
         "standard_name": "convective_precipitation_amount",
@@ -175,7 +175,7 @@ for canon_var, meta_info in CANONICAL_VARIABLE_METADATA.items():
         ALIAS_TO_CANONICAL[a.lower()] = canon_var
 
 
-def canonicalize_variable_name(name: str) -> str:
+def canonicalize_variable_name(name: Union[str, Tuple[str, ...], Any]) -> Union[str, Tuple[str, ...]]:
     """
     Map legacy, source-specific, or sensor-qualified variable name to canonical form.
 
@@ -186,6 +186,10 @@ def canonicalize_variable_name(name: str) -> str:
             'rh_S001402' -> 'relative_humidity_S001402'
             'tp' -> 'total_precipitation'
     """
+    if not isinstance(name, str):
+        if isinstance(name, (tuple, list)):
+            return tuple(canonicalize_variable_name(x) for x in name)
+        return str(name)
     low = name.lower().strip()
     if low in ALIAS_TO_CANONICAL:
         return ALIAS_TO_CANONICAL[low]
@@ -1564,7 +1568,10 @@ class MasharikiWeatherDataset:
             try:
                 ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+                try:
+                    ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+                except Exception:
+                    ds = xr.open_zarr(zip_mapper, chunks=chunks, decode_timedelta=False)
             return self._standardize_coordinates(ds)
 
         # 2. Fallback to Hugging Face Remote Streaming if enabled
@@ -1584,7 +1591,10 @@ class MasharikiWeatherDataset:
             try:
                 ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+                try:
+                    ds = xr.open_zarr(zip_mapper, chunks=chunks, consolidated=False, decode_timedelta=False, zarr_format=2)
+                except Exception:
+                    ds = xr.open_zarr(zip_mapper, chunks=chunks, decode_timedelta=False)
             return self._standardize_coordinates(ds)
             
         except Exception as e:
@@ -1605,8 +1615,11 @@ class MasharikiWeatherDataset:
                 ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
                                   consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
-                                  consolidated=False, decode_timedelta=False, zarr_format=2)
+                try:
+                    ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
+                                      consolidated=False, decode_timedelta=False, zarr_format=2)
+                except Exception:
+                    ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, decode_timedelta=False)
             return self._standardize_coordinates(ds)
         
         # 2. Check Raw Download Tier
@@ -1621,8 +1634,11 @@ class MasharikiWeatherDataset:
                 ds = xr.open_zarr(local_path, chunks=chunks, 
                                   consolidated=True, decode_timedelta=False, zarr_format=2)
             except Exception:
-                ds = xr.open_zarr(local_path, chunks=chunks, 
-                                  consolidated=False, decode_timedelta=False, zarr_format=2)
+                try:
+                    ds = xr.open_zarr(local_path, chunks=chunks, 
+                                      consolidated=False, decode_timedelta=False, zarr_format=2)
+                except Exception:
+                    ds = xr.open_zarr(local_path, chunks=chunks, decode_timedelta=False)
             return self._standardize_coordinates(ds)
                 
         # 3. Fallback to Hugging Face lazy streaming pipeline if enabled
@@ -1983,7 +1999,10 @@ class MasharikiWeatherDataset:
         # Minimum-Latency Local Load
         if os.path.exists(local_path):
             try:
-                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+                try:
+                    ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+                except Exception:
+                    ds = xr.open_dataset(local_path).load()
             except Exception as e:
                 logger.warning("Local topography cache corrupted. Re-downloading... (%s)", e)
 
@@ -1992,7 +2011,10 @@ class MasharikiWeatherDataset:
             legacy_path = f"{local_dir}/east_africa_static_priors.nc"
             if os.path.exists(legacy_path):
                 try:
-                    ds = xr.open_dataset(legacy_path, engine="h5netcdf").load()
+                    try:
+                        ds = xr.open_dataset(legacy_path, engine="h5netcdf").load()
+                    except Exception:
+                        ds = xr.open_dataset(legacy_path).load()
                 except Exception as e:
                     logger.warning("Legacy topography cache corrupted: %s", e)
 
@@ -2005,7 +2027,10 @@ class MasharikiWeatherDataset:
             try:
                 os.makedirs(local_dir, exist_ok=True)
                 self.fs.get(hf_path, local_path)
-                ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+                try:
+                    ds = xr.open_dataset(local_path, engine="h5netcdf").load()
+                except Exception:
+                    ds = xr.open_dataset(local_path).load()
             except Exception as e:
                 logger.warning("Could not fetch topography data from Hugging Face: %s", e)
                 if merge_stations and hasattr(self, "stations_table"):
@@ -2050,21 +2075,24 @@ class MasharikiWeatherDataset:
         lons = xr.DataArray(valid_stations['longitude'].values, dims="station", 
                             coords={"station": ("station", valid_stations.index.values)})
 
+        lat_dim = 'lat' if 'lat' in self._topo_ds.dims else ('latitude' if 'latitude' in self._topo_ds.dims else 'lat')
+        lon_dim = 'lon' if 'lon' in self._topo_ds.dims else ('longitude' if 'longitude' in self._topo_ds.dims else 'lon')
+
         # Nearest Neighbor for Categorical Variables
         # (Aspect has already been decomposed into continuous sin/cos in load_topography)
         nearest_vars = ['LandCover']
         valid_nearest = [v for v in nearest_vars if v in self._topo_ds.data_vars]
         if valid_nearest:
-            sampled_nearest = self._topo_ds[valid_nearest].sel(lat=lats, lon=lons, method="nearest")
-            df_nearest = sampled_nearest.to_dataframe().drop(columns=['lat', 'lon'], errors='ignore')
+            sampled_nearest = self._topo_ds[valid_nearest].sel({lat_dim: lats, lon_dim: lons}, method="nearest")
+            df_nearest = sampled_nearest.to_dataframe().drop(columns=['lat', 'lon', 'latitude', 'longitude'], errors='ignore')
         else:
             df_nearest = pd.DataFrame(index=valid_stations.index)
 
         # Bilinear Interpolation for Continuous Physical Fields
         continuous_vars = [v for v in self._topo_ds.data_vars if v not in nearest_vars]
         if continuous_vars:
-            sampled_bilinear = self._topo_ds[continuous_vars].interp(lat=lats, lon=lons, method="linear")
-            df_bilinear = sampled_bilinear.to_dataframe().drop(columns=['lat', 'lon'], errors='ignore')
+            sampled_bilinear = self._topo_ds[continuous_vars].interp({lat_dim: lats, lon_dim: lons}, method="linear")
+            df_bilinear = sampled_bilinear.to_dataframe().drop(columns=['lat', 'lon', 'latitude', 'longitude'], errors='ignore')
         else:
             df_bilinear = pd.DataFrame(index=valid_stations.index)
 
@@ -2085,7 +2113,12 @@ class MasharikiWeatherDataset:
                 default_val = 0
             df_topo[col] = df_topo[col].fillna(default_val)
 
-        self.stations_table = self.stations_table.join(df_topo)
+        overlap_cols = [c for c in df_topo.columns if c in self.stations_table.columns]
+        for col in overlap_cols:
+            self.stations_table[col] = self.stations_table[col].fillna(df_topo[col])
+        new_cols = [c for c in df_topo.columns if c not in self.stations_table.columns]
+        if new_cols:
+            self.stations_table = self.stations_table.join(df_topo[new_cols])
 
 
     def validate_stations(self, stations: Optional[Union[str, List[str]]] = None) -> List[str]:
