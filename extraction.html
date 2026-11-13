@@ -1,0 +1,406 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Extraction Layer &mdash; MasharikiWeather 0.1.9 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=8618f531"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script>window.MathJax = {"options": {"processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Credentials" href="credentials.html" />
+    <link rel="prev" title="Architecture" href="architecture.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            MasharikiWeather
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#overview">Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#extraction-layer">Extraction Layer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#dataset-interface">Dataset Interface</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#directory-layout">Directory Layout</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#station-data-obs">Station Data (<code class="docutils literal notranslate"><span class="pre">obs/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#gridded-data-gridded">Gridded Data (<code class="docutils literal notranslate"><span class="pre">gridded/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#metadata-metadata">Metadata (<code class="docutils literal notranslate"><span class="pre">metadata/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#static-priors-static">Static Priors (<code class="docutils literal notranslate"><span class="pre">static/</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Extraction Layer</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#weather-stations">Weather Stations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#reanalysis">Reanalysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#satellites">Satellites</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#retries-and-rate-limits">Retries and Rate Limits</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#storage-formats">Storage Formats</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#era5-options">ERA5 Options</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#copernicus-cds-arco-use-cds-arco-true">1. Copernicus CDS ARCO (<code class="docutils literal notranslate"><span class="pre">use_cds_arco=True</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#google-cloud-arco-use-google-arco-true">2. Google Cloud ARCO (<code class="docutils literal notranslate"><span class="pre">use_google_arco=True</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#netcdf-4-api-extraction">3. NetCDF-4 API Extraction</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#nasa-imerg">NASA IMERG</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#examples">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="credentials.html">Credentials</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#service-credentials">Service Credentials</a></li>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#examples">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#environment-variables">Environment Variables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#copernicus-cds-configuration-file-cdsapirc">Copernicus CDS Configuration File (<code class="docutils literal notranslate"><span class="pre">~/.cdsapirc</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#nasa-earthdata-configuration-file-netrc">NASA Earthdata Configuration File (<code class="docutils literal notranslate"><span class="pre">~/.netrc</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#python-arguments">Python Arguments</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="dataset_user_guide.html">Dataset User Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#getting-started">1. Getting Started</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#local-files">1.1 Local Files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#remote-fetching">1.2 Remote Fetching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#parameters">1.3 Parameters</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#dataset-properties">2. Dataset Properties</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#metadata-tables">Metadata Tables</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#station-observations">3. Station Observations</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#tahmo">3.1 TAHMO</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#copernicus-in-situ">3.2 Copernicus In-Situ</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#noaa-ghcn">3.3 NOAA GHCN</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#combined-observations">3.4 Combined Observations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#missing-stations">3.5 Missing Stations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#quality-masks-and-numpy">3.6 Quality Masks and NumPy</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#aligning-data-sources">4. Aligning Data Sources</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#aligning-by-time">4.1 Aligning by Time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#joining-dataframes">4.2 Joining DataFrames</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#plotting-multiple-sources">4.3 Plotting Multiple Sources</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#zarr-storage">5. Zarr Storage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#temporal-resampling">6. Temporal Resampling</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#resampling-rules">6.1 Resampling Rules</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#collocated-sensors">7. Collocated Sensors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#topography">8. Topography</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#aspect-encoding">Aspect Encoding</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="dataset_user_guide.html#data-extraction">9. Data Extraction</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#id1">9.1 TAHMO</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#id2">9.2 Copernicus In-Situ</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#id3">9.3 NOAA GHCN</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#ecmwf-era5">9.4 ECMWF ERA5</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#nasa-imerg">9.5 NASA IMERG</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#cams">9.6 CAMS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#nasa-merra-2">9.7 NASA MERRA-2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#open-meteo">9.8 Open-Meteo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#nasa-power">9.9 NASA POWER</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#pvgis">9.10 PVGIS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#sarah-3">9.11 SARAH-3</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#landsaf">9.12 LandSAF</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#tropomi">9.13 TROPOMI</a></li>
+<li class="toctree-l3"><a class="reference internal" href="dataset_user_guide.html#combined-extraction">9.14 Combined Extraction</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">MasharikiWeather</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Extraction Layer</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/extraction.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section class="tex2jax_ignore mathjax_ignore" id="extraction-layer">
+<h1>Extraction Layer<a class="headerlink" href="#extraction-layer" title="Link to this heading"></a></h1>
+<p>The extraction layer in <code class="docutils literal notranslate"><span class="pre">masharikiweather/extract/apis/</span></code> downloads and formats data from weather stations, satellites, and reanalysis models.</p>
+<hr class="docutils" />
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<section id="weather-stations">
+<h3>Weather Stations<a class="headerlink" href="#weather-stations" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Source Name</p></th>
+<th class="head"><p>Source Key</p></th>
+<th class="head"><p>Output Format</p></th>
+<th class="head"><p>Provider</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>TAHMO</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tahmo</span></code></p></td>
+<td><p>Parquet (<code class="docutils literal notranslate"><span class="pre">obs/tahmo/</span></code>)</p></td>
+<td><p>TAHMO DataHub</p></td>
+</tr>
+<tr class="row-odd"><td><p>Copernicus In-Situ</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cds_insitu</span></code></p></td>
+<td><p>Parquet (<code class="docutils literal notranslate"><span class="pre">obs/cds_insitu/</span></code>)</p></td>
+<td><p>Copernicus Climate Data Store</p></td>
+</tr>
+<tr class="row-even"><td><p>NOAA GHCN</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">ghcn</span></code></p></td>
+<td><p>Parquet (<code class="docutils literal notranslate"><span class="pre">obs/ghcn/</span></code>)</p></td>
+<td><p>NOAA NCEI</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="reanalysis">
+<h3>Reanalysis<a class="headerlink" href="#reanalysis" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Source Name</p></th>
+<th class="head"><p>Source Key</p></th>
+<th class="head"><p>Output Format</p></th>
+<th class="head"><p>Provider</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>ERA5</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">era5</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/era5/</span></code>)</p></td>
+<td><p>ECMWF CDS / Cloud ARCO</p></td>
+</tr>
+<tr class="row-odd"><td><p>CAMS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cams</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/cams/</span></code>)</p></td>
+<td><p>Copernicus Atmosphere Monitoring Service</p></td>
+</tr>
+<tr class="row-even"><td><p>MERRA-2</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">merra2</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/merra2/</span></code>)</p></td>
+<td><p>NASA Earthdata</p></td>
+</tr>
+<tr class="row-odd"><td><p>Open-Meteo</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">open_meteo</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/open_meteo/</span></code>)</p></td>
+<td><p>Open-Meteo API</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="satellites">
+<h3>Satellites<a class="headerlink" href="#satellites" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Source Name</p></th>
+<th class="head"><p>Source Key</p></th>
+<th class="head"><p>Output Format</p></th>
+<th class="head"><p>Provider</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>NASA IMERG</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">imerg</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/imerg/</span></code>)</p></td>
+<td><p>NASA Earthdata (GPM)</p></td>
+</tr>
+<tr class="row-odd"><td><p>LandSAF</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">landsaf</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/landsaf/</span></code>)</p></td>
+<td><p>EUMETSAT LandSAF</p></td>
+</tr>
+<tr class="row-even"><td><p>NASA POWER</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">nasa_power</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/nasa_power/</span></code>)</p></td>
+<td><p>NASA POWER Project</p></td>
+</tr>
+<tr class="row-odd"><td><p>PVGIS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">pvgis</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/pvgis/</span></code>)</p></td>
+<td><p>EU PVGIS</p></td>
+</tr>
+<tr class="row-even"><td><p>CM SAF SARAH-3</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">sarah3</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/sarah3/</span></code>)</p></td>
+<td><p>EUMETSAT CM SAF</p></td>
+</tr>
+<tr class="row-odd"><td><p>Sentinel-5P TROPOMI</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tropomi</span></code></p></td>
+<td><p>Zarr (<code class="docutils literal notranslate"><span class="pre">gridded/tropomi/</span></code>)</p></td>
+<td><p>ESA / Copernicus Data Space</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<hr class="docutils" />
+<section id="retries-and-rate-limits">
+<h2>Retries and Rate Limits<a class="headerlink" href="#retries-and-rate-limits" title="Link to this heading"></a></h2>
+<p>External weather APIs can return rate limit codes (<code class="docutils literal notranslate"><span class="pre">429</span></code>) or temporary errors (<code class="docutils literal notranslate"><span class="pre">503</span></code>).</p>
+<p>The extraction layer handles this using:</p>
+<ul class="simple">
+<li><p><strong>Retries:</strong> Retries failed requests up to 3 times with exponential backoff delays.</p></li>
+<li><p><strong>Concurrency Limits:</strong> Limits parallel connections per provider (1 for CDS, 2 for TAHMO, 4 for NASA Earthdata).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="storage-formats">
+<h2>Storage Formats<a class="headerlink" href="#storage-formats" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p><strong>Station Data:</strong> Saved as Parquet files in <code class="docutils literal notranslate"><span class="pre">{root_dir}/obs/{source}/{year}.parquet</span></code>. Sensor channels are kept as separate columns.</p></li>
+<li><p><strong>Gridded Data:</strong> Saved as Zarr stores in <code class="docutils literal notranslate"><span class="pre">{root_dir}/gridded/{source}/{year-month}.zarr</span></code>, cropped to the African bounding box (<span class="math notranslate nohighlight">\(\text{lat} \in [-35^\circ, 38^\circ]\)</span>, <span class="math notranslate nohighlight">\(\text{lon} \in [-20^\circ, 55^\circ]\)</span>).</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="era5-options">
+<h2>ERA5 Options<a class="headerlink" href="#era5-options" title="Link to this heading"></a></h2>
+<p>ERA5 data can be retrieved using three backends:</p>
+<section id="copernicus-cds-arco-use-cds-arco-true">
+<span id="1-copernicus-cds-arco-use_cds_arcotrue"></span><h3>1. Copernicus CDS ARCO (<code class="docutils literal notranslate"><span class="pre">use_cds_arco=True</span></code>)<a class="headerlink" href="#copernicus-cds-arco-use-cds-arco-true" title="Link to this heading"></a></h3>
+<p>Streams Zarr stores hosted on ECMWF CADL using <code class="docutils literal notranslate"><span class="pre">obstore</span></code>:</p>
+<ul class="simple">
+<li><p>Routes to <code class="docutils literal notranslate"><span class="pre">geoChunked</span></code> stores for station time series to minimize data transfer.</p></li>
+<li><p>Routes to <code class="docutils literal notranslate"><span class="pre">timeChunked</span></code> stores for wide map queries at single timestamps.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.extract.apis.era5</span><span class="w"> </span><span class="kn">import</span> <span class="n">ERA5Extractor</span>
+
+<span class="n">extractor</span> <span class="o">=</span> <span class="n">ERA5Extractor</span><span class="p">(</span><span class="n">use_cds_arco</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">ds</span> <span class="o">=</span> <span class="n">extractor</span><span class="o">.</span><span class="n">extract</span><span class="p">(</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"2m_temperature"</span><span class="p">,</span> <span class="s2">"total_precipitation"</span><span class="p">],</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="google-cloud-arco-use-google-arco-true">
+<span id="2-google-cloud-arco-use_google_arcotrue"></span><h3>2. Google Cloud ARCO (<code class="docutils literal notranslate"><span class="pre">use_google_arco=True</span></code>)<a class="headerlink" href="#google-cloud-arco-use-google-arco-true" title="Link to this heading"></a></h3>
+<p>Reads from the Google Cloud ARCO-ERA5 Zarr store.</p>
+</section>
+<section id="netcdf-4-api-extraction">
+<span id="3-netcdf-4-api-extraction"></span><h3>3. NetCDF-4 API Extraction<a class="headerlink" href="#netcdf-4-api-extraction" title="Link to this heading"></a></h3>
+<p>Downloads files from the Copernicus CDS API using <code class="docutils literal notranslate"><span class="pre">data_format=&quot;netcdf4&quot;</span></code>, decoding via <code class="docutils literal notranslate"><span class="pre">netcdf4</span></code> and <code class="docutils literal notranslate"><span class="pre">h5netcdf</span></code> without requiring C-library decoders like <code class="docutils literal notranslate"><span class="pre">cfgrib</span></code>.</p>
+</section>
+</section>
+<hr class="docutils" />
+<section id="nasa-imerg">
+<h2>NASA IMERG<a class="headerlink" href="#nasa-imerg" title="Link to this heading"></a></h2>
+<p>NASA updated the GPM IMERG data stream:</p>
+<ul class="simple">
+<li><p><strong>Final Run (<code class="docutils literal notranslate"><span class="pre">GPM_3IMERGHH</span></code>):</strong> Used for dates up to October 2025.</p></li>
+<li><p><strong>Late Run (<code class="docutils literal notranslate"><span class="pre">GPM_3IMERGHHL</span></code>):</strong> Used for dates from November 2025 onward.</p></li>
+</ul>
+<p>The extractor switches between these streams based on the requested date.</p>
+</section>
+<hr class="docutils" />
+<section id="examples">
+<h2>Examples<a class="headerlink" href="#examples" title="Link to this heading"></a></h2>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.dataset</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_gridded</span><span class="p">,</span> <span class="n">pull_station_data</span>
+
+<span class="c1"># Download station observations for TAHMO</span>
+<span class="n">pull_station_data</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"tahmo"</span><span class="p">,</span>
+    <span class="n">years</span><span class="o">=</span><span class="p">[</span><span class="mi">2023</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Extract gridded reanalysis for a region</span>
+<span class="n">ds_era5</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"era5"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+    <span class="n">bbox</span><span class="o">=</span><span class="p">[</span><span class="o">-</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">33.0</span><span class="p">,</span> <span class="mf">5.0</span><span class="p">,</span> <span class="mf">42.0</span><span class="p">],</span>  <span class="c1"># [lat_min, lon_min, lat_max, lon_max]</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"2m_temperature"</span><span class="p">,</span> <span class="s2">"total_precipitation"</span><span class="p">],</span>
+    <span class="n">use_cds_arco</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/era5"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="architecture.html" class="btn btn-neutral float-left" title="Architecture" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="credentials.html" class="btn btn-neutral float-right" title="Credentials" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Centre for Data Science and Artificial Intelligence (DSAIL), Dedan Kimathi University of Technology.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

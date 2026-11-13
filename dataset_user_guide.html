@@ -1,0 +1,872 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dataset User Guide &mdash; MasharikiWeather 0.1.9 documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=b86133f3" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+
+  
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=8618f531"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script>window.MathJax = {"options": {"processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+      <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="Credentials" href="credentials.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html" class="icon icon-home">
+            MasharikiWeather
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#overview">Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#extraction-layer">Extraction Layer</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#dataset-interface">Dataset Interface</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="architecture.html#directory-layout">Directory Layout</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#station-data-obs">Station Data (<code class="docutils literal notranslate"><span class="pre">obs/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#gridded-data-gridded">Gridded Data (<code class="docutils literal notranslate"><span class="pre">gridded/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#metadata-metadata">Metadata (<code class="docutils literal notranslate"><span class="pre">metadata/</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="architecture.html#static-priors-static">Static Priors (<code class="docutils literal notranslate"><span class="pre">static/</span></code>)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="extraction.html">Extraction Layer</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#overview">Overview</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#weather-stations">Weather Stations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#reanalysis">Reanalysis</a></li>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#satellites">Satellites</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#retries-and-rate-limits">Retries and Rate Limits</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#storage-formats">Storage Formats</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#era5-options">ERA5 Options</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#copernicus-cds-arco-use-cds-arco-true">1. Copernicus CDS ARCO (<code class="docutils literal notranslate"><span class="pre">use_cds_arco=True</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#google-cloud-arco-use-google-arco-true">2. Google Cloud ARCO (<code class="docutils literal notranslate"><span class="pre">use_google_arco=True</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="extraction.html#netcdf-4-api-extraction">3. NetCDF-4 API Extraction</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#nasa-imerg">NASA IMERG</a></li>
+<li class="toctree-l2"><a class="reference internal" href="extraction.html#examples">Examples</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="credentials.html">Credentials</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#service-credentials">Service Credentials</a></li>
+<li class="toctree-l2"><a class="reference internal" href="credentials.html#examples">Examples</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#environment-variables">Environment Variables</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#copernicus-cds-configuration-file-cdsapirc">Copernicus CDS Configuration File (<code class="docutils literal notranslate"><span class="pre">~/.cdsapirc</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#nasa-earthdata-configuration-file-netrc">NASA Earthdata Configuration File (<code class="docutils literal notranslate"><span class="pre">~/.netrc</span></code>)</a></li>
+<li class="toctree-l3"><a class="reference internal" href="credentials.html#python-arguments">Python Arguments</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Dataset User Guide</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#getting-started">1. Getting Started</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#local-files">1.1 Local Files</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#remote-fetching">1.2 Remote Fetching</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#parameters">1.3 Parameters</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#dataset-properties">2. Dataset Properties</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#metadata-tables">Metadata Tables</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#station-observations">3. Station Observations</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#tahmo">3.1 TAHMO</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#copernicus-in-situ">3.2 Copernicus In-Situ</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#noaa-ghcn">3.3 NOAA GHCN</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#combined-observations">3.4 Combined Observations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#missing-stations">3.5 Missing Stations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#quality-masks-and-numpy">3.6 Quality Masks and NumPy</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#aligning-data-sources">4. Aligning Data Sources</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#aligning-by-time">4.1 Aligning by Time</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#joining-dataframes">4.2 Joining DataFrames</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#plotting-multiple-sources">4.3 Plotting Multiple Sources</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#zarr-storage">5. Zarr Storage</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#temporal-resampling">6. Temporal Resampling</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#resampling-rules">6.1 Resampling Rules</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#collocated-sensors">7. Collocated Sensors</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#topography">8. Topography</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#aspect-encoding">Aspect Encoding</a></li>
+</ul>
+</li>
+<li class="toctree-l2"><a class="reference internal" href="#data-extraction">9. Data Extraction</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="#id1">9.1 TAHMO</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id2">9.2 Copernicus In-Situ</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#id3">9.3 NOAA GHCN</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#ecmwf-era5">9.4 ECMWF ERA5</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#nasa-imerg">9.5 NASA IMERG</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#cams">9.6 CAMS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#nasa-merra-2">9.7 NASA MERRA-2</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#open-meteo">9.8 Open-Meteo</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#nasa-power">9.9 NASA POWER</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#pvgis">9.10 PVGIS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#sarah-3">9.11 SARAH-3</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#landsaf">9.12 LandSAF</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#tropomi">9.13 TROPOMI</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#combined-extraction">9.14 Combined Extraction</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">MasharikiWeather</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Dataset User Guide</li>
+      <li class="wy-breadcrumbs-aside">
+            <a href="_sources/dataset_user_guide.md.txt" rel="nofollow"> View page source</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section class="tex2jax_ignore mathjax_ignore" id="dataset-user-guide">
+<h1>Dataset User Guide<a class="headerlink" href="#dataset-user-guide" title="Link to this heading"></a></h1>
+<p>The core user interface of MasharikiWeather is the <code class="docutils literal notranslate"><span class="pre">MasharikiWeatherDataset</span></code> class in <code class="docutils literal notranslate"><span class="pre">masharikiweather.dataset</span></code>. It offers an offline-first interface for reading, slicing, resampling, and visualizing weather observations across Africa.</p>
+<hr class="docutils" />
+<section id="getting-started">
+<span id="1-getting-started"></span><h2>1. Getting Started<a class="headerlink" href="#getting-started" title="Link to this heading"></a></h2>
+<section id="local-files">
+<span id="11-local-files"></span><h3>1.1 Local Files<a class="headerlink" href="#local-files" title="Link to this heading"></a></h3>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">MasharikiWeatherDataset</span></code> loads local files in <code class="docutils literal notranslate"><span class="pre">root</span></code> (or <code class="docutils literal notranslate"><span class="pre">root_dir</span></code>). It does not require internet connectivity or remote tokens if files are present:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.dataset</span><span class="w"> </span><span class="kn">import</span> <span class="n">MasharikiWeatherDataset</span>
+
+<span class="n">dataset</span> <span class="o">=</span> <span class="n">MasharikiWeatherDataset</span><span class="p">(</span>
+    <span class="n">root</span><span class="o">=</span><span class="s2">"./mashariki_data"</span><span class="p">,</span>
+    <span class="n">years</span><span class="o">=</span><span class="p">[</span><span class="mi">2022</span><span class="p">,</span> <span class="mi">2023</span><span class="p">,</span> <span class="mi">2024</span><span class="p">],</span>
+    <span class="n">freq</span><span class="o">=</span><span class="s2">"h"</span><span class="p">,</span>
+    <span class="n">aggregation_methods</span><span class="o">=</span><span class="p">{</span><span class="s2">"precipitation"</span><span class="p">:</span> <span class="s2">"sum"</span><span class="p">,</span> <span class="s2">"temperature"</span><span class="p">:</span> <span class="s2">"mean"</span><span class="p">},</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="remote-fetching">
+<span id="12-remote-fetching"></span><h3>1.2 Remote Fetching<a class="headerlink" href="#remote-fetching" title="Link to this heading"></a></h3>
+<p>If requested years or data files are not found on local disk, <code class="docutils literal notranslate"><span class="pre">MasharikiWeatherDataset</span></code> automatically fetches missing files:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>Fetching tahmo_station_observations: 100%|██████████| 12/12 [01:14&lt;00:00, 2023-12-01.parquet: 61.2MB [00:06, 4.12MB/s]]
+</pre></div>
+</div>
+<p>Remote Hugging Face streaming is opt-in via <code class="docutils literal notranslate"><span class="pre">use_hf=True</span></code> or by providing a Hugging Face <code class="docutils literal notranslate"><span class="pre">token</span></code>.</p>
+</section>
+<section id="parameters">
+<span id="13-parameters"></span><h3>1.3 Parameters<a class="headerlink" href="#parameters" title="Link to this heading"></a></h3>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Type</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">root</span></code> (or <code class="docutils literal notranslate"><span class="pre">root_dir</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">str</span></code> or <code class="docutils literal notranslate"><span class="pre">Path</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;./mashariki_data&quot;</span></code></p></td>
+<td><p>Local directory storing <code class="docutils literal notranslate"><span class="pre">obs/</span></code>, <code class="docutils literal notranslate"><span class="pre">gridded/</span></code>, and <code class="docutils literal notranslate"><span class="pre">metadata/</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">years</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Sequence[int]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[2018..2024]</span></code></p></td>
+<td><p>Calendar years included in the dataset</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">source_obs</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">str</span></code> or <code class="docutils literal notranslate"><span class="pre">List[str]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">&quot;tahmo&quot;</span></code></p></td>
+<td><p>Observational source (<code class="docutils literal notranslate"><span class="pre">'tahmo'</span></code>, <code class="docutils literal notranslate"><span class="pre">'cds_insitu'</span></code>, <code class="docutils literal notranslate"><span class="pre">'ghcn'</span></code>)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">freq</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Optional[str]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>Target temporal frequency (e.g., <code class="docutils literal notranslate"><span class="pre">'h'</span></code>, <code class="docutils literal notranslate"><span class="pre">'3h'</span></code>, <code class="docutils literal notranslate"><span class="pre">'D'</span></code>, or <code class="docutils literal notranslate"><span class="pre">None</span></code> for native resolution)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aggregation_methods</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Optional[Dict[str,</span> <span class="pre">str]]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>Variable-specific temporal aggregation overrides</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">parameters</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">Optional[Sequence[str]]</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code></p></td>
+<td><p>Restrict loaded variables to specific parameters</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">prefer_zarr</span></code> (or <code class="docutils literal notranslate"><span class="pre">use_zarr</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bool</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p>Prioritize Zarr store reading for TAHMO observations</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">use_hf</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">bool</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">False</span></code></p></td>
+<td><p>Opt-in to remote Hugging Face streaming</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+</section>
+<hr class="docutils" />
+<section id="dataset-properties">
+<span id="2-dataset-properties"></span><h2>2. Dataset Properties<a class="headerlink" href="#dataset-properties" title="Link to this heading"></a></h2>
+<p>An instantiated <code class="docutils literal notranslate"><span class="pre">MasharikiWeatherDataset</span></code> object exposes attributes and metadata catalogs:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Path and frequency configuration</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Data Root Directory:"</span><span class="p">,</span> <span class="n">dataset</span><span class="o">.</span><span class="n">root</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Configured Frequency:"</span><span class="p">,</span> <span class="n">dataset</span><span class="o">.</span><span class="n">freq</span><span class="p">)</span>
+
+<span class="c1"># Available vs active parameters</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Available Parameters:"</span><span class="p">,</span> <span class="n">dataset</span><span class="o">.</span><span class="n">available_parameters</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Active Parameters:"</span><span class="p">,</span> <span class="n">dataset</span><span class="o">.</span><span class="n">parameters</span><span class="p">)</span>
+
+<span class="c1"># Available vs active years</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Available Years:"</span><span class="p">,</span> <span class="n">dataset</span><span class="o">.</span><span class="n">available_years</span><span class="p">)</span>
+
+<span class="c1"># Active stations</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Active Stations (Count: </span><span class="si">{}</span><span class="s2">):"</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">dataset</span><span class="o">.</span><span class="n">stations</span><span class="p">)))</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">dataset</span><span class="o">.</span><span class="n">stations</span><span class="p">[:</span><span class="mi">5</span><span class="p">])</span>
+</pre></div>
+</div>
+<section id="metadata-tables">
+<h3>Metadata Tables<a class="headerlink" href="#metadata-tables" title="Link to this heading"></a></h3>
+<p>Metadata tables are stored in <code class="docutils literal notranslate"><span class="pre">{root}/metadata/</span></code>:</p>
+<ul class="simple">
+<li><p><strong>Station Catalog (<code class="docutils literal notranslate"><span class="pre">dataset.installation</span></code>):</strong> Station IDs, coordinates (lat, lon), elevation, and names.</p></li>
+<li><p><strong>Parameter Catalog (<code class="docutils literal notranslate"><span class="pre">dataset.parameters_table</span></code>):</strong> Variable names, units, and default aggregation methods.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Inspect station installation catalog</span>
+<span class="n">stations_df</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">installation</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">stations_df</span><span class="p">[[</span><span class="s2">"station_name"</span><span class="p">,</span> <span class="s2">"latitude"</span><span class="p">,</span> <span class="s2">"longitude"</span><span class="p">,</span> <span class="s2">"elevation"</span><span class="p">]]</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+
+<span class="c1"># Inspect parameter catalog</span>
+<span class="n">params_df</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">parameters_table</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">params_df</span><span class="p">[[</span><span class="s2">"standard_name"</span><span class="p">,</span> <span class="s2">"units"</span><span class="p">,</span> <span class="s2">"resampling_method"</span><span class="p">]])</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="station-observations">
+<span id="3-station-observations"></span><h2>3. Station Observations<a class="headerlink" href="#station-observations" title="Link to this heading"></a></h2>
+<p>MasharikiWeather provides methods for each observation network. Each returns a pandas DataFrame indexed by time with columns formatted as <code class="docutils literal notranslate"><span class="pre">(station_id,</span> <span class="pre">parameter)</span></code>.</p>
+<section id="tahmo">
+<span id="31-tahmo"></span><h3>3.1 TAHMO<a class="headerlink" href="#tahmo" title="Link to this heading"></a></h3>
+<p>Retrieves observations from the TAHMO network:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Retrieve temperature and precipitation for TAHMO stations</span>
+<span class="n">df_tahmo</span><span class="p">,</span> <span class="n">mask_tahmo</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span>
+    <span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">,</span> <span class="s2">"TA00016"</span><span class="p">],</span>
+    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">first_date</span><span class="o">=</span><span class="s2">"2023-01-01 00:00"</span><span class="p">,</span>
+    <span class="n">last_date</span><span class="o">=</span><span class="s2">"2023-01-07 23:00"</span><span class="p">,</span>
+    <span class="n">return_mask</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">df_tahmo</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+<p>Output DataFrame structure:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>                                  TA00001                                  TA00016             
+                      temperature precipitation                temperature precipitation  
+time                                                                                       
+2023-01-01 00:00:00          21.4           0.0                       20.1           0.0
+2023-01-01 01:00:00          20.8           0.2                       19.7           0.0
+</pre></div>
+</div>
+</section>
+<section id="copernicus-in-situ">
+<span id="32-copernicus-in-situ"></span><h3>3.2 Copernicus In-Situ<a class="headerlink" href="#copernicus-in-situ" title="Link to this heading"></a></h3>
+<p>Retrieves global surface station measurements from the Copernicus Climate Data Store:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df_cds</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_cds_insitu_observations</span><span class="p">(</span>
+    <span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"CDS_NBO"</span><span class="p">],</span>
+    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"surface_pressure"</span><span class="p">],</span>
+    <span class="n">first_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">last_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">df_cds</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="noaa-ghcn">
+<span id="33-noaa-ghcn"></span><h3>3.3 NOAA GHCN<a class="headerlink" href="#noaa-ghcn" title="Link to this heading"></a></h3>
+<p>Retrieves measurements from NOAA’s Global Historical Climatology Network:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df_ghcn</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_ghcn_observations</span><span class="p">(</span>
+    <span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"KE000063612"</span><span class="p">],</span>
+    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">first_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">last_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">df_ghcn</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="combined-observations">
+<span id="34-combined-observations"></span><h3>3.4 Combined Observations<a class="headerlink" href="#combined-observations" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">get_observations()</span></code> returns observations from all active sources combined:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df_all</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_observations</span><span class="p">(</span>
+    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">],</span>
+    <span class="n">first_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">last_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="missing-stations">
+<span id="35-missing-stations"></span><h3>3.5 Missing Stations<a class="headerlink" href="#missing-stations" title="Link to this heading"></a></h3>
+<p>If a requested station is not present in local storage, observation methods issue a warning and continue with available stations:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">df</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span><span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">,</span> <span class="s2">"NONEXISTENT_STATION"</span><span class="p">])</span>
+<span class="c1"># UserWarning: Requested station(s) not in dataset: ['NONEXISTENT_STATION']. Continuing with available stations.</span>
+</pre></div>
+</div>
+</section>
+<section id="quality-masks-and-numpy">
+<span id="36-quality-masks-and-numpy"></span><h3>3.6 Quality Masks and NumPy<a class="headerlink" href="#quality-masks-and-numpy" title="Link to this heading"></a></h3>
+<p>When <code class="docutils literal notranslate"><span class="pre">return_mask=True</span></code>, a parallel boolean mask DataFrame is returned where <code class="docutils literal notranslate"><span class="pre">True</span></code> indicates a valid measured value and <code class="docutils literal notranslate"><span class="pre">False</span></code> indicates missing data.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">as_numpy=True</span></code> exports 3D arrays:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">arr</span><span class="p">,</span> <span class="n">mask_arr</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span>
+    <span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">,</span> <span class="s2">"TA00016"</span><span class="p">],</span>
+    <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">as_numpy</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">return_mask</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Output tensor shape: (T_time_steps, N_stations, C_parameters)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Data Tensor Shape:"</span><span class="p">,</span> <span class="n">arr</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Mask Tensor Shape:"</span><span class="p">,</span> <span class="n">mask_arr</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="aligning-data-sources">
+<span id="4-aligning-data-sources"></span><h2>4. Aligning Data Sources<a class="headerlink" href="#aligning-data-sources" title="Link to this heading"></a></h2>
+<p>All station methods share the same index (<code class="docutils literal notranslate"><span class="pre">time</span></code>) and columns formatted as <code class="docutils literal notranslate"><span class="pre">(station_id,</span> <span class="pre">parameter)</span></code>.</p>
+<section id="aligning-by-time">
+<span id="41-aligning-by-time"></span><h3>4.1 Aligning by Time<a class="headerlink" href="#aligning-by-time" title="Link to this heading"></a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">MasharikiWeatherDataset.align_observations()</span></code> joins multiple observation sources onto a unified time index:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">strands</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"tahmo"</span><span class="p">:</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span><span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">]),</span>
+    <span class="s2">"ghcn"</span><span class="p">:</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_ghcn_observations</span><span class="p">(</span><span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">]),</span>
+    <span class="s2">"cds_insitu"</span><span class="p">:</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_cds_insitu_observations</span><span class="p">(</span><span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">]),</span>
+<span class="p">}</span>
+
+<span class="c1"># Align sources across their shared time range</span>
+<span class="n">aligned_df</span> <span class="o">=</span> <span class="n">MasharikiWeatherDataset</span><span class="o">.</span><span class="n">align_observations</span><span class="p">(</span><span class="n">strands</span><span class="p">,</span> <span class="n">how</span><span class="o">=</span><span class="s2">"outer"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Aligned Columns (3 levels):"</span><span class="p">,</span> <span class="n">aligned_df</span><span class="o">.</span><span class="n">columns</span><span class="o">.</span><span class="n">names</span><span class="p">)</span>
+<span class="c1"># ['source', 'station_id', 'parameter']</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">aligned_df</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="joining-dataframes">
+<span id="42-joining-dataframes"></span><h3>4.2 Joining DataFrames<a class="headerlink" href="#joining-dataframes" title="Link to this heading"></a></h3>
+<p>Standard pandas operations can also be used directly:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Join two DataFrames side by side</span>
+<span class="n">joined_df</span> <span class="o">=</span> <span class="n">df_tahmo</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">df_ghcn</span><span class="p">,</span> <span class="n">how</span><span class="o">=</span><span class="s2">"outer"</span><span class="p">)</span>
+
+<span class="c1"># Concatenate across columns</span>
+<span class="n">merged_df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">concat</span><span class="p">({</span><span class="s2">"tahmo"</span><span class="p">:</span> <span class="n">df_tahmo</span><span class="p">,</span> <span class="s2">"ghcn"</span><span class="p">:</span> <span class="n">df_ghcn</span><span class="p">},</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="plotting-multiple-sources">
+<span id="43-plotting-multiple-sources"></span><h3>4.3 Plotting Multiple Sources<a class="headerlink" href="#plotting-multiple-sources" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+
+<span class="n">df_tahmo</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span><span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">],</span> <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">])</span>
+<span class="n">df_ghcn</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_ghcn_observations</span><span class="p">(</span><span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"KE000063612"</span><span class="p">],</span> <span class="n">parameters</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">])</span>
+
+<span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">12</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">df_tahmo</span><span class="o">.</span><span class="n">empty</span><span class="p">:</span>
+    <span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">df_tahmo</span><span class="o">.</span><span class="n">index</span><span class="p">,</span> <span class="n">df_tahmo</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">,</span> <span class="s2">"2m_temperature"</span><span class="p">],</span> <span class="n">label</span><span class="o">=</span><span class="s2">"TAHMO TA00001 Temp"</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#1f77b4"</span><span class="p">)</span>
+<span class="k">if</span> <span class="ow">not</span> <span class="n">df_ghcn</span><span class="o">.</span><span class="n">empty</span><span class="p">:</span>
+    <span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">(</span><span class="n">df_ghcn</span><span class="o">.</span><span class="n">index</span><span class="p">,</span> <span class="n">df_ghcn</span><span class="p">[</span><span class="s2">"KE000063612"</span><span class="p">,</span> <span class="s2">"2m_temperature"</span><span class="p">],</span> <span class="n">label</span><span class="o">=</span><span class="s2">"GHCN KE000063612 Temp"</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#ff7f0e"</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s2">"--"</span><span class="p">)</span>
+
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">"Temperature Comparison"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">"Time (UTC)"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">"Temperature (°C)"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">(</span><span class="n">loc</span><span class="o">=</span><span class="s2">"upper right"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="kc">True</span><span class="p">,</span> <span class="n">linestyle</span><span class="o">=</span><span class="s2">"--"</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.6</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="zarr-storage">
+<span id="5-zarr-storage"></span><h2>5. Zarr Storage<a class="headerlink" href="#zarr-storage" title="Link to this heading"></a></h2>
+<p>Station observations default to Parquet files on disk. TAHMO data can also be loaded from a Zarr store when requested with <code class="docutils literal notranslate"><span class="pre">prefer_zarr=True</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Load TAHMO observations prioritizing local or remote Zarr store</span>
+<span class="n">dataset_zarr</span> <span class="o">=</span> <span class="n">MasharikiWeatherDataset</span><span class="p">(</span>
+    <span class="n">root</span><span class="o">=</span><span class="s2">"./mashariki_data"</span><span class="p">,</span>
+    <span class="n">source_obs</span><span class="o">=</span><span class="p">[</span><span class="s2">"tahmo"</span><span class="p">],</span>
+    <span class="n">prefer_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># or use_zarr=True</span>
+    <span class="n">years</span><span class="o">=</span><span class="p">[</span><span class="mi">2023</span><span class="p">],</span>
+    <span class="n">freq</span><span class="o">=</span><span class="s2">"h"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">df_tahmo</span> <span class="o">=</span> <span class="n">dataset_zarr</span><span class="o">.</span><span class="n">get_tahmo_observations</span><span class="p">(</span><span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Loaded from Zarr:"</span><span class="p">,</span> <span class="n">df_tahmo</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Search order when <code class="docutils literal notranslate"><span class="pre">prefer_zarr=True</span></code>:</p>
+<ol class="arabic simple">
+<li><p>Path passed via <code class="docutils literal notranslate"><span class="pre">zarr_path</span></code> or <code class="docutils literal notranslate"><span class="pre">tahmo_zarr_path</span></code> argument</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{root}/obs/tahmo.zarr</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">{root}/obs/tahmo.zarr.zip</span></code></p></li>
+<li><p>Remote Hugging Face store (when <code class="docutils literal notranslate"><span class="pre">use_hf=True</span></code>)</p></li>
+</ol>
+</section>
+<hr class="docutils" />
+<section id="temporal-resampling">
+<span id="6-temporal-resampling"></span><h2>6. Temporal Resampling<a class="headerlink" href="#temporal-resampling" title="Link to this heading"></a></h2>
+<p>When resampling time series, precipitation totals are summed and state variables (like temperature) are averaged.</p>
+<p>The <code class="docutils literal notranslate"><span class="pre">resample()</span></code> method handles this automatically:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Resample observations to 3-hourly intervals</span>
+<span class="n">dataset_3h</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">resample</span><span class="p">(</span><span class="n">freq</span><span class="o">=</span><span class="s2">"3h"</span><span class="p">)</span>
+</pre></div>
+</div>
+<section id="resampling-rules">
+<span id="61-resampling-rules"></span><h3>6.1 Resampling Rules<a class="headerlink" href="#resampling-rules" title="Link to this heading"></a></h3>
+<ul>
+<li><p><strong>Flux Variables (Precipitation, Solar Radiation):</strong>
+Accumulated quantities are summed over each interval <span class="math notranslate nohighlight">\(\Delta t\)</span>:</p>
+<div class="math notranslate nohighlight">
+\[Y_{\text{flux}}[t] = \sum_{k \in \Delta t} X_{\text{flux}}[k]\]</div>
+<p>with <code class="docutils literal notranslate"><span class="pre">min_count=1</span></code> to prevent false zero totals when measurements are missing.</p>
+</li>
+<li><p><strong>State Variables (Temperature, Dewpoint, Pressure, Wind Speed):</strong>
+State variables are averaged using the arithmetic mean:</p>
+<div class="math notranslate nohighlight">
+\[Y_{\text{state}}[t] = \frac{1}{|\Delta t|} \sum_{k \in \Delta t} X_{\text{state}}[k]\]</div>
+</li>
+<li><p><strong>Quality Masks:</strong>
+Masks are combined using logical OR:</p>
+<div class="math notranslate nohighlight">
+\[M_{\text{out}}[t] = \bigvee_{k \in \Delta t} M_{\text{in}}[k]\]</div>
+</li>
+</ul>
+</section>
+</section>
+<hr class="docutils" />
+<section id="collocated-sensors">
+<span id="7-collocated-sensors"></span><h2>7. Collocated Sensors<a class="headerlink" href="#collocated-sensors" title="Link to this heading"></a></h2>
+<p>When a station has multiple sensors measuring the same variable (such as redundant relative humidity probes <code class="docutils literal notranslate"><span class="pre">rh_S001402</span></code> and <code class="docutils literal notranslate"><span class="pre">rh_S001403</span></code>):</p>
+<ul class="simple">
+<li><p>Each sensor stream is preserved in a dedicated column named <code class="docutils literal notranslate"><span class="pre">&lt;variable&gt;_&lt;sensor_id&gt;</span></code>.</p></li>
+<li><p>Flagged values (where quality flag <span class="math notranslate nohighlight">\(\neq 1\)</span>) are set to <code class="docutils literal notranslate"><span class="pre">NaN</span></code>.</p></li>
+<li><p>When requesting a canonical parameter (such as <code class="docutils literal notranslate"><span class="pre">relative_humidity</span></code>), both channels are matched.</p></li>
+</ul>
+</section>
+<hr class="docutils" />
+<section id="topography">
+<span id="8-topography"></span><h2>8. Topography<a class="headerlink" href="#topography" title="Link to this heading"></a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">load_topography()</span></code> method loads elevation, slope, aspect, and Topographic Position Index (TPI):</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Load gridded topography dataset</span>
+<span class="n">topo_ds</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">load_topography</span><span class="p">(</span><span class="n">filename</span><span class="o">=</span><span class="s2">"africa_static_priors"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Topographic Fields:"</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">topo_ds</span><span class="o">.</span><span class="n">data_vars</span><span class="p">))</span>
+
+<span class="c1"># Merge station metadata with interpolated topographic priors</span>
+<span class="n">stations_with_topo</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">load_topography</span><span class="p">(</span><span class="n">filename</span><span class="o">=</span><span class="s2">"africa_static_priors"</span><span class="p">,</span> <span class="n">merge_stations</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">stations_with_topo</span><span class="p">[[</span><span class="s2">"elevation"</span><span class="p">,</span> <span class="s2">"slope"</span><span class="p">,</span> <span class="s2">"aspect_sin"</span><span class="p">,</span> <span class="s2">"aspect_cos"</span><span class="p">,</span> <span class="s2">"TPI_2000M"</span><span class="p">]]</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+<section id="aspect-encoding">
+<h3>Aspect Encoding<a class="headerlink" href="#aspect-encoding" title="Link to this heading"></a></h3>
+<p>Terrain aspect represents an angle in degrees <span class="math notranslate nohighlight">\([0^\circ, 360^\circ)\)</span>. Linear values create an artificial discontinuity between <span class="math notranslate nohighlight">\(359^\circ\)</span> and <span class="math notranslate nohighlight">\(1^\circ\)</span>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">load_topography()</span></code> decomposes aspect into sine and cosine components:</p>
+<div class="math notranslate nohighlight">
+\[\text{aspect\_sin} = \sin\left(\theta \cdot \frac{\pi}{180}\right), \quad \text{aspect\_cos} = \cos\left(\theta \cdot \frac{\pi}{180}\right)\]</div>
+</section>
+</section>
+<hr class="docutils" />
+<section id="data-extraction">
+<span id="9-data-extraction"></span><h2>9. Data Extraction<a class="headerlink" href="#data-extraction" title="Link to this heading"></a></h2>
+<p>Extraction examples for each supported data source:</p>
+<section id="id1">
+<span id="91-tahmo"></span><h3>9.1 TAHMO<a class="headerlink" href="#id1" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.dataset</span><span class="w"> </span><span class="kn">import</span> <span class="n">extract_stations</span>
+
+<span class="c1"># Extract TAHMO stations to local Parquet files</span>
+<span class="n">tahmo_files</span> <span class="o">=</span> <span class="n">extract_stations</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"tahmo"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/obs/tahmo"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="id2">
+<span id="92-copernicus-in-situ"></span><h3>9.2 Copernicus In-Situ<a class="headerlink" href="#id2" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract CDS In-Situ ground observations</span>
+<span class="n">cds_files</span> <span class="o">=</span> <span class="n">extract_stations</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"cds_insitu"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/obs/cds_insitu"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="id3">
+<span id="93-noaa-ghcn"></span><h3>9.3 NOAA GHCN<a class="headerlink" href="#id3" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract daily NOAA GHCN observations for Africa</span>
+<span class="n">ghcn_files</span> <span class="o">=</span> <span class="n">extract_stations</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"ghcn"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"t2m_max"</span><span class="p">,</span> <span class="s2">"t2m_min"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/obs/ghcn"</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="ecmwf-era5">
+<span id="94-ecmwf-era5"></span><h3>9.4 ECMWF ERA5<a class="headerlink" href="#ecmwf-era5" title="Link to this heading"></a></h3>
+<p>Extraction and integration of gridded ERA5 atmospheric fields across three supported backends:</p>
+<ul>
+<li><p><strong>Legacy CDS API Backend (<code class="docutils literal notranslate"><span class="pre">use_legacy=True</span></code>, default):</strong>
+Queries the Copernicus Climate Data Store API. To bypass <code class="docutils literal notranslate"><span class="pre">cfgrib</span></code> and its C-dependencies, data can be requested in <code class="docutils literal notranslate"><span class="pre">netcdf4</span></code> format (<code class="docutils literal notranslate"><span class="pre">data_format=&quot;netcdf4&quot;</span></code>).
+<em>Adaptive Chunking:</em> NetCDF conversions require server-side processing on CDS. Chunking starts at a maximum 5-day interval. If the CDS API returns an error indicating the request size is too large or times out, MasharikiWeather catches the error, logs a notification (e.g., <code class="docutils literal notranslate"><span class="pre">Request</span> <span class="pre">size</span> <span class="pre">too</span> <span class="pre">large,</span> <span class="pre">reducing</span> <span class="pre">chunk</span> <span class="pre">size</span> <span class="pre">to</span> <span class="pre">4</span> <span class="pre">days...</span></code>), and automatically retries with smaller chunks (4 days, then 3 days, down to 1 day).
+Official CDS setup guide: <a class="reference external" href="https://cds.climate.copernicus.eu/user-guide">Copernicus CDS User Guide</a>.</p></li>
+<li><p><strong>Copernicus CDS ARCO Backend (<code class="docutils literal notranslate"><span class="pre">use_cds_arco=True</span></code>):</strong>
+Provides lightweight access to ECMWF analysis-ready cloud Zarr stores using <code class="docutils literal notranslate"><span class="pre">obstore</span></code> for network resilience.
+Authentication is resolved automatically from the <code class="docutils literal notranslate"><span class="pre">CDSAPI_KEY</span></code> environment variable or parsed directly from <code class="docutils literal notranslate"><span class="pre">~/.cdsapirc</span></code>.</p>
+<p><strong>Query-Aware Routing Matrix:</strong>
+The ARCO stores vary depending on whether data is accessed by a single location over time, or a single time stamp over a spatial area. MasharikiWeather implements an automated routing mechanism that defaults to the correct URL based on the shape of the user’s request (e.g., if requesting a single point or small bounding box, it routes to <code class="docutils literal notranslate"><span class="pre">geo</span></code>; if requesting a single time stamp over a wide bounding box, it routes to <code class="docutils literal notranslate"><span class="pre">time</span></code>). A manual override is available via the <code class="docutils literal notranslate"><span class="pre">chunking=&quot;geo&quot;</span></code> or <code class="docutils literal notranslate"><span class="pre">chunking=&quot;time&quot;</span></code> parameter.</p>
+<p>Exact target URLs:</p>
+<ol class="arabic simple">
+<li><p>Single Levels (Surface - sfc):</p>
+<ul class="simple">
+<li><p>Geo (Optimized for time-series at a single location): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-geo-002/arco/reanalysis_era5_single_levels/sfc/geoChunked.zarr</span></code></p></li>
+<li><p>Time (Optimized for global map at a single time step): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-time-002/arco/reanalysis_era5_single_levels/sfc/timeChunked.zarr</span></code></p></li>
+</ul>
+</li>
+<li><p>Single Levels (Waves - wav):</p>
+<ul class="simple">
+<li><p>Geo (Optimized for time-series at a single location): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-geo-003/arco/reanalysis_era5_single_levels/wav/geoChunked.zarr</span></code></p></li>
+<li><p>Time (Optimized for global map at a single time step): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-time-003/arco/reanalysis_era5_single_levels/wav/timeChunked.zarr</span></code></p></li>
+</ul>
+</li>
+<li><p>Pressure Levels (pl):</p>
+<ul class="simple">
+<li><p>Geo (Optimized for time-series at a single location): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-geo-048/arco/reanalysis_era5_pressure_levels/pl/geoChunked.zarr</span></code></p></li>
+<li><p>Time (Optimized for global map at a single time step): <code class="docutils literal notranslate"><span class="pre">https://arco.datastores.ecmwf.int/cadl-arco-time-048/arco/reanalysis_era5_pressure_levels/pl/timeChunked.zarr</span></code></p></li>
+</ul>
+</li>
+</ol>
+<p>Loading is performed with <code class="docutils literal notranslate"><span class="pre">obstore</span></code> using <code class="docutils literal notranslate"><span class="pre">HTTPStore</span></code> and <code class="docutils literal notranslate"><span class="pre">ObjectStore</span></code>:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">obstore.store</span><span class="w"> </span><span class="kn">import</span> <span class="n">HTTPStore</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">zarr.storage</span><span class="w"> </span><span class="kn">import</span> <span class="n">ObjectStore</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">xarray</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">xr</span>
+
+<span class="n">http_store</span> <span class="o">=</span> <span class="n">HTTPStore</span><span class="p">(</span><span class="n">target_url</span><span class="p">,</span> <span class="n">client_options</span><span class="o">=</span><span class="p">{</span><span class="s2">"default_headers"</span><span class="p">:</span> <span class="p">{</span><span class="s2">"Authorization"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"Bearer </span><span class="si">{</span><span class="n">cdsapi_key</span><span class="si">}</span><span class="s2">"</span><span class="p">}})</span>
+<span class="n">store</span> <span class="o">=</span> <span class="n">ObjectStore</span><span class="p">(</span><span class="n">http_store</span><span class="p">,</span> <span class="n">read_only</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">ds</span> <span class="o">=</span> <span class="n">xr</span><span class="o">.</span><span class="n">open_zarr</span><span class="p">(</span><span class="n">store</span><span class="p">)</span>
+</pre></div>
+</div>
+</li>
+<li><p><strong>Google Cloud ARCO Backend (<code class="docutils literal notranslate"><span class="pre">use_google_arco=True</span></code>):</strong>
+Connects to the public Google Cloud Public Dataset ERA5 ARCO Zarr store for sub-second slicing without requiring CDS credentials.</p></li>
+</ul>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.dataset</span><span class="w"> </span><span class="kn">import</span> <span class="n">MasharikiWeatherDataset</span><span class="p">,</span> <span class="n">extract_gridded</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.extract.apis.era5</span><span class="w"> </span><span class="kn">import</span> <span class="n">ERA5Extractor</span>
+
+<span class="c1"># 1a. Legacy CDS API extraction with NetCDF4 format and adaptive chunking</span>
+<span class="n">era5_legacy_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"era5"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"2m_temperature"</span><span class="p">,</span> <span class="s2">"total_precipitation"</span><span class="p">,</span> <span class="s2">"surface_pressure"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/era5"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">use_legacy</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">data_format</span><span class="o">=</span><span class="s2">"netcdf4"</span><span class="p">,</span>  <span class="c1"># Bypasses cfgrib C-dependencies</span>
+    <span class="n">chunk_days</span><span class="o">=</span><span class="mi">5</span><span class="p">,</span>           <span class="c1"># Starts at 5 days, adaptively downsizes on limit/timeout</span>
+<span class="p">)</span>
+
+<span class="c1"># 1b. Copernicus CDS ARCO extraction via obstore with query-aware routing</span>
+<span class="n">era5_cds_arco_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"era5"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"2m_temperature"</span><span class="p">,</span> <span class="s2">"total_precipitation"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/era5_cds_arco"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">use_cds_arco</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">chunking</span><span class="o">=</span><span class="s2">"geo"</span><span class="p">,</span>  <span class="c1"># Defaults to geo for localized time-series; override with 'time' for snapshot maps</span>
+<span class="p">)</span>
+
+<span class="c1"># 1c. Copernicus CDS ARCO wave store extraction</span>
+<span class="n">era5_waves_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"era5"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-05"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"significant_height_of_combined_wind_waves_and_swell"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/era5_waves"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">use_cds_arco</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">stream</span><span class="o">=</span><span class="s2">"wav"</span><span class="p">,</span>
+    <span class="n">chunking</span><span class="o">=</span><span class="s2">"geo"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># 1d. Google Cloud ARCO cloud extraction</span>
+<span class="n">era5_google_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"era5"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-03"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"2m_temperature"</span><span class="p">,</span> <span class="s2">"total_precipitation"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/era5_google"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">use_google_arco</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># 2. Loading gridded datasets via MasharikiWeatherDataset</span>
+<span class="n">dataset</span> <span class="o">=</span> <span class="n">MasharikiWeatherDataset</span><span class="p">(</span><span class="n">root</span><span class="o">=</span><span class="s2">"./mashariki_data"</span><span class="p">,</span> <span class="n">years</span><span class="o">=</span><span class="p">[</span><span class="mi">2023</span><span class="p">])</span>
+<span class="n">gridded_ds_dict</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">load_gridded_datasets</span><span class="p">(</span><span class="n">groups</span><span class="o">=</span><span class="p">[</span><span class="s2">"era5"</span><span class="p">],</span> <span class="n">years</span><span class="o">=</span><span class="p">[</span><span class="mi">2023</span><span class="p">])</span>
+<span class="n">era5_ds</span> <span class="o">=</span> <span class="n">gridded_ds_dict</span><span class="p">[</span><span class="s2">"era5"</span><span class="p">]</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Loaded ERA5 Dataset:"</span><span class="p">,</span> <span class="n">era5_ds</span><span class="p">)</span>
+
+<span class="c1"># 3. Interpolating gridded context to station coordinates</span>
+<span class="n">gridded_station_df</span><span class="p">,</span> <span class="n">mask_df</span> <span class="o">=</span> <span class="n">dataset</span><span class="o">.</span><span class="n">get_gridded_for_stations</span><span class="p">(</span>
+    <span class="n">groups</span><span class="o">=</span><span class="p">[</span><span class="s2">"era5"</span><span class="p">],</span>
+    <span class="n">stations</span><span class="o">=</span><span class="p">[</span><span class="s2">"TA00001"</span><span class="p">,</span> <span class="s2">"TA00016"</span><span class="p">,</span> <span class="s2">"TA00168"</span><span class="p">],</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"total_precipitation"</span><span class="p">,</span> <span class="s2">"2m_temperature"</span><span class="p">],</span>
+    <span class="n">method_overrides</span><span class="o">=</span><span class="p">{</span><span class="s2">"total_precipitation"</span><span class="p">:</span> <span class="s2">"linear"</span><span class="p">,</span> <span class="s2">"2m_temperature"</span><span class="p">:</span> <span class="s2">"nearest"</span><span class="p">},</span>
+    <span class="n">first_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">last_date</span><span class="o">=</span><span class="s2">"2023-01-07"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Station-aligned ERA5 features:"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">gridded_station_df</span><span class="p">[</span><span class="s2">"era5"</span><span class="p">]</span><span class="o">.</span><span class="n">head</span><span class="p">())</span>
+</pre></div>
+</div>
+</section>
+<section id="nasa-imerg">
+<span id="95-nasa-imerg"></span><h3>9.5 NASA IMERG<a class="headerlink" href="#nasa-imerg" title="Link to this heading"></a></h3>
+<p>NASA GPM IMERG satellite precipitation estimates retrieved via non-interactive NASA Earthdata authentication.
+Official authentication guide: <a class="reference external" href="https://earthaccess.readthedocs.io/en/stable/">NASA earthaccess Documentation</a>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract IMERG half-hourly precipitation granules</span>
+<span class="n">imerg_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"imerg"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/imerg"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="cams">
+<span id="96-cams"></span><h3>9.6 CAMS<a class="headerlink" href="#cams" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract atmospheric composition (PM2.5, PM10, dust, ozone)</span>
+<span class="n">cams_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"cams"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"pm2_5"</span><span class="p">,</span> <span class="s2">"pm10"</span><span class="p">,</span> <span class="s2">"dust"</span><span class="p">,</span> <span class="s2">"ozone"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/cams"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="nasa-merra-2">
+<span id="97-nasa-merra-2"></span><h3>9.7 NASA MERRA-2<a class="headerlink" href="#nasa-merra-2" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract MERRA-2 meteorological and aerosol reanalysis fields</span>
+<span class="n">merra2_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"merra2"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/merra2"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="open-meteo">
+<span id="98-open-meteo"></span><h3>9.8 Open-Meteo<a class="headerlink" href="#open-meteo" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract Open-Meteo multi-model reanalysis parameters</span>
+<span class="n">open_meteo_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"open_meteo"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature_2m"</span><span class="p">,</span> <span class="s2">"relative_humidity_2m"</span><span class="p">,</span> <span class="s2">"wind_speed_10m"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/open_meteo"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="nasa-power">
+<span id="99-nasa-power"></span><h3>9.9 NASA POWER<a class="headerlink" href="#nasa-power" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract NASA POWER surface solar irradiance and meteorology</span>
+<span class="n">power_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"nasa_power"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"T2M"</span><span class="p">,</span> <span class="s2">"ALLSKY_SFC_SW_DWN"</span><span class="p">,</span> <span class="s2">"PS"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/nasa_power"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="pvgis">
+<span id="910-pvgis"></span><h3>9.10 PVGIS<a class="headerlink" href="#pvgis" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract PVGIS solar radiation time series</span>
+<span class="n">pvgis_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"pvgis"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/pvgis"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="sarah-3">
+<span id="911-sarah-3"></span><h3>9.11 SARAH-3<a class="headerlink" href="#sarah-3" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract EUMETSAT CM SAF SARAH-3 surface solar irradiance</span>
+<span class="n">sarah3_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"sarah3"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/sarah3"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="landsaf">
+<span id="912-landsaf"></span><h3>9.12 LandSAF<a class="headerlink" href="#landsaf" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract LandSAF land surface temperature and radiation products</span>
+<span class="n">landsaf_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"landsaf"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/landsaf"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="tropomi">
+<span id="913-tropomi"></span><h3>9.13 TROPOMI<a class="headerlink" href="#tropomi" title="Link to this heading"></a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># Extract TROPOMI trace gas concentrations (NO2, CO, O3)</span>
+<span class="n">tropomi_path</span> <span class="o">=</span> <span class="n">extract_gridded</span><span class="p">(</span>
+    <span class="n">source</span><span class="o">=</span><span class="s2">"tropomi"</span><span class="p">,</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-02"</span><span class="p">,</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data/gridded/tropomi"</span><span class="p">,</span>
+    <span class="n">save_zarr</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="combined-extraction">
+<span id="914-combined-extraction"></span><h3>9.14 Combined Extraction<a class="headerlink" href="#combined-extraction" title="Link to this heading"></a></h3>
+<p>Extract in-situ stations and gridded reanalysis together in a single call across the continental Africa bounding box:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.dataset</span><span class="w"> </span><span class="kn">import</span> <span class="n">pull_weather_data</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">masharikiweather.extract.apis.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpatialBoundingBox</span>
+
+<span class="n">africa_box</span> <span class="o">=</span> <span class="n">SpatialBoundingBox</span><span class="p">(</span><span class="n">lat_min</span><span class="o">=-</span><span class="mf">35.0</span><span class="p">,</span> <span class="n">lat_max</span><span class="o">=</span><span class="mf">38.0</span><span class="p">,</span> <span class="n">lon_min</span><span class="o">=-</span><span class="mf">20.0</span><span class="p">,</span> <span class="n">lon_max</span><span class="o">=</span><span class="mf">55.0</span><span class="p">)</span>
+
+<span class="n">result</span> <span class="o">=</span> <span class="n">pull_weather_data</span><span class="p">(</span>
+    <span class="n">start_date</span><span class="o">=</span><span class="s2">"2023-01-01"</span><span class="p">,</span>
+    <span class="n">end_date</span><span class="o">=</span><span class="s2">"2023-01-03"</span><span class="p">,</span>
+    <span class="n">bbox</span><span class="o">=</span><span class="n">africa_box</span><span class="p">,</span>
+    <span class="n">station_source</span><span class="o">=</span><span class="s2">"tahmo"</span><span class="p">,</span>
+    <span class="n">gridded_source</span><span class="o">=</span><span class="s2">"open_meteo"</span><span class="p">,</span>
+    <span class="n">station_variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature"</span><span class="p">,</span> <span class="s2">"precipitation"</span><span class="p">],</span>
+    <span class="n">gridded_variables</span><span class="o">=</span><span class="p">[</span><span class="s2">"temperature_2m"</span><span class="p">,</span> <span class="s2">"surface_pressure"</span><span class="p">],</span>
+    <span class="n">output_dir</span><span class="o">=</span><span class="s2">"./mashariki_data"</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Station outputs:"</span><span class="p">,</span> <span class="n">result</span><span class="p">[</span><span class="s2">"stations"</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Gridded outputs:"</span><span class="p">,</span> <span class="n">result</span><span class="p">[</span><span class="s2">"gridded"</span><span class="p">])</span>
+</pre></div>
+</div>
+</section>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="credentials.html" class="btn btn-neutral float-left" title="Credentials" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Centre for Data Science and Artificial Intelligence (DSAIL), Dedan Kimathi University of Technology.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>
