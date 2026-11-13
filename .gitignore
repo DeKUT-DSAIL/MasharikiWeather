@@ -226,3 +226,17 @@ mashariki_data/
 
 # log
 agent_interaction_log.json
+
+# documentation build
+docs/_build/
+logs/
+specs/
+data/
+internal_docs/
+docs/internal/
+
+# Internal CSCS / SLURM execution scripts
+tests/run_*.sh
+tests/verify_all_extractions.py
+*_task.txt
+/extract
