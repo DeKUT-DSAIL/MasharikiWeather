@@ -1261,4 +1261,240 @@ class TestPeakWeatherOOPInterface:
         assert ("S1", "relative_humidity_S001403") in obs.columns or ("S1", "rh_S001403") in obs.columns
 
 
+class TestDEC022MetadataAndTopography:
+    """
+    Verification of DEC-022: Source-Scoped Registries, Dynamic Station Dates/Sensor Counts,
+    TAHMO Lexicon Expansion & Instantiation Topography Persistence.
+    """
+
+    def test_canonical_lexicon_expansion(self) -> None:
+        """Verify all 25 new DEC-022 variables exist in CANONICAL_VARIABLE_METADATA with CF metadata."""
+        from masharikiweather.dataset import CANONICAL_VARIABLE_METADATA, canonicalize_variable_name
+
+        expected_vars = [
+            "cumulative_precipitation",
+            "rainfall_amount",
+            "precipitation_drop_count",
+            "tipping_bucket_tip_count",
+            "wind_speed_of_gust",
+            "vapor_pressure",
+            "water_depth",
+            "water_level",
+            "water_volume_transport_in_river",
+            "water_velocity",
+            "soil_matric_potential",
+            "volumetric_soil_moisture",
+            "soil_electrical_conductivity",
+            "water_electrical_conductivity",
+            "pore_water_electrical_conductivity",
+            "sunshine_duration",
+            "ultraviolet_radiation",
+            "canopy_temperature",
+            "temperature_probe",
+            "relative_humidity_sensor_temperature",
+            "logger_internal_temperature",
+            "logger_internal_pressure",
+            "logger_battery_voltage",
+            "lightning_strike_count",
+            "lightning_average_distance",
+        ]
+
+        required_keys = {"standard_name", "units", "physical_type", "resampling_method", "description", "aliases"}
+
+        for var_name in expected_vars:
+            assert var_name in CANONICAL_VARIABLE_METADATA, f"Missing canonical variable: {var_name}"
+            meta = CANONICAL_VARIABLE_METADATA[var_name]
+            assert required_keys.issubset(set(meta.keys())), f"Missing keys in {var_name} metadata"
+            assert isinstance(meta["aliases"], list)
+            assert len(meta["aliases"]) > 0
+
+        # Verify alias resolution
+        assert canonicalize_variable_name("cp") == "cumulative_precipitation"
+        assert canonicalize_variable_name("rn") == "rainfall_amount"
+        assert canonicalize_variable_name("pd") == "precipitation_drop_count"
+        assert canonicalize_variable_name("pt") == "tipping_bucket_tip_count"
+        assert canonicalize_variable_name("wg") == "wind_speed_of_gust"
+        assert canonicalize_variable_name("vp") == "vapor_pressure"
+        assert canonicalize_variable_name("sm") == "volumetric_soil_moisture"
+        assert canonicalize_variable_name("sd") == "sunshine_duration"
+        assert canonicalize_variable_name("uv") == "ultraviolet_radiation"
+        assert canonicalize_variable_name("lt") == "logger_internal_temperature"
+
+    def test_strict_source_scoping_from_source_dir(self, tmp_path: Path) -> None:
+        """When source_obs=['tahmo'], prioritize obs/tahmo/metadata/ and exclude other sources."""
+        tahmo_meta = tmp_path / "obs" / "tahmo" / "metadata"
+        ghcn_meta = tmp_path / "obs" / "ghcn" / "metadata"
+        tahmo_meta.mkdir(parents=True)
+        ghcn_meta.mkdir(parents=True)
+
+        tahmo_st = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1680.0]},
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        tahmo_st.to_parquet(tahmo_meta / "installation.parquet")
+
+        ghcn_st = pd.DataFrame(
+            {"latitude": [-0.5], "longitude": [37.0], "network": ["ghcn"], "elevation": [1500.0]},
+            index=pd.Index(["KE000063612"], name="station_id"),
+        )
+        ghcn_st.to_parquet(ghcn_meta / "installation.parquet")
+
+        tahmo_pr = pd.DataFrame(
+            {"standard_name": ["air_temperature"], "units": ["degC"]},
+            index=pd.Index(["2m_temperature"], name="parameter"),
+        )
+        tahmo_pr.to_parquet(tahmo_meta / "parameters.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        assert "TA00001" in ds.stations_table.index
+        assert "KE000063612" not in ds.stations_table.index
+        assert len(ds.stations_table) == 1
+        assert "2m_temperature" in ds.parameters_table.index
+
+    def test_source_scoping_multi_source_concatenation(self, tmp_path: Path) -> None:
+        """When source_obs=['tahmo', 'ghcn'], concatenate source registries cleanly."""
+        tahmo_meta = tmp_path / "obs" / "tahmo" / "metadata"
+        ghcn_meta = tmp_path / "obs" / "ghcn" / "metadata"
+        tahmo_meta.mkdir(parents=True)
+        ghcn_meta.mkdir(parents=True)
+
+        tahmo_st = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1680.0]},
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        tahmo_st.to_parquet(tahmo_meta / "installation.parquet")
+
+        ghcn_st = pd.DataFrame(
+            {"latitude": [-0.5], "longitude": [37.0], "network": ["ghcn"], "elevation": [1500.0]},
+            index=pd.Index(["KE000063612"], name="station_id"),
+        )
+        ghcn_st.to_parquet(ghcn_meta / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo", "ghcn"], use_hf=False)
+
+        assert "TA00001" in ds.stations_table.index
+        assert "KE000063612" in ds.stations_table.index
+        assert len(ds.stations_table) == 2
+
+    def test_source_scoping_fallback_global_filter(self, tmp_path: Path) -> None:
+        """When falling back to global metadata, filter stations_table by network column."""
+        meta_dir = tmp_path / "metadata"
+        meta_dir.mkdir(parents=True)
+
+        composite_st = pd.DataFrame(
+            {
+                "latitude": [-1.28, -0.5],
+                "longitude": [36.82, 37.0],
+                "network": ["tahmo", "ghcn"],
+                "elevation": [1680.0, 1500.0],
+            },
+            index=pd.Index(["TA00001", "KE000063612"], name="station_id"),
+        )
+        composite_st.to_parquet(meta_dir / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        assert "TA00001" in ds.stations_table.index
+        assert "KE000063612" not in ds.stations_table.index
+        assert len(ds.stations_table) == 1
+
+    def test_spurious_nan_elimination_and_accurate_sensor_count(self, tmp_path: Path) -> None:
+        """Verify dynamic calculation of non-NaN observational span and accurate multi-sensor counts."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        meta_dir = tmp_path / "metadata"
+        obs_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+
+        # 3 collocated sensor channels for TA00001
+        idx = pd.date_range("2023-01-01 00:00", periods=10, freq="h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([
+            ("TA00001", "te_S001"),
+            ("TA00001", "te_S002"),
+            ("TA00001", "rh_S001"),
+        ])
+        # Non-NaN data only between index 2 and index 7 (2023-01-01 02:00 to 07:00)
+        data = np.full((10, 3), np.nan, dtype=np.float32)
+        data[2:8, :] = 25.0
+        df = pd.DataFrame(data, index=idx, columns=cols)
+        flat_df = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat_df.to_parquet(obs_dir / "2023.parquet")
+
+        inst_df = pd.DataFrame(
+            {
+                "latitude": [-1.28],
+                "longitude": [36.82],
+                "network": ["tahmo"],
+                "elevation": [1680.0],
+                "start_date": [pd.NaT],
+                "end_date": [pd.NaT],
+                "sensor_count": [1],
+            },
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        # start_date and end_date must reflect the actual non-NaN observational span
+        st_row = ds.stations_table.loc["TA00001"]
+        assert pd.notna(st_row["start_date"]), "start_date must not be NaN/NaT"
+        assert pd.notna(st_row["end_date"]), "end_date must not be NaN/NaT"
+        assert pd.to_datetime(st_row["start_date"]).tz_localize(None) == pd.Timestamp("2023-01-01 02:00:00")
+        assert pd.to_datetime(st_row["end_date"]).tz_localize(None) == pd.Timestamp("2023-01-01 07:00:00")
+
+        # sensor_count must equal 3 (distinct channels), strictly > 1 and not hardcoded to 1
+        assert int(st_row["sensor_count"]) == 3
+
+    def test_topography_persistence_on_disk(self, tmp_path: Path) -> None:
+        """Verify instantiation topography interpolation persists enriched stations.parquet to disk."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        meta_dir = tmp_path / "metadata"
+        topo_dir = tmp_path / "topography"
+        obs_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+        topo_dir.mkdir(parents=True)
+
+        # Synthetic topography zarr with 17 channels
+        lats = np.linspace(1.0, -2.0, 10)
+        lons = np.linspace(34.0, 38.0, 10)
+        topo_ds = xr.Dataset(
+            data_vars={
+                "dem": (["lat", "lon"], np.full((10, 10), 1650.0, dtype=np.float32)),
+                "Slope": (["lat", "lon"], np.full((10, 10), 3.2, dtype=np.float32)),
+                "Aspect": (["lat", "lon"], np.full((10, 10), 180.0, dtype=np.float32)),
+                "TPI_2000M": (["lat", "lon"], np.full((10, 10), 15.0, dtype=np.float32)),
+            },
+            coords={"lat": lats, "lon": lons},
+        )
+        topo_ds.to_zarr(topo_dir / "africa_topography.zarr", consolidated=True)
+
+        inst_df = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1600.0]},
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        # Verify in-memory station table was enriched
+        assert "dem" in ds.stations_table.columns
+        assert "Slope" in ds.stations_table.columns
+        assert "TPI_2000M" in ds.stations_table.columns
+
+        # Verify physical persistence on disk across all 4 standard PeakWeather paths
+        expected_paths = [
+            tmp_path / "metadata" / "stations.parquet",
+            tmp_path / "metadata" / "installation.parquet",
+            tmp_path / "stations.parquet",
+            tmp_path / "installation.parquet",
+        ]
+        for p in expected_paths:
+            assert p.exists(), f"Enriched metadata file must exist at {p}"
+            saved_df = pd.read_parquet(p)
+            assert "dem" in saved_df.columns, f"'dem' must be persisted in {p}"
+            assert "Slope" in saved_df.columns, f"'Slope' must be persisted in {p}"
+            assert "TPI_2000M" in saved_df.columns, f"'TPI_2000M' must be persisted in {p}"
+
+
 # Run via python -m pytest tests/test_dataset.py -v

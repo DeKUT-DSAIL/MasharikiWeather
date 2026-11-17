@@ -52,7 +52,7 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
         "physical_type": "PHYSICAL",
         "resampling_method": "mean",
         "description": "Near-surface dewpoint temperature at 2 meters",
-        "aliases": ["dewpoint", "dewpoint_temperature", "2d", "d2m", "dew_point_temperature"],
+        "aliases": ["td", "dewpoint", "dewpoint_temperature", "2d", "d2m", "dew_point_temperature"],
     },
     "10m_u_component_of_wind": {
         "standard_name": "eastward_wind",
@@ -124,7 +124,207 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
         "physical_type": "PRECIPITATION",
         "resampling_method": "sum",
         "description": "Convective precipitation amount",
-        "aliases": ["cp"],
+        "aliases": ["convective_precip", "convective_precipitation"],
+    },
+    "cumulative_precipitation": {
+        "standard_name": "precipitation_amount",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Cumulative precipitation depth measured by rain gauge or acoustic disdrometer",
+        "aliases": ["cp", "cumulative_precip", "cumulative_precipitation"],
+    },
+    "rainfall_amount": {
+        "standard_name": "rainfall_amount",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Accumulated liquid rainfall volume equivalent per unit surface area",
+        "aliases": ["rn", "rainfall", "rainfall_amount"],
+    },
+    "precipitation_drop_count": {
+        "standard_name": "number_of_precipitation_drops",
+        "units": "count",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Total count of individual raindrop impacts registered by the acoustic disdrometer diaphragm",
+        "aliases": ["pd", "drop_count", "precipitation_drop_count"],
+    },
+    "tipping_bucket_tip_count": {
+        "standard_name": "number_of_rain_gauge_tips",
+        "units": "count",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Total mechanical tip switch closure count recorded by an auxiliary tipping-bucket rain gauge",
+        "aliases": ["pt", "tip_count", "tipping_bucket_tip_count"],
+    },
+    "wind_speed_of_gust": {
+        "standard_name": "wind_speed_of_gust",
+        "units": "m s**-1",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "max",
+        "description": "Peak instantaneous horizontal wind gust velocity recorded over the measurement interval",
+        "aliases": ["wg", "wind_gust", "gust", "wind_speed_of_gust"],
+    },
+    "vapor_pressure": {
+        "standard_name": "water_vapor_partial_pressure_in_air",
+        "units": "hPa",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Actual partial pressure of water vapor in air derived from air temperature and relative humidity",
+        "aliases": ["vp", "vapor_pressure", "vapour_pressure"],
+    },
+    "water_depth": {
+        "standard_name": "depth",
+        "units": "m",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Depth of water column above pressure sensor datum or river channel bed",
+        "aliases": ["dw", "water_depth"],
+    },
+    "water_level": {
+        "standard_name": "water_surface_height_above_reference_datum",
+        "units": "m",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Surface elevation or stage of stream, lake, or borehole water relative to local reference datum",
+        "aliases": ["wl", "water_level"],
+    },
+    "water_volume_transport_in_river": {
+        "standard_name": "water_volume_transport_in_river_channel",
+        "units": "m**3 s**-1",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Volumetric water discharge streamflow rate transported through river channel cross-section",
+        "aliases": ["wq", "discharge", "water_discharge", "water_volume_transport_in_river"],
+    },
+    "water_velocity": {
+        "standard_name": "water_velocity",
+        "units": "m s**-1",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Surface or cross-sectional average velocity of flowing water in stream or irrigation channel",
+        "aliases": ["wv", "water_velocity"],
+    },
+    "soil_matric_potential": {
+        "standard_name": "soil_water_potential",
+        "units": "kPa",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Soil water matric potential (suction) measuring pore water capillary tension",
+        "aliases": ["mp", "matric_potential", "soil_matric_potential"],
+    },
+    "volumetric_soil_moisture": {
+        "standard_name": "volume_fraction_of_water_in_soil",
+        "units": "m**3 m**-3",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Volumetric soil moisture water content (VWC) fraction",
+        "aliases": ["sm", "soil_moisture", "vwc", "volumetric_soil_moisture"],
+    },
+    "soil_electrical_conductivity": {
+        "standard_name": "soil_electrical_conductivity",
+        "units": "mS cm-1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Bulk apparent electrical conductivity of the bulk soil matrix",
+        "aliases": ["ec", "soil_electrical_conductivity"],
+    },
+    "water_electrical_conductivity": {
+        "standard_name": "sea_water_electrical_conductivity",
+        "units": "mS cm-1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Aqueous electrical conductivity of surface water, streamflow, or pore solution",
+        "aliases": ["ew", "water_electrical_conductivity"],
+    },
+    "pore_water_electrical_conductivity": {
+        "standard_name": "soil_pore_water_electrical_conductivity",
+        "units": "mS cm-1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Electrical conductivity of soil pore water solution calculated via dielectric permittivity",
+        "aliases": ["pw", "pore_water_electrical_conductivity"],
+    },
+    "sunshine_duration": {
+        "standard_name": "sunshine_duration",
+        "units": "s",
+        "physical_type": "RADIATION",
+        "resampling_method": "sum",
+        "description": "Duration during which direct normal solar irradiance equals or exceeds the WMO threshold of 120 W m-2",
+        "aliases": ["sd", "sunshine_duration"],
+    },
+    "ultraviolet_radiation": {
+        "standard_name": "ultraviolet_index",
+        "units": "1",
+        "physical_type": "RADIATION",
+        "resampling_method": "mean",
+        "description": "Solar erythemal ultraviolet radiation index (UV index) weighted by human skin erythema action spectrum",
+        "aliases": ["uv", "uv_index", "ultraviolet_radiation"],
+    },
+    "canopy_temperature": {
+        "standard_name": "surface_temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Vegetation canopy or surface skin radiative temperature measured by infrared radiometer or thermocouple",
+        "aliases": ["tc", "canopy_temperature"],
+    },
+    "temperature_probe": {
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Auxiliary temperature measured by external contact probe (e.g. soil temperature or pan water probe)",
+        "aliases": ["tp", "temperature_probe"],
+    },
+    "relative_humidity_sensor_temperature": {
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Internal cavity temperature of the capacitive relative humidity sensor for thermal compensation",
+        "aliases": ["ht", "relative_humidity_sensor_temperature"],
+    },
+    "logger_internal_temperature": {
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Internal printed circuit board (PCB) temperature of the station data logger",
+        "aliases": ["lt", "logger_temperature", "logger_internal_temperature"],
+    },
+    "logger_internal_pressure": {
+        "standard_name": "air_pressure",
+        "units": "hPa",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Internal barometric reference pressure within the data logger enclosure",
+        "aliases": ["lp", "logger_pressure", "logger_internal_pressure"],
+    },
+    "logger_battery_voltage": {
+        "standard_name": "battery_voltage",
+        "units": "V",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Station data logger battery supply terminal voltage diagnostic",
+        "aliases": ["lb", "battery_voltage", "logger_battery_voltage"],
+    },
+    "lightning_strike_count": {
+        "standard_name": "number_of_lightning_discharges",
+        "units": "count",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "sum",
+        "description": "Total number of cloud-to-ground and intra-cloud lightning strike discharge events",
+        "aliases": ["le", "lightning_strikes", "lightning_strike_count"],
+    },
+    "lightning_average_distance": {
+        "standard_name": "lightning_distance",
+        "units": "km",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Estimated average radial distance to detected lightning discharge events",
+        "aliases": ["ld", "lightning_distance", "lightning_average_distance"],
     },
     "large_scale_precipitation": {
         "standard_name": "large_scale_precipitation_amount",
@@ -168,11 +368,38 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Register TAHMO canonical synonyms into CANONICAL_VARIABLE_METADATA for seamless cross-resolution
+TAHMO_CANONICAL_SYNONYMS: Dict[str, str] = {
+    "electrical_conductivity": "soil_electrical_conductivity",
+    "humidity_sensor_temperature": "relative_humidity_sensor_temperature",
+    "lightning_distance": "lightning_average_distance",
+    "logger_pressure": "logger_internal_pressure",
+    "logger_temperature": "logger_internal_temperature",
+    "matric_potential": "soil_matric_potential",
+    "precipitation_tip_count": "tipping_bucket_tip_count",
+    "permittivity_pore_water": "pore_water_electrical_conductivity",
+    "rain_rate": "rainfall_amount",
+    "soil_moisture": "volumetric_soil_moisture",
+    "precipitation_temperature": "temperature_probe",
+    "uv_index": "ultraviolet_radiation",
+    "water_discharge": "water_volume_transport_in_river",
+}
+for syn_name, target_canon in TAHMO_CANONICAL_SYNONYMS.items():
+    if target_canon in CANONICAL_VARIABLE_METADATA and syn_name not in CANONICAL_VARIABLE_METADATA:
+        syn_meta = dict(CANONICAL_VARIABLE_METADATA[target_canon])
+        syn_aliases = list(syn_meta.get("aliases", []))
+        if syn_name not in syn_aliases:
+            syn_aliases.append(syn_name)
+        syn_meta["aliases"] = syn_aliases
+        CANONICAL_VARIABLE_METADATA[syn_name] = syn_meta
+
 ALIAS_TO_CANONICAL: Dict[str, str] = {}
 for canon_var, meta_info in CANONICAL_VARIABLE_METADATA.items():
-    ALIAS_TO_CANONICAL[canon_var.lower()] = canon_var
+    if canon_var.lower() not in ALIAS_TO_CANONICAL:
+        ALIAS_TO_CANONICAL[canon_var.lower()] = canon_var
     for a in meta_info["aliases"]:
-        ALIAS_TO_CANONICAL[a.lower()] = canon_var
+        if a.lower() not in ALIAS_TO_CANONICAL:
+            ALIAS_TO_CANONICAL[a.lower()] = canon_var
 
 
 def canonicalize_variable_name(name: Union[str, Tuple[str, ...], Any]) -> Union[str, Tuple[str, ...]]:
@@ -1136,8 +1363,17 @@ class MasharikiWeatherDataset:
             except Exception as err:
                 logger.debug("Automatic Dagster materialization skipped: %s", err)
 
+        # Check if local metadata registries exist (either global or source-scoped)
+        has_local_registries = any((Path(self.root_dir) / p).exists() for p in [
+            "metadata/installation.parquet", "metadata/stations.parquet", "installation.parquet", "stations.parquet", "stations_registry.parquet"
+        ]) or any(
+            any((self._resolve_obs_source_dir(src) / p).exists() for p in [
+                "metadata/installation.parquet", "metadata/stations.parquet", "installation.parquet", "stations.parquet"
+            ]) for src in self.source_obs
+        )
+
         # Local cache control flow
-        if self._is_local_cache_complete():
+        if self._is_local_cache_complete() or has_local_registries:
             self._load_local_registries()
         elif self.use_hf and self.fs is not None:
             for src in self.source_obs:
@@ -1173,6 +1409,7 @@ class MasharikiWeatherDataset:
         elif hasattr(self, "stations_table") and not self.stations_table.empty:
             self._prepare_observations()
 
+        self._update_station_dates_and_sensor_counts()
         self.interpolate_topography()
 
     def _resolve_obs_source_dir(self, source: str) -> Path:
@@ -1204,7 +1441,9 @@ class MasharikiWeatherDataset:
         """
         st_candidates = [
             Path(self.root_dir) / "metadata" / "installation.parquet",
+            Path(self.root_dir) / "metadata" / "stations.parquet",
             Path(self.root_dir) / "installation.parquet",
+            Path(self.root_dir) / "stations.parquet",
             Path(self.root_dir) / "stations_registry.parquet",
         ]
         pr_candidates = [
@@ -1216,11 +1455,14 @@ class MasharikiWeatherDataset:
             src_dir = self._resolve_obs_source_dir(src)
             st_candidates.extend([
                 src_dir / "metadata" / "installation.parquet",
+                src_dir / "metadata" / "stations.parquet",
                 src_dir / "installation.parquet",
+                src_dir / "stations.parquet",
             ])
             pr_candidates.extend([
                 src_dir / "metadata" / "parameters.parquet",
                 src_dir / "parameters.parquet",
+                src_dir / "parameters_registry.parquet",
             ])
         st_exists = any(p.exists() for p in st_candidates)
         pr_exists = any(p.exists() for p in pr_candidates)
@@ -1241,6 +1483,11 @@ class MasharikiWeatherDataset:
 
                 st_rows = []
                 for st in stations:
+                    sub_st = self.observations[st]
+                    valid_idx = sub_st.dropna(how="all").index
+                    st_start = valid_idx.min() if len(valid_idx) > 0 else (self.observations.index[0] if len(self.observations) > 0 else pd.NaT)
+                    st_end = valid_idx.max() if len(valid_idx) > 0 else (self.observations.index[-1] if len(self.observations) > 0 else pd.NaT)
+                    sensor_count = max(1, len(sub_st.columns))
                     st_rows.append({
                         "station_id": st,
                         "latitude": np.nan,
@@ -1249,9 +1496,9 @@ class MasharikiWeatherDataset:
                         "station_name": str(st),
                         "network": self.source_obs[0] if self.source_obs else "tahmo",
                         "country": "KE",
-                        "start_date": self.observations.index[0] if len(self.observations) > 0 else pd.NaT,
-                        "end_date": self.observations.index[-1] if len(self.observations) > 0 else pd.NaT,
-                        "sensor_count": 1,
+                        "start_date": st_start,
+                        "end_date": st_end,
+                        "sensor_count": sensor_count,
                     })
                 self.stations_table = pd.DataFrame(st_rows).set_index("station_id")
 
@@ -1270,14 +1517,17 @@ class MasharikiWeatherDataset:
                     })
                 self.parameters_table = pd.DataFrame(pr_rows).set_index("parameter")
 
+                self._save_station_metadata_registries()
+
                 meta_dir = Path(self.root_dir) / "metadata"
                 meta_dir.mkdir(parents=True, exist_ok=True)
-                self.stations_table.to_parquet(meta_dir / "installation.parquet")
-                self.stations_table.to_parquet(meta_dir / "stations.parquet")
                 self.parameters_table.to_parquet(meta_dir / "parameters.parquet")
-                self.stations_table.to_parquet(Path(self.root_dir) / "stations.parquet")
-                self.stations_table.to_parquet(Path(self.root_dir) / "stations_registry.parquet")
                 self.parameters_table.to_parquet(Path(self.root_dir) / "parameters_registry.parquet")
+                for src in self.source_obs:
+                    src_dir = self._resolve_obs_source_dir(src)
+                    src_meta = src_dir / "metadata"
+                    src_meta.mkdir(parents=True, exist_ok=True)
+                    self.parameters_table.to_parquet(src_meta / "parameters.parquet")
 
                 self._filter_requested_parameters()
 
@@ -1641,11 +1891,19 @@ class MasharikiWeatherDataset:
 
     def _is_local_cache_complete(self) -> bool:
         has_stations = any((Path(self.root_dir) / p).exists() for p in [
-            "metadata/installation.parquet", "installation.parquet", "stations_registry.parquet"
-        ])
+            "metadata/installation.parquet", "metadata/stations.parquet", "installation.parquet", "stations.parquet", "stations_registry.parquet"
+        ]) or any(
+            any((self._resolve_obs_source_dir(src) / p).exists() for p in [
+                "metadata/installation.parquet", "metadata/stations.parquet", "installation.parquet", "stations.parquet"
+            ]) for src in self.source_obs
+        )
         has_params = any((Path(self.root_dir) / p).exists() for p in [
             "metadata/parameters.parquet", "parameters.parquet", "parameters_registry.parquet"
-        ])
+        ]) or any(
+            any((self._resolve_obs_source_dir(src) / p).exists() for p in [
+                "metadata/parameters.parquet", "parameters.parquet"
+            ]) for src in self.source_obs
+        )
         if not (has_stations and has_params):
             return False
 
@@ -1891,40 +2149,366 @@ class MasharikiWeatherDataset:
         self._filter_requested_parameters()
 
     def _load_local_registries(self) -> None:
-        # Load metadata instantly from local disk catalogs
-        st_candidates = [
-            Path(self.root_dir) / "metadata" / "installation.parquet",
-            Path(self.root_dir) / "installation.parquet",
-            Path(self.root_dir) / "stations_registry.parquet",
-        ]
-        for src in self.source_obs:
-            src_dir = self._resolve_obs_source_dir(src)
-            st_candidates.extend([
-                src_dir / "metadata" / "installation.parquet",
-                src_dir / "installation.parquet",
-            ])
-        for st_p in st_candidates:
-            if st_p.exists():
-                self.stations_table = pd.read_parquet(st_p)
-                break
+        """
+        Load metadata catalogs scoped strictly to active observation sources.
 
-        pr_candidates = [
-            Path(self.root_dir) / "metadata" / "parameters.parquet",
-            Path(self.root_dir) / "parameters.parquet",
-            Path(self.root_dir) / "parameters_registry.parquet",
-        ]
-        for src in self.source_obs:
-            src_dir = self._resolve_obs_source_dir(src)
-            pr_candidates.extend([
-                src_dir / "metadata" / "parameters.parquet",
-                src_dir / "parameters.parquet",
-            ])
-        for pr_p in pr_candidates:
-            if pr_p.exists():
-                self.parameters_table = pd.read_parquet(pr_p)
-                break
+        Prioritizes source-specific catalogs (obs/{src}/metadata/); concatenates
+        catalogs across multi-source selections; falls back to global catalogs
+        with strict source-filtering on network and parameters.
+        """
+        # --- 1. Load Station Catalog ---
+        source_st_dfs: List[pd.DataFrame] = []
+        if self.source_obs:
+            for src in self.source_obs:
+                src_dir = self._resolve_obs_source_dir(src)
+                st_candidates = [
+                    src_dir / "metadata" / "installation.parquet",
+                    src_dir / "metadata" / "stations.parquet",
+                    src_dir / "installation.parquet",
+                    src_dir / "stations.parquet",
+                ]
+                for p in st_candidates:
+                    if p.exists():
+                        try:
+                            df = pd.read_parquet(p)
+                            if "station_id" in df.columns:
+                                df = df.set_index("station_id")
+                            if "network" not in df.columns:
+                                df["network"] = _normalize_source_name(src)
+                            source_st_dfs.append(df)
+                            break
+                        except Exception as err:
+                            logger.debug("Failed reading source station catalog %s: %s", p, err)
+
+        if source_st_dfs:
+            self.stations_table = pd.concat(source_st_dfs)
+            self.stations_table = self.stations_table[~self.stations_table.index.duplicated(keep="first")]
+        else:
+            global_candidates = [
+                Path(self.root_dir) / "metadata" / "installation.parquet",
+                Path(self.root_dir) / "metadata" / "stations.parquet",
+                Path(self.root_dir) / "installation.parquet",
+                Path(self.root_dir) / "stations.parquet",
+                Path(self.root_dir) / "stations_registry.parquet",
+            ]
+            loaded_st = False
+            for st_p in global_candidates:
+                if st_p.exists():
+                    try:
+                        df = pd.read_parquet(st_p)
+                        if "station_id" in df.columns:
+                            df = df.set_index("station_id")
+                        self.stations_table = df
+                        loaded_st = True
+                        break
+                    except Exception as err:
+                        logger.debug("Failed reading global station catalog %s: %s", st_p, err)
+            if not loaded_st:
+                self.stations_table = pd.DataFrame(
+                    columns=["latitude", "longitude", "elevation", "station_name", "network", "country", "start_date", "end_date", "sensor_count"]
+                ).set_index(pd.Index([], name="station_id"))
+
+            # Filter by network if network column exists and self.source_obs is provided
+            if hasattr(self, "stations_table") and not self.stations_table.empty and self.source_obs and "network" in self.stations_table.columns:
+                norm_sources = {_normalize_source_name(s) for s in self.source_obs} | {str(s).lower() for s in self.source_obs}
+                mask = self.stations_table["network"].astype(str).str.lower().apply(
+                    lambda x: _normalize_source_name(x) in norm_sources or x in norm_sources
+                )
+                if mask.any():
+                    self.stations_table = self.stations_table[mask]
+
+        if hasattr(self, "stations_table") and not self.stations_table.empty:
+            if "start_date" in self.stations_table.columns:
+                self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
+            if "end_date" in self.stations_table.columns:
+                self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
+
+        # --- 2. Load Parameters Catalog ---
+        source_pr_dfs: List[pd.DataFrame] = []
+        if self.source_obs:
+            for src in self.source_obs:
+                src_dir = self._resolve_obs_source_dir(src)
+                pr_candidates = [
+                    src_dir / "metadata" / "parameters.parquet",
+                    src_dir / "parameters.parquet",
+                    src_dir / "parameters_registry.parquet",
+                ]
+                for p in pr_candidates:
+                    if p.exists():
+                        try:
+                            df = pd.read_parquet(p)
+                            if "parameter" in df.columns:
+                                df = df.set_index("parameter")
+                            source_pr_dfs.append(df)
+                            break
+                        except Exception as err:
+                            logger.debug("Failed reading source parameter catalog %s: %s", p, err)
+
+        if source_pr_dfs:
+            self.parameters_table = pd.concat(source_pr_dfs)
+            self.parameters_table = self.parameters_table[~self.parameters_table.index.duplicated(keep="first")]
+        else:
+            global_pr_candidates = [
+                Path(self.root_dir) / "metadata" / "parameters.parquet",
+                Path(self.root_dir) / "parameters.parquet",
+                Path(self.root_dir) / "parameters_registry.parquet",
+            ]
+            loaded_pr = False
+            for pr_p in global_pr_candidates:
+                if pr_p.exists():
+                    try:
+                        df = pd.read_parquet(pr_p)
+                        if "parameter" in df.columns:
+                            df = df.set_index("parameter")
+                        self.parameters_table = df
+                        loaded_pr = True
+                        break
+                    except Exception as err:
+                        logger.debug("Failed reading global parameter catalog %s: %s", pr_p, err)
+            if not loaded_pr:
+                self.parameters_table = pd.DataFrame(
+                    columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
+                ).set_index(pd.Index([], name="parameter"))
+
+            # Scope self.parameters_table to parameters relevant to requested sources if fallback to global
+            if hasattr(self, "parameters_table") and not self.parameters_table.empty and self.source_obs:
+                source_col = next((c for c in ["source", "network"] if c in self.parameters_table.columns), None)
+                if source_col:
+                    norm_sources = {_normalize_source_name(s) for s in self.source_obs} | {str(s).lower() for s in self.source_obs}
+                    pr_mask = self.parameters_table[source_col].astype(str).str.lower().apply(
+                        lambda x: _normalize_source_name(x) in norm_sources or x in norm_sources
+                    )
+                    if pr_mask.any():
+                        self.parameters_table = self.parameters_table[pr_mask]
+                else:
+                    # Dynamically extract observed parameters from source observation files if available
+                    obs_params: Set[str] = set()
+                    for src in self.source_obs:
+                        src_dir = self._resolve_obs_source_dir(src)
+                        if src_dir.exists():
+                            for p_file in list(src_dir.glob("*.parquet"))[:5]:
+                                if p_file.stem in ("installation", "parameters", "stations"):
+                                    continue
+                                try:
+                                    sample_df = pd.read_parquet(p_file)
+                                    if isinstance(sample_df.columns, pd.MultiIndex):
+                                        obs_params.update(sample_df.columns.get_level_values(1).unique())
+                                    else:
+                                        for c in sample_df.columns:
+                                            if c not in ("time", "station", "station_id", "station_name", "latitude", "longitude", "__source__"):
+                                                obs_params.add(c)
+                                except Exception:
+                                    pass
+                    if obs_params:
+                        canon_obs_params = {str(canonicalize_variable_name(p)) for p in obs_params} | obs_params
+                        matched_idx = [
+                            idx for idx in self.parameters_table.index
+                            if idx in canon_obs_params or str(canonicalize_variable_name(idx)) in canon_obs_params or idx.split("_")[0] in canon_obs_params
+                        ]
+                        if matched_idx:
+                            self.parameters_table = self.parameters_table.loc[matched_idx]
 
         self._filter_requested_parameters()
+        self._update_station_dates_and_sensor_counts()
+
+    def _save_station_metadata_registries(self) -> None:
+        """
+        Persist active station metadata to standard PeakWeather-compliant catalogs.
+
+        Mathematical docstring:
+            Input:
+                stations_table: (N_stations, C_metadata) where C_metadata includes
+                spatial coordinates, temporal limits, sensor counts, and terrain priors.
+            Saved artifacts:
+                - {root_dir}/metadata/stations.parquet
+                - {root_dir}/metadata/installation.parquet
+                - {root_dir}/stations.parquet
+                - {root_dir}/installation.parquet
+                - {root_dir}/obs/{source}/metadata/stations.parquet (per active source)
+                - {root_dir}/obs/{source}/metadata/installation.parquet (per active source)
+        """
+        if not hasattr(self, "stations_table") or self.stations_table is None or self.stations_table.empty:
+            return
+
+        try:
+            meta_dir = Path(self.root_dir) / "metadata"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            self.stations_table.to_parquet(meta_dir / "stations.parquet")
+            self.stations_table.to_parquet(meta_dir / "installation.parquet")
+            self.stations_table.to_parquet(Path(self.root_dir) / "stations.parquet")
+            self.stations_table.to_parquet(Path(self.root_dir) / "installation.parquet")
+
+            if self.source_obs:
+                for src in self.source_obs:
+                    src_dir = self._resolve_obs_source_dir(src)
+                    src_meta = src_dir / "metadata"
+                    src_meta.mkdir(parents=True, exist_ok=True)
+                    if "network" in self.stations_table.columns:
+                        src_norm = _normalize_source_name(src)
+                        mask = self.stations_table["network"].astype(str).str.lower().apply(
+                            lambda x: _normalize_source_name(x) == src_norm or x == str(src).lower()
+                        )
+                        src_df = self.stations_table[mask]
+                        if not src_df.empty:
+                            src_df.to_parquet(src_meta / "stations.parquet")
+                            src_df.to_parquet(src_meta / "installation.parquet")
+                    else:
+                        self.stations_table.to_parquet(src_meta / "stations.parquet")
+                        self.stations_table.to_parquet(src_meta / "installation.parquet")
+        except Exception as err:
+            logger.debug("Failed persisting station metadata registries: %s", err)
+
+    def _update_station_dates_and_sensor_counts(self) -> None:
+        """
+        Dynamically calculate and update observational temporal bounds and sensor counts.
+
+        Mathematical docstring:
+            Input:
+                stations_table: (N_stations, C_metadata)
+                observations: (T_obs, N_stations * N_sensors)
+            Formulation:
+                For each station s in stations_table:
+                    start_date_s = min({t in T_obs | exists c in Sensors_s such that obs(s, c, t) is not NaN})
+                    end_date_s = max({t in T_obs | exists c in Sensors_s such that obs(s, c, t) is not NaN})
+                    sensor_count_s = card(Sensors_s) = len(observations[s].columns)
+            Output:
+                stations_table with updated start_date, end_date, and accurate sensor_count >= 1.
+        """
+        if not hasattr(self, "stations_table") or self.stations_table is None or self.stations_table.empty:
+            return
+
+        for col, default_val in [("start_date", pd.NaT), ("end_date", pd.NaT), ("sensor_count", 1)]:
+            if col not in self.stations_table.columns:
+                self.stations_table[col] = default_val
+
+        if "start_date" in self.stations_table.columns:
+            self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
+        if "end_date" in self.stations_table.columns:
+            self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
+
+        # 1. Update from loaded observations in memory
+        if hasattr(self, "observations") and self.observations is not None and not self.observations.empty:
+            obs = self.observations
+            is_multi = isinstance(obs.columns, pd.MultiIndex)
+            for s in self.stations_table.index:
+                if is_multi:
+                    if s in obs.columns.levels[0] or s in obs.columns.get_level_values(0):
+                        s_df = obs[s]
+                        active_cols = [c for c in s_df.columns if s_df[c].notna().any()]
+                        n_sensors = len(active_cols) if active_cols else s_df.shape[1]
+                        if n_sensors > 0:
+                            self.stations_table.loc[s, "sensor_count"] = max(1, n_sensors)
+
+                        valid_idx = s_df.dropna(how="all").index
+                        if len(valid_idx) > 0:
+                            obs_start = valid_idx.min()
+                            obs_end = valid_idx.max()
+                            if hasattr(obs_start, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(obs_start, "tzinfo", None) is not None:
+                                obs_start = obs_start.tz_localize(None)
+                            if hasattr(obs_end, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(obs_end, "tzinfo", None) is not None:
+                                obs_end = obs_end.tz_localize(None)
+                            cur_st = self.stations_table.loc[s, "start_date"]
+                            if pd.isna(cur_st) or cur_st is pd.NaT:
+                                self.stations_table.loc[s, "start_date"] = obs_start
+                            cur_et = self.stations_table.loc[s, "end_date"]
+                            if pd.isna(cur_et) or cur_et is pd.NaT:
+                                self.stations_table.loc[s, "end_date"] = obs_end
+                else:
+                    if s in obs.columns:
+                        s_series = obs[s].dropna()
+                        if len(s_series) > 0:
+                            obs_start = s_series.index.min()
+                            obs_end = s_series.index.max()
+                            if hasattr(obs_start, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(obs_start, "tzinfo", None) is not None:
+                                obs_start = obs_start.tz_localize(None)
+                            if hasattr(obs_end, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(obs_end, "tzinfo", None) is not None:
+                                obs_end = obs_end.tz_localize(None)
+                            cur_st = self.stations_table.loc[s, "start_date"]
+                            if pd.isna(cur_st) or cur_st is pd.NaT:
+                                self.stations_table.loc[s, "start_date"] = obs_start
+                            cur_et = self.stations_table.loc[s, "end_date"]
+                            if pd.isna(cur_et) or cur_et is pd.NaT:
+                                self.stations_table.loc[s, "end_date"] = obs_end
+
+        # 2. Inspect local observation parquet files if observations table was not yet loaded
+        elif self.source_obs:
+            meta_cols = {"time", "timestamp", "datetime", "level_0", "station_id", "station", "__source__"}
+            for src in self.source_obs:
+                src_dir = self._resolve_obs_source_dir(src)
+                if not src_dir.exists():
+                    continue
+                p_files = sorted(src_dir.glob("*.parquet"))
+                for pf in p_files:
+                    if pf.stem in ("installation", "parameters", "stations"):
+                        continue
+                    try:
+                        df_p = pd.read_parquet(pf)
+                        df_p = _normalize_time_column(df_p)
+                        if "station_id" in df_p.columns:
+                            t_col = "time" if "time" in df_p.columns else None
+                            val_cols = [c for c in df_p.columns if c not in meta_cols]
+                            for s in df_p["station_id"].unique():
+                                if s in self.stations_table.index:
+                                    sub = df_p[df_p["station_id"] == s]
+                                    if val_cols:
+                                        sub_valid = sub[val_cols].dropna(how="all")
+                                        active_cols = [c for c in val_cols if sub[c].notna().any()]
+                                        sensor_cnt = len(active_cols) if active_cols else len(val_cols)
+                                        if len(sub_valid) > 0 and t_col:
+                                            times = pd.to_datetime(sub.loc[sub_valid.index, t_col])
+                                            min_t = times.min()
+                                            max_t = times.max()
+                                            if hasattr(min_t, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(min_t, "tzinfo", None) is not None:
+                                                min_t = min_t.tz_localize(None)
+                                            if hasattr(max_t, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(max_t, "tzinfo", None) is not None:
+                                                max_t = max_t.tz_localize(None)
+                                            cur_st = self.stations_table.loc[s, "start_date"]
+                                            if pd.isna(cur_st) or cur_st is pd.NaT:
+                                                self.stations_table.loc[s, "start_date"] = min_t
+                                            cur_et = self.stations_table.loc[s, "end_date"]
+                                            if pd.isna(cur_et) or cur_et is pd.NaT:
+                                                self.stations_table.loc[s, "end_date"] = max_t
+                                        curr = self.stations_table.loc[s, "sensor_count"]
+                                        curr_count = int(curr) if pd.notna(curr) else 1
+                                        self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
+                        elif isinstance(df_p.columns, pd.MultiIndex):
+                            for s in df_p.columns.get_level_values(0).unique():
+                                if s in self.stations_table.index:
+                                    sub_st = df_p[s].dropna(how="all")
+                                    active_cols = [c for c in df_p[s].columns if df_p[s][c].notna().any()]
+                                    sensor_cnt = len(active_cols) if active_cols else len(df_p[s].columns)
+                                    if len(sub_st) > 0:
+                                        min_t = sub_st.index.min()
+                                        max_t = sub_st.index.max()
+                                        if hasattr(min_t, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(min_t, "tzinfo", None) is not None:
+                                            min_t = min_t.tz_localize(None)
+                                        if hasattr(max_t, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(max_t, "tzinfo", None) is not None:
+                                            max_t = max_t.tz_localize(None)
+                                        cur_st = self.stations_table.loc[s, "start_date"]
+                                        if pd.isna(cur_st) or cur_st is pd.NaT:
+                                            self.stations_table.loc[s, "start_date"] = min_t
+                                        cur_et = self.stations_table.loc[s, "end_date"]
+                                        if pd.isna(cur_et) or cur_et is pd.NaT:
+                                            self.stations_table.loc[s, "end_date"] = max_t
+                                    curr = self.stations_table.loc[s, "sensor_count"]
+                                    curr_count = int(curr) if pd.notna(curr) else 1
+                                    self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
+                    except Exception as err:
+                        logger.debug("Failed reading %s for date/sensor resolution: %s", pf, err)
+
+        # 3. Fallback to asset metadata columns if start_date or end_date is still null
+        for alt_col in ["installationdate", "created", "since_date", "start_time"]:
+            if alt_col in self.stations_table.columns:
+                parsed = pd.to_datetime(self.stations_table[alt_col], errors="coerce")
+                self.stations_table["start_date"] = self.stations_table["start_date"].fillna(parsed)
+
+        for alt_end in ["closed", "decommissiondate", "end_time", "last_measurement", "last_measurement_date"]:
+            if alt_end in self.stations_table.columns:
+                parsed_end = pd.to_datetime(self.stations_table[alt_end], errors="coerce")
+                self.stations_table["end_date"] = self.stations_table["end_date"].fillna(parsed_end)
+
+        # 4. Final sanity cleanup
+        self.stations_table["sensor_count"] = self.stations_table["sensor_count"].fillna(1).astype(int)
 
     def _filter_requested_parameters(self) -> None:
         if self.requested_parameters is not None:
@@ -1942,23 +2526,29 @@ class MasharikiWeatherDataset:
                 raise ValueError(f"Requested parameters {params} not found in the dataset.")
             self.parameters_table = self.parameters_table.loc[valid_params]
 
-    def _build_aggregation_dict(self, multi_index_columns) -> Dict[Tuple, str]:
+    def _build_aggregation_dict(self, multi_index_columns: Union[pd.MultiIndex, pd.Index, Sequence[Any]]) -> Dict[Any, str]:
         agg_dict = {}
         aggregation_methods = getattr(self, "aggregation_methods", {}) or {}
         for col in multi_index_columns:
             param = col[1].lower() if isinstance(col, tuple) else str(col).lower()
             if param in aggregation_methods:
                 agg_dict[col] = aggregation_methods[param]
-            elif any(kw in param for kw in ['cape', 'cin', 'convective_available', 'convective_inhibition']):
-                agg_dict[col] = 'mean'
-            elif any(kw in param for kw in ['precip', 'rain', 'tp', 'pr', 'total_precipitation']):
-                agg_dict[col] = 'sum'
-            elif any(kw in param for kw in ['solar', 'radiation', 'sr', 'rad', 'ssrd', 'surface_solar_radiation_downwards']):
-                agg_dict[col] = 'sum'
-            elif 'gust' in param:
-                agg_dict[col] = 'max'
             else:
-                agg_dict[col] = 'mean'
+                base = param.split("_")[0] if "_" in param else param
+                canon = canonicalize_variable_name(param)
+                meta = CANONICAL_VARIABLE_METADATA.get(param, CANONICAL_VARIABLE_METADATA.get(str(canon), CANONICAL_VARIABLE_METADATA.get(base, {})))
+                if "resampling_method" in meta:
+                    agg_dict[col] = meta["resampling_method"]
+                elif any(kw in param for kw in ['cape', 'cin', 'convective_available', 'convective_inhibition']):
+                    agg_dict[col] = 'mean'
+                elif any(kw in param for kw in ['precip', 'rain', 'tp', 'pr', 'total_precipitation']):
+                    agg_dict[col] = 'sum'
+                elif any(kw in param for kw in ['solar', 'radiation', 'sr', 'rad', 'ssrd', 'surface_solar_radiation_downwards']):
+                    agg_dict[col] = 'sum'
+                elif 'gust' in param:
+                    agg_dict[col] = 'max'
+                else:
+                    agg_dict[col] = 'mean'
         return agg_dict
 
     def _prepare_observations(self) -> None:
@@ -2114,6 +2704,8 @@ class MasharikiWeatherDataset:
                 raise ValueError(f"Unknown imputation method: {method}")
 
         self.observations = ObservationDataFrame(obs_df)
+        self._update_station_dates_and_sensor_counts()
+        self._save_station_metadata_registries()
 
     def load_topography(
         self,
@@ -2360,6 +2952,9 @@ class MasharikiWeatherDataset:
             self.stations_table["elevation"] = self.stations_table["elevation"].fillna(self.stations_table["dem"])
         elif "dem" in self.stations_table.columns and "elevation" not in self.stations_table.columns:
             self.stations_table["elevation"] = self.stations_table["dem"]
+
+        # Persist enriched station metadata with PeakWeather-compliant topography features
+        self._save_station_metadata_registries()
 
 
     def validate_stations(self, stations: Optional[Union[str, List[str]]] = None) -> List[str]:

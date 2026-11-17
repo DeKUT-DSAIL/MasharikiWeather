@@ -49,73 +49,131 @@ MAX_REQUEST_DAYS = 365
 DATASETS = ("controlled", "raw")
 SENSOR_COL_PATTERN = re.compile(r"^(?P<variable>[a-z]{2,3})_(?P<sensor>\w+)$")
 
-# Bidirectional Cross-Source Harmonization Registry for TAHMO
+# Bidirectional Cross-Source Harmonization Registry for TAHMO (33 Variables per DEC-022)
 TAHMO_SHORT_TO_CANONICAL: Dict[str, str] = {
+    # 33 primary short codes
+    "ap": "surface_pressure",
+    "cp": "convective_precipitation",
+    "dw": "water_depth",
+    "ec": "electrical_conductivity",
+    "ew": "pore_water_electrical_conductivity",
+    "ht": "humidity_sensor_temperature",
+    "lb": "logger_battery_voltage",
+    "ld": "lightning_distance",
+    "le": "lightning_strike_count",
+    "lp": "logger_pressure",
+    "lt": "logger_temperature",
+    "mp": "matric_potential",
+    "pd": "precipitation_drop_count",
+    "pr": "total_precipitation",
+    "pt": "precipitation_tip_count",
+    "pw": "permittivity_pore_water",
+    "rh": "relative_humidity",
+    "rn": "rain_rate",
+    "sd": "sunshine_duration",
+    "sm": "soil_moisture",
+    "sr": "surface_solar_radiation_downwards",
+    "tc": "canopy_temperature",
+    "td": "2m_dewpoint_temperature",
     "te": "2m_temperature",
+    "tp": "precipitation_temperature",
+    "uv": "uv_index",
+    "vp": "vapor_pressure",
+    "wd": "wind_from_direction",
+    "wg": "wind_speed_of_gust",
+    "wl": "water_level",
+    "wq": "water_discharge",
+    "ws": "wind_speed",
+    "wv": "water_velocity",
+    # Backward compatibility and common aliases
     "temp": "2m_temperature",
     "temperature": "2m_temperature",
-    "rh": "relative_humidity",
-    "pr": "total_precipitation",
     "precip": "total_precipitation",
-    "ws": "wind_speed",
-    "wd": "wind_from_direction",
-    "sr": "surface_solar_radiation_downwards",
+    "precipitation": "total_precipitation",
+    "cumulative_precip": "convective_precipitation",
+    "cumulative_precipitation": "convective_precipitation",
     "rad": "surface_solar_radiation_downwards",
-    "ap": "surface_pressure",
+    "solar_radiation": "surface_solar_radiation_downwards",
     "pres": "surface_pressure",
+    "pressure": "surface_pressure",
+    "dewpoint": "2m_dewpoint_temperature",
+    "dew_point_temperature": "2m_dewpoint_temperature",
+    "wind_gust": "wind_speed_of_gust",
+    "gust": "wind_speed_of_gust",
+    "lightning_events": "lightning_strike_count",
+    "logger_battery": "logger_battery_voltage",
 }
 
 TAHMO_CANONICAL_TO_SHORT: Dict[str, str] = {
-    "2m_temperature": "te",
-    "relative_humidity": "rh",
-    "total_precipitation": "pr",
-    "wind_speed": "ws",
-    "wind_from_direction": "wd",
-    "surface_solar_radiation_downwards": "sr",
+    # 33 canonical names to primary short codes
     "surface_pressure": "ap",
+    "convective_precipitation": "cp",
+    "cumulative_precipitation": "cp",
+    "water_depth": "dw",
+    "electrical_conductivity": "ec",
+    "soil_electrical_conductivity": "ec",
+    "pore_water_electrical_conductivity": "ew",
+    "water_electrical_conductivity": "ew",
+    "humidity_sensor_temperature": "ht",
+    "relative_humidity_sensor_temperature": "ht",
+    "logger_battery_voltage": "lb",
+    "logger_battery": "lb",
+    "lightning_distance": "ld",
+    "lightning_average_distance": "ld",
+    "lightning_strike_count": "le",
+    "lightning_event_count": "le",
+    "lightning_events": "le",
+    "logger_pressure": "lp",
+    "logger_internal_pressure": "lp",
+    "logger_temperature": "lt",
+    "logger_internal_temperature": "lt",
+    "matric_potential": "mp",
+    "soil_matric_potential": "mp",
+    "precipitation_drop_count": "pd",
+    "total_precipitation": "pr",
+    "precipitation": "pr",
+    "precip": "pr",
+    "precipitation_tip_count": "pt",
+    "tipping_bucket_tip_count": "pt",
+    "permittivity_pore_water": "pw",
+    "relative_humidity": "rh",
+    "rain_rate": "rn",
+    "rainfall_amount": "rn",
+    "sunshine_duration": "sd",
+    "soil_moisture": "sm",
+    "volumetric_soil_moisture": "sm",
+    "surface_solar_radiation_downwards": "sr",
+    "solar_radiation": "sr",
+    "rad": "sr",
+    "canopy_temperature": "tc",
+    "2m_dewpoint_temperature": "td",
+    "dewpoint": "td",
+    "dew_point_temperature": "td",
+    "2m_temperature": "te",
+    "temperature": "te",
+    "temp": "te",
+    "precipitation_temperature": "tp",
+    "temperature_probe": "tp",
+    "uv_index": "uv",
+    "ultraviolet_radiation": "uv",
+    "vapor_pressure": "vp",
+    "wind_from_direction": "wd",
+    "wind_speed_of_gust": "wg",
+    "wind_gust": "wg",
+    "gust": "wg",
+    "water_level": "wl",
+    "water_discharge": "wq",
+    "water_volume_transport_in_river": "wq",
+    "wind_speed": "ws",
+    "water_velocity": "wv",
 }
 
-# Standard PeakWeather parameters catalog inventory for TAHMO
+# Standard PeakWeather parameters catalog inventory for TAHMO (33 Variables per DEC-022)
 DEFAULT_TAHMO_PARAMETERS: List[Dict[str, Any]] = [
-    {
-        "parameter": "2m_temperature",
-        "canonical_name": "2m_temperature",
-        "standard_name": "air_temperature",
-        "units": "degC",
-        "physical_type": "PHYSICAL",
-        "resampling_method": "mean",
-        "description": "Near-surface dry bulb air temperature at ~2m elevation.",
-    },
-    {
-        "parameter": "relative_humidity",
-        "canonical_name": "relative_humidity",
-        "standard_name": "relative_humidity",
-        "units": "%",
-        "physical_type": "PHYSICAL",
-        "resampling_method": "mean",
-        "description": "Relative humidity measured at ~2m.",
-    },
-    {
-        "parameter": "total_precipitation",
-        "canonical_name": "total_precipitation",
-        "standard_name": "precipitation_amount",
-        "units": "mm",
-        "physical_type": "PRECIPITATION",
-        "resampling_method": "sum",
-        "description": "Cumulative liquid precipitation measured by tipping bucket or optical rain gauge.",
-    },
-    {
-        "parameter": "surface_solar_radiation_downwards",
-        "canonical_name": "surface_solar_radiation_downwards",
-        "standard_name": "surface_downwelling_shortwave_flux_in_air",
-        "units": "W m-2",
-        "physical_type": "PHYSICAL",
-        "resampling_method": "mean",
-        "description": "Downwelling shortwave solar radiation flux.",
-    },
     {
         "parameter": "surface_pressure",
         "canonical_name": "surface_pressure",
+        "short_code": "ap",
         "standard_name": "surface_air_pressure",
         "units": "hPa",
         "physical_type": "PHYSICAL",
@@ -123,8 +181,309 @@ DEFAULT_TAHMO_PARAMETERS: List[Dict[str, Any]] = [
         "description": "Atmospheric surface pressure.",
     },
     {
+        "parameter": "convective_precipitation",
+        "canonical_name": "convective_precipitation",
+        "short_code": "cp",
+        "standard_name": "convective_precipitation_amount",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Cumulative or convective precipitation amount.",
+    },
+    {
+        "parameter": "water_depth",
+        "canonical_name": "water_depth",
+        "short_code": "dw",
+        "standard_name": "depth_to_water_table",
+        "units": "mm",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Surface water depth or depth to water level.",
+    },
+    {
+        "parameter": "electrical_conductivity",
+        "canonical_name": "electrical_conductivity",
+        "short_code": "ec",
+        "standard_name": "electrical_conductivity",
+        "units": "mS cm-1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Bulk soil electrical conductivity.",
+    },
+    {
+        "parameter": "pore_water_electrical_conductivity",
+        "canonical_name": "pore_water_electrical_conductivity",
+        "short_code": "ew",
+        "standard_name": "electrical_conductivity_of_water",
+        "units": "mS cm-1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Electrical conductivity of soil pore water.",
+    },
+    {
+        "parameter": "humidity_sensor_temperature",
+        "canonical_name": "humidity_sensor_temperature",
+        "short_code": "ht",
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Internal temperature of the relative humidity sensor element.",
+    },
+    {
+        "parameter": "logger_battery_voltage",
+        "canonical_name": "logger_battery_voltage",
+        "short_code": "lb",
+        "standard_name": "battery_voltage",
+        "units": "V",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Data logger battery voltage or state of charge.",
+    },
+    {
+        "parameter": "lightning_distance",
+        "canonical_name": "lightning_distance",
+        "short_code": "ld",
+        "standard_name": "lightning_strike_distance",
+        "units": "km",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Estimated distance to detected lightning strike event.",
+    },
+    {
+        "parameter": "lightning_strike_count",
+        "canonical_name": "lightning_strike_count",
+        "short_code": "le",
+        "standard_name": "number_of_lightning_flashes",
+        "units": "counts",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "sum",
+        "description": "Number of detected lightning strike events.",
+    },
+    {
+        "parameter": "logger_pressure",
+        "canonical_name": "logger_pressure",
+        "short_code": "lp",
+        "standard_name": "air_pressure",
+        "units": "hPa",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Barometric pressure inside logger enclosure.",
+    },
+    {
+        "parameter": "logger_temperature",
+        "canonical_name": "logger_temperature",
+        "short_code": "lt",
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "DIAGNOSTIC",
+        "resampling_method": "mean",
+        "description": "Internal temperature of data logger enclosure.",
+    },
+    {
+        "parameter": "matric_potential",
+        "canonical_name": "matric_potential",
+        "short_code": "mp",
+        "standard_name": "soil_matric_potential",
+        "units": "kPa",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Soil water matric potential or suction tension.",
+    },
+    {
+        "parameter": "precipitation_drop_count",
+        "canonical_name": "precipitation_drop_count",
+        "short_code": "pd",
+        "standard_name": "number_of_hydrometeors",
+        "units": "counts",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Optical disdrometer raindrop count.",
+    },
+    {
+        "parameter": "total_precipitation",
+        "canonical_name": "total_precipitation",
+        "short_code": "pr",
+        "standard_name": "precipitation_amount",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Cumulative liquid precipitation measured by tipping bucket or optical rain gauge.",
+    },
+    {
+        "parameter": "precipitation_tip_count",
+        "canonical_name": "precipitation_tip_count",
+        "short_code": "pt",
+        "standard_name": "number_of_tipping_bucket_tips",
+        "units": "counts",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Number of tipping bucket rain gauge tips.",
+    },
+    {
+        "parameter": "permittivity_pore_water",
+        "canonical_name": "permittivity_pore_water",
+        "short_code": "pw",
+        "standard_name": "relative_permittivity",
+        "units": "1",
+        "physical_type": "ELECTRICAL",
+        "resampling_method": "mean",
+        "description": "Relative dielectric permittivity of soil pore water.",
+    },
+    {
+        "parameter": "relative_humidity",
+        "canonical_name": "relative_humidity",
+        "short_code": "rh",
+        "standard_name": "relative_humidity",
+        "units": "%",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Near-surface relative humidity measured at ~2m.",
+    },
+    {
+        "parameter": "rain_rate",
+        "canonical_name": "rain_rate",
+        "short_code": "rn",
+        "standard_name": "rainfall_rate",
+        "units": "mm h-1",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Instantaneous rainfall rate or precipitation intensity.",
+    },
+    {
+        "parameter": "sunshine_duration",
+        "canonical_name": "sunshine_duration",
+        "short_code": "sd",
+        "standard_name": "duration_of_sunshine",
+        "units": "s",
+        "physical_type": "RADIATION",
+        "resampling_method": "sum",
+        "description": "Duration of sunshine exceeding direct solar irradiance threshold.",
+    },
+    {
+        "parameter": "soil_moisture",
+        "canonical_name": "soil_moisture",
+        "short_code": "sm",
+        "standard_name": "volume_fraction_of_water_in_soil",
+        "units": "m3 m-3",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Volumetric soil water content.",
+    },
+    {
+        "parameter": "surface_solar_radiation_downwards",
+        "canonical_name": "surface_solar_radiation_downwards",
+        "short_code": "sr",
+        "standard_name": "surface_downwelling_shortwave_flux_in_air",
+        "units": "W m-2",
+        "physical_type": "RADIATION",
+        "resampling_method": "mean",
+        "description": "Downwelling shortwave solar radiation flux.",
+    },
+    {
+        "parameter": "canopy_temperature",
+        "canonical_name": "canopy_temperature",
+        "short_code": "tc",
+        "standard_name": "canopy_temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Vegetation canopy or surface radiometric temperature.",
+    },
+    {
+        "parameter": "2m_dewpoint_temperature",
+        "canonical_name": "2m_dewpoint_temperature",
+        "short_code": "td",
+        "standard_name": "dew_point_temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Near-surface dew point temperature at ~2m elevation.",
+    },
+    {
+        "parameter": "2m_temperature",
+        "canonical_name": "2m_temperature",
+        "short_code": "te",
+        "standard_name": "air_temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Near-surface dry bulb air temperature at ~2m elevation.",
+    },
+    {
+        "parameter": "precipitation_temperature",
+        "canonical_name": "precipitation_temperature",
+        "short_code": "tp",
+        "standard_name": "temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Temperature of hydrometeors / precipitation sensor element.",
+    },
+    {
+        "parameter": "uv_index",
+        "canonical_name": "uv_index",
+        "short_code": "uv",
+        "standard_name": "ultraviolet_index",
+        "units": "1",
+        "physical_type": "RADIATION",
+        "resampling_method": "mean",
+        "description": "Solar ultraviolet radiation index.",
+    },
+    {
+        "parameter": "vapor_pressure",
+        "canonical_name": "vapor_pressure",
+        "short_code": "vp",
+        "standard_name": "water_vapor_pressure",
+        "units": "hPa",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Atmospheric water vapor partial pressure.",
+    },
+    {
+        "parameter": "wind_from_direction",
+        "canonical_name": "wind_from_direction",
+        "short_code": "wd",
+        "standard_name": "wind_from_direction",
+        "units": "degrees",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Direction from which the wind is blowing (0-360 degrees).",
+    },
+    {
+        "parameter": "wind_speed_of_gust",
+        "canonical_name": "wind_speed_of_gust",
+        "short_code": "wg",
+        "standard_name": "wind_speed_of_gust",
+        "units": "m s-1",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "max",
+        "description": "Peak instantaneous horizontal wind gust speed.",
+    },
+    {
+        "parameter": "water_level",
+        "canonical_name": "water_level",
+        "short_code": "wl",
+        "standard_name": "water_surface_height_above_reference_datum",
+        "units": "m",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Surface water level or water table elevation.",
+    },
+    {
+        "parameter": "water_discharge",
+        "canonical_name": "water_discharge",
+        "short_code": "wq",
+        "standard_name": "water_volume_transport_in_river_channel",
+        "units": "m3 s-1",
+        "physical_type": "HYDROLOGICAL",
+        "resampling_method": "mean",
+        "description": "Volumetric stream or river water discharge.",
+    },
+    {
         "parameter": "wind_speed",
         "canonical_name": "wind_speed",
+        "short_code": "ws",
         "standard_name": "wind_speed",
         "units": "m s-1",
         "physical_type": "PHYSICAL",
@@ -132,13 +491,14 @@ DEFAULT_TAHMO_PARAMETERS: List[Dict[str, Any]] = [
         "description": "Horizontal scalar wind speed at ~2m mast.",
     },
     {
-        "parameter": "wind_from_direction",
-        "canonical_name": "wind_from_direction",
-        "standard_name": "wind_from_direction",
-        "units": "degrees",
-        "physical_type": "PHYSICAL",
+        "parameter": "water_velocity",
+        "canonical_name": "water_velocity",
+        "short_code": "wv",
+        "standard_name": "water_velocity",
+        "units": "m s-1",
+        "physical_type": "HYDROLOGICAL",
         "resampling_method": "mean",
-        "description": "Direction from which the wind is blowing (0-360 degrees).",
+        "description": "Surface or channel water flow velocity.",
     },
 ]
 
@@ -271,7 +631,10 @@ class TAHMOExtractor(BaseExtractor):
 
         Mathematical docstring:
         Output table shape: (N_stations, C_metadata)
-        where columns include ['station_code', 'name', 'lat', 'lon', 'elevation', 'country', 'status'].
+        where columns include [
+            'station_code', 'name', 'lat', 'lon', 'elevation', 'country',
+            'status', 'start_date', 'end_date', 'sensor_count'
+        ].
         """
         raw = self._request("services/assets/v2/stations", params={"sort": "code"})
         stations_list = raw.get("data", raw) if isinstance(raw, dict) else raw
@@ -282,7 +645,7 @@ class TAHMOExtractor(BaseExtractor):
             loc = s.get("location") or {}
             lat = loc.get("latitude")
             lon = loc.get("longitude")
-            elev = loc.get("elevation")
+            elev = loc.get("elevation") or loc.get("elevationmsl")
 
             if lat is None or lon is None:
                 continue
@@ -294,6 +657,36 @@ class TAHMOExtractor(BaseExtractor):
                 continue
 
             country_code = loc.get("countrycode") or s.get("countrycode") or s.get("country")
+
+            start_raw = (
+                s.get("installationdate")
+                or s.get("installation_date")
+                or s.get("created")
+                or s.get("since_date")
+                or s.get("start_date")
+                or loc.get("installationdate")
+            )
+            end_raw = (
+                s.get("end_date")
+                or s.get("closed")
+                or s.get("decommissiondate")
+            )
+
+            sensors_val = (
+                s.get("sensors")
+                or s.get("instruments")
+                or s.get("elements")
+                or s.get("variables")
+            )
+            sensor_count: Optional[int] = None
+            if isinstance(sensors_val, (list, tuple, dict, set)):
+                sensor_count = len(sensors_val)
+            elif s.get("sensor_count") is not None:
+                try:
+                    sensor_count = int(s.get("sensor_count"))
+                except (ValueError, TypeError):
+                    sensor_count = None
+
             rows.append({
                 "station_code": s.get("code"),
                 "name": s.get("name"),
@@ -302,9 +695,26 @@ class TAHMOExtractor(BaseExtractor):
                 "elevation": float(elev) if elev is not None else np.nan,
                 "country": str(country_code).upper() if country_code else None,
                 "status": s.get("status"),
+                "start_date": pd.to_datetime(start_raw) if start_raw else pd.NaT,
+                "end_date": pd.to_datetime(end_raw) if end_raw else pd.NaT,
+                "sensor_count": sensor_count,
             })
 
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(
+            rows,
+            columns=[
+                "station_code",
+                "name",
+                "lat",
+                "lon",
+                "elevation",
+                "country",
+                "status",
+                "start_date",
+                "end_date",
+                "sensor_count",
+            ],
+        )
         return df.sort_values(by="station_code").reset_index(drop=True)
 
     def _parse_measurements_fast(
@@ -528,6 +938,18 @@ class TAHMOExtractor(BaseExtractor):
         install_rows: List[Dict[str, Any]] = []
         for _, row in df_st.iterrows():
             st_id = str(row.get("station_code") or row.get("station_id") or row.get("id") or "")
+            raw_sc = row.get("sensor_count")
+            if raw_sc is not None and not pd.isna(raw_sc):
+                try:
+                    sensor_cnt = int(raw_sc)
+                except (ValueError, TypeError):
+                    sensor_cnt = 1
+            else:
+                sensor_cnt = 1
+
+            start_val = row.get("start_date")
+            end_val = row.get("end_date")
+
             install_rows.append({
                 "station_id": st_id,
                 "station_name": str(row.get("name") or row.get("station_name") or st_id),
@@ -536,9 +958,9 @@ class TAHMOExtractor(BaseExtractor):
                 "elevation": float(row.get("elevation") or row.get("elev") or 0.0),
                 "network": "tahmo",
                 "country": str(row.get("country")) if row.get("country") else "KE",
-                "start_date": pd.to_datetime(row.get("start_date") or pd.NaT),
-                "end_date": pd.to_datetime(row.get("end_date") or pd.NaT),
-                "sensor_count": int(row.get("sensor_count") or 1),
+                "start_date": pd.to_datetime(start_val or pd.NaT),
+                "end_date": pd.to_datetime(end_val or pd.NaT),
+                "sensor_count": sensor_cnt,
             })
         install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"])
         install_path = meta_dir / "installation.parquet"
@@ -546,6 +968,10 @@ class TAHMOExtractor(BaseExtractor):
 
         # 2. Build parameters catalog
         param_df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS)
+        if "network" not in param_df.columns:
+            param_df["network"] = "tahmo"
+        if "source" not in param_df.columns:
+            param_df["source"] = "tahmo"
         param_path = meta_dir / "parameters.parquet"
         param_df.to_parquet(param_path, index=False)
 

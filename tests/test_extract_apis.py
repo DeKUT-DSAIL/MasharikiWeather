@@ -756,6 +756,267 @@ class TestTAHMOExtractor:
             assert not res_df.empty
             mock_pool_ps.assert_called_with(max_workers=3)
 
+    def test_tahmo_33_variable_catalog_dec022(self) -> None:
+        """
+        Verify that DEFAULT_TAHMO_PARAMETERS contains exactly 33 variables formulated
+        by Agent 10 per DEC-022, matching taxonomy classes, CF standards, and resampling rules.
+
+        Mathematical docstring:
+        Input: None
+        Output: Verified catalog matrix of shape (33, 8) with zero missing attributes.
+        """
+        expected_codes = {
+            "ap", "cp", "dw", "ec", "ew", "ht", "lb", "ld", "le", "lp",
+            "lt", "mp", "pd", "pr", "pt", "pw", "rh", "rn", "sd", "sm",
+            "sr", "tc", "td", "te", "tp", "uv", "vp", "wd", "wg", "wl",
+            "wq", "ws", "wv",
+        }
+        assert len(DEFAULT_TAHMO_PARAMETERS) == 33
+        catalog_codes = {p["short_code"] for p in DEFAULT_TAHMO_PARAMETERS}
+        assert catalog_codes == expected_codes
+
+        # Validate required schema keys
+        required_keys = {
+            "parameter", "canonical_name", "short_code", "standard_name",
+            "units", "physical_type", "resampling_method", "description",
+        }
+        for p in DEFAULT_TAHMO_PARAMETERS:
+            assert required_keys.issubset(set(p.keys())), f"Missing keys in parameter {p.get('short_code')}"
+
+        # Verify physical taxonomy classification per Agent 10 specifications
+        physical_counts: Dict[str, int] = {}
+        for p in DEFAULT_TAHMO_PARAMETERS:
+            ptype = p["physical_type"]
+            physical_counts[ptype] = physical_counts.get(ptype, 0) + 1
+
+        assert physical_counts["PHYSICAL"] == 11
+        assert physical_counts["PRECIPITATION"] == 5
+        assert physical_counts["RADIATION"] == 3
+        assert physical_counts["HYDROLOGICAL"] == 6
+        assert physical_counts["ELECTRICAL"] == 3
+        assert physical_counts["DIAGNOSTIC"] == 5
+
+        # Verify resampling rules
+        wg_entry = next(p for p in DEFAULT_TAHMO_PARAMETERS if p["short_code"] == "wg")
+        assert wg_entry["resampling_method"] == "max"
+
+        sum_codes = {"pr", "cp", "rn", "pd", "pt", "le", "sd"}
+        for p in DEFAULT_TAHMO_PARAMETERS:
+            if p["short_code"] in sum_codes:
+                assert p["resampling_method"] == "sum", f"{p['short_code']} must have sum resampling"
+
+    def test_tahmo_33_variable_bidirectional_harmonization(self) -> None:
+        """
+        Verify bidirectional mapping across all 33 short codes and canonical descriptive names.
+
+        Mathematical docstring:
+        Input: 33 shortcodes
+        Output: Invertible 1-to-1 bijection between short codes and canonical descriptors.
+        """
+        expected_codes = [
+            "ap", "cp", "dw", "ec", "ew", "ht", "lb", "ld", "le", "lp",
+            "lt", "mp", "pd", "pr", "pt", "pw", "rh", "rn", "sd", "sm",
+            "sr", "tc", "td", "te", "tp", "uv", "vp", "wd", "wg", "wl",
+            "wq", "ws", "wv",
+        ]
+        for code in expected_codes:
+            canonical = canonicalize_tahmo_variable(code)
+            assert canonical != code, f"Short code {code} failed to resolve to canonical descriptive name"
+            reverted = tahmo_canonical_to_short(canonical)
+            assert reverted == code, f"Canonical {canonical} failed to revert back to short code {code}"
+
+    def test_tahmo_get_stations_dates_and_sensor_counts_dec022(self, tmp_path: Path) -> None:
+        """
+        Verify get_stations resolves start_date, end_date, and sensor_count from asset payloads.
+
+        Mathematical docstring:
+        Input: Raw mock JSON containing 6 stations with diverse date and sensor payload structures.
+        Output: pd.DataFrame of shape (6, 10) with correctly parsed datetime and integer columns.
+        """
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
+        mock_raw = {
+            "data": [
+                {
+                    "code": "TA00001",
+                    "name": "Station 1",
+                    "location": {"latitude": -1.2, "longitude": 36.8, "elevation": 1600, "countrycode": "KE"},
+                    "installationdate": "2015-06-01T00:00:00Z",
+                    "end_date": "2023-12-31T00:00:00Z",
+                    "sensors": ["S001", "S002", "S003"],
+                },
+                {
+                    "code": "TA00002",
+                    "name": "Station 2",
+                    "location": {"latitude": 0.5, "longitude": 34.5, "elevation": 1200, "countrycode": "UG"},
+                    "created": "2018-03-15",
+                    "closed": "2021-01-01",
+                    "instruments": [{"id": "ins1"}, {"id": "ins2"}],
+                },
+                {
+                    "code": "TA00003",
+                    "name": "Station 3",
+                    "location": {
+                        "latitude": -3.0,
+                        "longitude": 37.0,
+                        "elevation": 1400,
+                        "countrycode": "TZ",
+                        "installationdate": "2019-01-01T12:00:00Z",
+                    },
+                    "decommissiondate": "2022-05-01",
+                    "elements": {"te": {}, "rh": {}},
+                },
+                {
+                    "code": "TA00004",
+                    "name": "Station 4",
+                    "location": {"latitude": -1.5, "longitude": 36.5, "elevation": 1500, "countrycode": "KE"},
+                    "since_date": "2020-01-01",
+                    "variables": ["te", "rh", "pr", "ws"],
+                },
+                {
+                    "code": "TA00005",
+                    "name": "Station 5",
+                    "location": {"latitude": -0.8, "longitude": 37.2, "elevation": 1700, "countrycode": "KE"},
+                    "start_date": "2021-01-01",
+                    "sensor_count": 5,
+                },
+                {
+                    "code": "TA00006",
+                    "name": "Station 6",
+                    "location": {"latitude": -2.0, "longitude": 38.0, "elevation": 1100, "countrycode": "KE"},
+                },
+            ]
+        }
+        with patch.object(extractor, "_request", return_value=mock_raw):
+            df_st = extractor.get_stations()
+            assert len(df_st) == 6
+            assert "start_date" in df_st.columns
+            assert "end_date" in df_st.columns
+            assert "sensor_count" in df_st.columns
+
+            # Station 1: installationdate, end_date, sensors list of 3
+            st1 = df_st[df_st["station_code"] == "TA00001"].iloc[0]
+            assert pd.to_datetime(st1["start_date"]) == pd.Timestamp("2015-06-01 00:00:00+0000", tz="UTC")
+            assert pd.to_datetime(st1["end_date"]) == pd.Timestamp("2023-12-31 00:00:00+0000", tz="UTC")
+            assert st1["sensor_count"] == 3
+
+            # Station 2: created, closed, instruments list of 2
+            st2 = df_st[df_st["station_code"] == "TA00002"].iloc[0]
+            assert pd.to_datetime(st2["start_date"]) == pd.Timestamp("2018-03-15")
+            assert pd.to_datetime(st2["end_date"]) == pd.Timestamp("2021-01-01")
+            assert st2["sensor_count"] == 2
+
+            # Station 3: location.installationdate, decommissiondate, elements dict of 2
+            st3 = df_st[df_st["station_code"] == "TA00003"].iloc[0]
+            assert pd.to_datetime(st3["start_date"]) == pd.Timestamp("2019-01-01 12:00:00+0000", tz="UTC")
+            assert pd.to_datetime(st3["end_date"]) == pd.Timestamp("2022-05-01")
+            assert st3["sensor_count"] == 2
+
+            # Station 4: since_date, variables list of 4, no end_date
+            st4 = df_st[df_st["station_code"] == "TA00004"].iloc[0]
+            assert pd.to_datetime(st4["start_date"]) == pd.Timestamp("2020-01-01")
+            assert pd.isna(st4["end_date"])
+            assert st4["sensor_count"] == 4
+
+            # Station 5: start_date, sensor_count integer
+            st5 = df_st[df_st["station_code"] == "TA00005"].iloc[0]
+            assert pd.to_datetime(st5["start_date"]) == pd.Timestamp("2021-01-01")
+            assert st5["sensor_count"] == 5
+
+            # Station 6: no dates, no sensors -> NaT and None/NaN
+            st6 = df_st[df_st["station_code"] == "TA00006"].iloc[0]
+            assert pd.isna(st6["start_date"])
+            assert pd.isna(st6["end_date"])
+            assert pd.isna(st6["sensor_count"]) or st6["sensor_count"] is None
+
+    def test_tahmo_generate_metadata_catalogs_dec022(self, tmp_path: Path) -> None:
+        """
+        Verify generate_metadata_catalogs populates installation.parquet with non-null start/end
+        dates and valid sensor_counts, and writes all 33 parameters into parameters.parquet.
+
+        Mathematical docstring:
+        Input: Mock stations DataFrame of shape (3, 8).
+        Output: installation.parquet of shape (3, 10) and parameters.parquet of shape (33, 8).
+        """
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
+        mock_stations = pd.DataFrame([
+            {
+                "station_code": "TA00001",
+                "name": "Nairobi Station",
+                "lat": -1.28,
+                "lon": 36.82,
+                "elevation": 1680.0,
+                "country": "KE",
+                "start_date": "2016-01-01T00:00:00Z",
+                "end_date": "2022-12-31T00:00:00Z",
+                "sensor_count": 4,
+            },
+            {
+                "station_code": "TA00002",
+                "name": "Kisumu Station",
+                "lat": -0.10,
+                "lon": 34.75,
+                "elevation": 1131.0,
+                "country": "KE",
+                "start_date": "2018-05-10",
+                "end_date": None,
+                "sensor_count": "3",
+            },
+            {
+                "station_code": "TA00003",
+                "name": "Mombasa Station",
+                "lat": -4.04,
+                "lon": 39.66,
+                "elevation": 17.0,
+                "country": "KE",
+                "start_date": None,
+                "end_date": None,
+                "sensor_count": None,
+            },
+        ])
+        inst_p, param_p = extractor.generate_metadata_catalogs(
+            stations_df=mock_stations,
+            output_dir=tmp_path / "metadata_test",
+        )
+        assert inst_p.exists()
+        assert param_p.exists()
+
+        df_inst = pd.read_parquet(inst_p)
+        assert len(df_inst) == 3
+        assert "start_date" in df_inst.columns
+        assert "end_date" in df_inst.columns
+        assert "sensor_count" in df_inst.columns
+
+        # Station 1: explicit start, end, sensor_count=4
+        r1 = df_inst[df_inst["station_id"] == "TA00001"].iloc[0]
+        assert r1["sensor_count"] == 4
+        assert pd.to_datetime(r1["start_date"]) == pd.Timestamp("2016-01-01 00:00:00+0000", tz="UTC")
+        assert pd.to_datetime(r1["end_date"]) == pd.Timestamp("2022-12-31 00:00:00+0000", tz="UTC")
+
+        # Station 2: explicit start, end is NaT, string sensor_count parsed to 3
+        r2 = df_inst[df_inst["station_id"] == "TA00002"].iloc[0]
+        assert r2["sensor_count"] == 3
+        assert pd.to_datetime(r2["start_date"]).strftime("%Y-%m-%d") == "2018-05-10"
+        assert pd.isna(r2["end_date"])
+
+        # Station 3: missing dates -> NaT, missing sensor_count -> defaults to 1
+        r3 = df_inst[df_inst["station_id"] == "TA00003"].iloc[0]
+        assert r3["sensor_count"] == 1
+        assert pd.isna(r3["start_date"])
+        assert pd.isna(r3["end_date"])
+
+        # Parameters catalog check: exactly 33 variables
+        df_param = pd.read_parquet(param_p)
+        assert len(df_param) == 33
+        assert "short_code" in df_param.columns
+        assert "canonical_name" in df_param.columns
+        assert "physical_type" in df_param.columns
+        assert set(df_param["short_code"]) == {
+            "ap", "cp", "dw", "ec", "ew", "ht", "lb", "ld", "le", "lp",
+            "lt", "mp", "pd", "pr", "pt", "pw", "rh", "rn", "sd", "sm",
+            "sr", "tc", "td", "te", "tp", "uv", "vp", "wd", "wg", "wl",
+            "wq", "ws", "wv",
+        }
+
 
 # ==============================================================================
 # IMERG Tests
