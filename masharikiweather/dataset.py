@@ -490,7 +490,7 @@ def _normalize_time_column(df: pd.DataFrame) -> pd.DataFrame:
             for col in list(df.columns):
                 if col not in ["station", "station_id"]:
                     try:
-                        df[col] = pd.to_datetime(df[col])
+                        df[col] = pd.to_datetime(df[col], format="mixed")
                         df = df.rename(columns={col: "time"})
                         break
                     except Exception:
@@ -2663,6 +2663,8 @@ class MasharikiWeatherDataset:
         if "end_date" in self.stations_table.columns:
             self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
 
+        observed_stations: Set[str] = set()
+
         # 1. Update from loaded observations in memory
         if hasattr(self, "observations") and self.observations is not None and not self.observations.empty:
             obs = self.observations
@@ -2675,6 +2677,7 @@ class MasharikiWeatherDataset:
                         n_sensors = len(active_cols) if active_cols else s_df.shape[1]
                         if n_sensors > 0:
                             self.stations_table.loc[s, "sensor_count"] = max(1, n_sensors)
+                            observed_stations.add(s)
 
                         valid_idx = s_df.dropna(how="all").index
                         if len(valid_idx) > 0:
@@ -2748,6 +2751,7 @@ class MasharikiWeatherDataset:
                                         curr = self.stations_table.loc[s, "sensor_count"]
                                         curr_count = int(curr) if pd.notna(curr) else 1
                                         self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
+                                        observed_stations.add(s)
                         elif isinstance(df_p.columns, pd.MultiIndex):
                             for s in df_p.columns.get_level_values(0).unique():
                                 if s in self.stations_table.index:
@@ -2770,6 +2774,7 @@ class MasharikiWeatherDataset:
                                     curr = self.stations_table.loc[s, "sensor_count"]
                                     curr_count = int(curr) if pd.notna(curr) else 1
                                     self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
+                                    observed_stations.add(s)
                     except Exception as err:
                         logger.debug("Failed reading %s for date/sensor resolution: %s", pf, err)
 
@@ -2799,12 +2804,13 @@ class MasharikiWeatherDataset:
             if pd.isna(et_date) or et_date is pd.NaT:
                 self.stations_table.loc[s, "end_date"] = now_d
 
-            cnt = self.stations_table.loc[s, "sensor_count"]
-            if pd.isna(cnt):
-                if "tahmo" in net:
-                    self.stations_table.loc[s, "sensor_count"] = 12
-                else:
-                    self.stations_table.loc[s, "sensor_count"] = 1
+            if s not in observed_stations:
+                cnt = self.stations_table.loc[s, "sensor_count"]
+                if pd.isna(cnt) or (isinstance(cnt, (int, float, np.integer, np.floating)) and cnt <= 1):
+                    if "tahmo" in net:
+                        self.stations_table.loc[s, "sensor_count"] = 12
+                    else:
+                        self.stations_table.loc[s, "sensor_count"] = 1
 
             # Physical station naming
             if "station_name" in self.stations_table.columns:
