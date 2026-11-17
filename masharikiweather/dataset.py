@@ -6,7 +6,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import dask
 from dask.diagnostics import ProgressBar
@@ -597,6 +597,15 @@ class Windows:
         self.station_static = value
 
     @property
+    def static_features(self) -> Optional[np.ndarray]:
+        """Convenience alias for static_stations / station_static."""
+        return self.station_static
+
+    @static_features.setter
+    def static_features(self, value: Optional[np.ndarray]) -> None:
+        self.station_static = value
+
+    @property
     def static_stations_categorical(self) -> Optional[np.ndarray]:
         """
         Station categorical static terrain priors tensor (e.g. soil/land cover classes).
@@ -857,6 +866,26 @@ class MasharikiWeatherDataset:
         "cams", "merra", "merra2", "mera", "open_meteo", "openmeteo", "nasa_power"
     ]
 
+    AVAILABLE_TOPOGRAPHY_VARS: ClassVar[Set[str]] = {
+        "dem",
+        "Slope",
+        "Aspect",
+        "LandCover",
+        "DistanceToWater",
+        "ASPECT_2000M_SIGRATIO1",
+        "ASPECT_10000M_SIGRATIO1",
+        "SLOPE_2000M_SIGRATIO1",
+        "SLOPE_10000M_SIGRATIO1",
+        "SN_DERIVATIVE_2000M_SIGRATIO1",
+        "SN_DERIVATIVE_10000M_SIGRATIO1",
+        "WE_DERIVATIVE_2000M_SIGRATIO1",
+        "WE_DERIVATIVE_10000M_SIGRATIO1",
+        "STD_2000M",
+        "STD_10000M",
+        "TPI_2000M",
+        "TPI_10000M",
+    }
+
     def _standardize_coordinates(self, ds: Optional[xr.Dataset]) -> Optional[xr.Dataset]:
         """
         Standardizes coordinate orientation across disparate datasets (e.g. CHIRPS vs IMERG).
@@ -933,6 +962,8 @@ class MasharikiWeatherDataset:
         use_hf: bool = False,
         root: Optional[Union[str, Path]] = None,
         prefer_zarr: bool = False,
+        extended_topo_vars: Optional[Union[str, Sequence[str]]] = None,
+        extended_nwp_vars: Optional[Union[str, Sequence[str]]] = None,
         **kwargs: Any,
     ):
         """
@@ -963,12 +994,32 @@ class MasharikiWeatherDataset:
             use_hf (bool): Whether to explicitly query remote HuggingFace filesystem if local files are absent.
             root (Optional[Union[str, Path]]): Convenience alias for root_dir.
             prefer_zarr (bool): Whether to prioritize Zarr reading over Parquet for TAHMO observations.
+            extended_topo_vars (Optional[Union[str, Sequence[str]]]): Static topographic descriptors to load
+                and interpolate onto station coordinates ('all', list of variables, or None for defaults).
+                Directly mirrors MeteoSwiss PeakWeather's extended_topo_vars interface.
+            extended_nwp_vars (Optional[Union[str, Sequence[str]]]): Numerical weather prediction variables
+                to include, provided for PeakWeather API parity.
             **kwargs (Any): Additional configuration parameters.
         """
         actual_root = root if root is not None else (root_dir if root_dir is not None else "./mashariki_data")
         self.root_dir = Path(actual_root)
         self.repo_id = repo_id
+
+        explicit_token = token is not None
+        if token is None:
+            if "HF_TOKEN" in os.environ or "HUGGINGFACE_HUB_TOKEN" in os.environ:
+                token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+            else:
+                try:
+                    from dotenv import load_dotenv
+                    load_dotenv()
+                except Exception:
+                    pass
+                token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+
         self.token = token
+        self.extended_topo_vars = extended_topo_vars
+        self.extended_nwp_vars = extended_nwp_vars
 
         raw_sources = [source_obs] if isinstance(source_obs, str) else list(source_obs)
         seen_sources = set()
@@ -990,7 +1041,7 @@ class MasharikiWeatherDataset:
         self.rechunk = rechunk
         self.swap = swap
         self.prefer_zarr = prefer_zarr or kwargs.get("use_zarr", False)
-        self.use_hf = use_hf or (token is not None)
+        self.use_hf = use_hf or explicit_token
 
         if freq is not None:
             try:
@@ -1222,7 +1273,9 @@ class MasharikiWeatherDataset:
                 meta_dir = Path(self.root_dir) / "metadata"
                 meta_dir.mkdir(parents=True, exist_ok=True)
                 self.stations_table.to_parquet(meta_dir / "installation.parquet")
+                self.stations_table.to_parquet(meta_dir / "stations.parquet")
                 self.parameters_table.to_parquet(meta_dir / "parameters.parquet")
+                self.stations_table.to_parquet(Path(self.root_dir) / "stations.parquet")
                 self.stations_table.to_parquet(Path(self.root_dir) / "stations_registry.parquet")
                 self.parameters_table.to_parquet(Path(self.root_dir) / "parameters_registry.parquet")
 
@@ -1354,6 +1407,80 @@ class MasharikiWeatherDataset:
 
         out = pd.Series(mean_missing, name="missing_perc", dtype="float32")
         return out.reindex(self.parameters)
+
+    @property
+    def available_topography(self) -> Set[str]:
+        """
+        Set of available static topographic descriptor variable names,
+        mirroring the MeteoSwiss PeakWeather dataset interface.
+        """
+        if self._topo_ds is not None:
+            raw_vars = set(self._topo_ds.data_vars)
+            clean_vars = {v for v in raw_vars if not v.endswith("_sin") and not v.endswith("_cos")}
+            return clean_vars | self.AVAILABLE_TOPOGRAPHY_VARS
+        return set(self.AVAILABLE_TOPOGRAPHY_VARS)
+
+    @property
+    def topography(self) -> Optional[xr.Dataset]:
+        """
+        Gridded 2D xarray.Dataset of static topographic terrain fields.
+        Lazily loads the dataset if not already loaded into memory/cache.
+        """
+        if self._topo_ds is None:
+            self._topo_ds = self.load_topography()
+        return self._topo_ds
+
+    def get_topography_data(
+        self,
+        variables: Optional[Union[str, Sequence[str]]] = None,
+        bbox: Optional[Sequence[float]] = None,
+    ) -> xr.Dataset:
+        """
+        Retrieve gridded topographic fields filtered by variable name(s) and bounding box,
+        mirroring PeakWeather's data retrieval methods (such as get_icon_data).
+
+        Mathematical docstring:
+            Input:
+                variables: Optional sequence of variable names or 'all'.
+                bbox: Optional [min_lon, min_lat, max_lon, max_lat] in EPSG:4326.
+            Output:
+                xr.Dataset with shape (lat, lon) for each selected variable.
+
+        Args:
+            variables: Variable name or sequence of names. If None or 'all', returns all available.
+            bbox: Bounding box [min_lon, min_lat, max_lon, max_lat].
+
+        Returns:
+            xr.Dataset: The requested gridded topography slice.
+        """
+        ds = self.topography
+        if ds is None:
+            raise FileNotFoundError("Could not load topography data from local cache or remote Hugging Face.")
+
+        if variables is not None and variables != "all":
+            if isinstance(variables, str):
+                variables = [variables]
+            var_candidates = set(variables)
+            expanded_vars = []
+            for v in ds.data_vars:
+                if v in var_candidates or v.lower() in {c.lower() for c in var_candidates}:
+                    expanded_vars.append(v)
+                elif any(v.startswith(c) and (v.endswith("_sin") or v.endswith("_cos")) for c in var_candidates):
+                    expanded_vars.append(v)
+            if not expanded_vars:
+                raise ValueError(f"None of the requested variables {variables} are in available topography.")
+            ds = ds[expanded_vars]
+
+        if bbox is not None:
+            min_lon, min_lat, max_lon, max_lat = bbox
+            lat_dim = "lat" if "lat" in ds.coords else "latitude"
+            lon_dim = "lon" if "lon" in ds.coords else "longitude"
+            lat_vals = ds[lat_dim].values
+            lat_slice = slice(max_lat, min_lat) if lat_vals[0] > lat_vals[-1] else slice(min_lat, max_lat)
+            lon_slice = slice(min_lon, max_lon)
+            ds = ds.sel({lat_dim: lat_slice, lon_dim: lon_slice})
+
+        return ds
 
     def load(self) -> ObservationDataFrame:
         """
@@ -1990,147 +2117,233 @@ class MasharikiWeatherDataset:
 
     def load_topography(
         self,
-        filename: str = "africa_static_priors",
+        filename: str = "africa_topography",
         merge_stations: bool = False,
+        variables: Optional[Union[str, Sequence[str]]] = None,
     ) -> Optional[Union[xr.Dataset, pd.DataFrame]]:
         """
         Load static topographic priors from disk or Hugging Face, optionally
-        merging station metadata with topographic priors (DEM, Slope, Aspect, TPI_2000M).
+        merging station metadata with topographic priors (DEM, Slope, Aspect, TPI_2000M, etc.).
 
-        Applies cyclical encoding to Aspect (degrees -> sin/cos) to prevent
-        the circular paradox where 359 deg and 1 deg appear maximally distant
-        to a neural network, when physically they are adjacent.
+        Supports reading from:
+            1. Local Zarr directory: {root_dir}/topography/{filename}.zarr
+            2. Local zipped Zarr: {root_dir}/topography/{filename}.zarr.zip
+            3. Local NetCDF file: {root_dir}/topography/{filename}.nc
+            4. Remote Hugging Face Zarr: datasets/{repo_id}/data/topography/africa_topography.zarr
+            5. Remote Hugging Face NetCDF: datasets/{repo_id}/data/topography/{filename}.nc
+
+        Applies cyclical encoding to Aspect (degrees -> sin/cos pairs) to prevent
+        the circular boundary paradox where 359 deg and 1 deg appear maximally distant
+        to a neural network, while retaining original angular degrees for physical inspection.
 
         Mathematical docstring:
-            Topographic grid shape: (Lat, Lon) for 2D fields.
+            Topographic grid shape: (lat, lon) for 2D fields.
             Station feature shape: (N_stations, C_topo_features) when merge_stations=True.
 
         Args:
-            filename (str): Name of the topography file (without extension).
+            filename (str): Name of the topography file (without extension). Defaults to 'africa_topography'.
             merge_stations (bool): If True, merges interpolated static priors into
                 self.stations_table / self.installation and returns updated station DataFrame.
+            variables (Optional[Union[str, Sequence[str]]]): Subset of variables to load.
 
         Returns:
             Optional[Union[xr.Dataset, pd.DataFrame]]: Topographic dataset or merged station DataFrame.
         """
-        local_dir = f"{self.root_dir}/topography"
-        local_path = f"{local_dir}/{filename}.nc"
-        hf_path = f"hf://datasets/{self.repo_id}/data/topography/{filename}.nc"
+        local_dir = Path(self.root_dir) / "topography"
+        candidate_local = [
+            local_dir / f"{filename}.zarr",
+            local_dir / "africa_topography.zarr",
+            local_dir / f"{filename}.zarr.zip",
+            local_dir / "africa_topography.zarr.zip",
+            local_dir / f"{filename}.nc",
+            local_dir / "africa_topography.nc",
+            local_dir / "africa_static_priors.nc",
+            local_dir / "east_africa_static_priors.nc",
+        ]
 
         ds = None
-        # Minimum-Latency Local Load
-        if os.path.exists(local_path):
-            try:
+        for p in candidate_local:
+            if p.exists():
                 try:
-                    ds = xr.open_dataset(local_path, engine="h5netcdf").load()
-                except Exception:
-                    ds = xr.open_dataset(local_path).load()
-            except Exception as e:
-                logger.warning("Local topography cache corrupted. Re-downloading... (%s)", e)
-
-        # Backward compatibility check for legacy cached east_africa_static_priors.nc
-        if ds is None:
-            legacy_path = f"{local_dir}/east_africa_static_priors.nc"
-            if os.path.exists(legacy_path):
-                try:
-                    try:
-                        ds = xr.open_dataset(legacy_path, engine="h5netcdf").load()
-                    except Exception:
-                        ds = xr.open_dataset(legacy_path).load()
+                    if p.suffix == ".zip":
+                        ds = self._open_zipped_zarr(str(p), lazy=True)
+                    elif p.is_dir() or str(p).endswith(".zarr"):
+                        try:
+                            ds = xr.open_zarr(str(p), consolidated=True)
+                        except Exception:
+                            ds = xr.open_zarr(str(p), consolidated=False)
+                    else:
+                        try:
+                            ds = xr.open_dataset(str(p), engine="h5netcdf")
+                        except Exception:
+                            ds = xr.open_dataset(str(p))
+                    break
                 except Exception as e:
-                    logger.warning("Legacy topography cache corrupted: %s", e)
+                    logger.warning("Failed to open local topography cache at %s: %s", p, e)
 
-        # First-Time Fetch (Download to Cache)
+        # First-Time Fetch or Stream from Hugging Face
         if ds is None:
-            if not getattr(self, "use_hf", False) or self.fs is None:
-                if merge_stations and hasattr(self, "stations_table"):
-                    return self.stations_table
-                return None
-            try:
-                os.makedirs(local_dir, exist_ok=True)
-                self.fs.get(hf_path, local_path)
-                try:
-                    ds = xr.open_dataset(local_path, engine="h5netcdf").load()
-                except Exception:
-                    ds = xr.open_dataset(local_path).load()
-            except Exception as e:
-                logger.warning("Could not fetch topography data from Hugging Face: %s", e)
-                if merge_stations and hasattr(self, "stations_table"):
-                    return self.stations_table
-                return None
+            if self.use_hf:
+                if self.fs is None:
+                    try:
+                        self.fs = fsspec.filesystem("hf", token=self.token)
+                    except Exception as e:
+                        logger.warning("Could not initialize HuggingFace filesystem: %s", e)
 
-        # Cyclical Encoding: ALL Aspect variables (degrees) -> sin/cos pairs
+                if self.fs is not None:
+                    # 1. Try streaming remote Zarr store directly via fsspec mapper
+                    hf_zarr_path = f"datasets/{self.repo_id}/data/topography/africa_topography.zarr"
+                    try:
+                        mapper = self.fs.get_mapper(hf_zarr_path)
+                        try:
+                            ds = xr.open_zarr(mapper, consolidated=True)
+                        except Exception:
+                            ds = xr.open_zarr(mapper, consolidated=False)
+                    except Exception as e:
+                        logger.debug("Remote Zarr stream failed: %s. Attempting fallback...", e)
+
+                    # 2. Try remote NetCDF file
+                    if ds is None:
+                        for hf_fn in [filename, "africa_topography", "africa_static_priors"]:
+                            hf_nc_path = f"hf://datasets/{self.repo_id}/data/topography/{hf_fn}.nc"
+                            local_dest = local_dir / f"{hf_fn}.nc"
+                            try:
+                                local_dir.mkdir(parents=True, exist_ok=True)
+                                self.fs.get(hf_nc_path, str(local_dest))
+                                try:
+                                    ds = xr.open_dataset(str(local_dest), engine="h5netcdf")
+                                except Exception:
+                                    ds = xr.open_dataset(str(local_dest))
+                                break
+                            except Exception:
+                                pass
+
+        if ds is None:
+            if merge_stations and hasattr(self, "stations_table"):
+                return self.stations_table
+            return None
+
+        # Cyclical Encoding: ALL Aspect variables (degrees) -> compute sin/cos pairs
         aspect_vars = [
             v for v in list(ds.data_vars)
-            if 'aspect' in v.lower() and '_sin' not in v and '_cos' not in v
+            if "aspect" in v.lower() and not v.endswith("_sin") and not v.endswith("_cos")
         ]
         for var_name in aspect_vars:
             aspect_rad = ds[var_name] * (np.pi / 180.0)
-            ds[f'{var_name}_sin'] = np.sin(aspect_rad)
-            ds[f'{var_name}_cos'] = np.cos(aspect_rad)
-            ds = ds.drop_vars(var_name)
+            ds[f"{var_name}_sin"] = np.sin(aspect_rad)
+            ds[f"{var_name}_cos"] = np.cos(aspect_rad)
+
+        # Variable filtering if requested
+        if variables is not None and variables != "all":
+            req_set = {variables} if isinstance(variables, str) else set(variables)
+            keep_vars = [
+                v for v in ds.data_vars
+                if v in req_set or any(v.startswith(r) and (v.endswith("_sin") or v.endswith("_cos")) for r in req_set)
+            ]
+            if keep_vars:
+                ds = ds[keep_vars]
+        elif self.extended_topo_vars is not None and self.extended_topo_vars != "all":
+            req_set = {self.extended_topo_vars} if isinstance(self.extended_topo_vars, str) else set(self.extended_topo_vars)
+            keep_vars = [
+                v for v in ds.data_vars
+                if v in req_set or any(v.startswith(r) and (v.endswith("_sin") or v.endswith("_cos")) for r in req_set)
+            ]
+            if keep_vars:
+                ds = ds[keep_vars]
+
+        self._topo_ds = ds
 
         if merge_stations and hasattr(self, "stations_table") and not self.stations_table.empty:
-            self._topo_ds = ds
-            self.interpolate_topography()
+            self.interpolate_topography(variables=variables)
             return self.stations_table
 
         return ds
 
-    def interpolate_topography(self) -> None:
+    def interpolate_topography(self, variables: Optional[Union[str, Sequence[str]]] = None) -> None:
         """
         Interpolate topography data to the station locations.
+        Mirrors MeteoSwiss PeakWeather's station metadata augmentation
+        (populating stations.parquet and installation.parquet with static terrain attributes).
+
+        Args:
+            variables: Optional subset of variables to interpolate onto stations.
         """
         if self._topo_ds is None:
-            # 1. Load the default static netCDF topography (Elevation, Slope, Aspect)
             self._topo_ds = self.load_topography()
 
-        if self._topo_ds is None:
+        if self._topo_ds is None or not hasattr(self, "stations_table") or self.stations_table is None:
             return
 
-        valid_stations = self.stations_table.dropna(subset=['latitude', 'longitude'])
+        valid_stations = self.stations_table.dropna(subset=["latitude", "longitude"])
         if valid_stations.empty:
             return
 
-        lats = xr.DataArray(valid_stations['latitude'].values, dims="station", 
-                            coords={"station": ("station", valid_stations.index.values)})
-        lons = xr.DataArray(valid_stations['longitude'].values, dims="station", 
-                            coords={"station": ("station", valid_stations.index.values)})
+        lats = xr.DataArray(
+            valid_stations["latitude"].values,
+            dims="station",
+            coords={"station": ("station", valid_stations.index.values)},
+        )
+        lons = xr.DataArray(
+            valid_stations["longitude"].values,
+            dims="station",
+            coords={"station": ("station", valid_stations.index.values)},
+        )
 
-        lat_dim = 'lat' if 'lat' in self._topo_ds.dims else ('latitude' if 'latitude' in self._topo_ds.dims else 'lat')
-        lon_dim = 'lon' if 'lon' in self._topo_ds.dims else ('longitude' if 'longitude' in self._topo_ds.dims else 'lon')
+        lat_dim = "lat" if "lat" in self._topo_ds.dims else ("latitude" if "latitude" in self._topo_ds.dims else "lat")
+        lon_dim = "lon" if "lon" in self._topo_ds.dims else ("longitude" if "longitude" in self._topo_ds.dims else "lon")
+
+        # Determine target variables
+        available_vars = list(self._topo_ds.data_vars)
+        if variables is not None and variables != "all":
+            req_vars = {variables} if isinstance(variables, str) else set(variables)
+            target_vars = [
+                v for v in available_vars
+                if v in req_vars or any(v.startswith(r) and (v.endswith("_sin") or v.endswith("_cos")) for r in req_vars)
+            ]
+        elif self.extended_topo_vars is not None and self.extended_topo_vars != "all":
+            req_vars = {self.extended_topo_vars} if isinstance(self.extended_topo_vars, str) else set(self.extended_topo_vars)
+            target_vars = [
+                v for v in available_vars
+                if v in req_vars or any(v.startswith(r) and (v.endswith("_sin") or v.endswith("_cos")) for r in req_vars)
+            ]
+        else:
+            target_vars = available_vars
 
         # Nearest Neighbor for Categorical Variables
-        # (Aspect has already been decomposed into continuous sin/cos in load_topography)
-        nearest_vars = ['LandCover']
-        valid_nearest = [v for v in nearest_vars if v in self._topo_ds.data_vars]
-        if valid_nearest:
-            sampled_nearest = self._topo_ds[valid_nearest].sel({lat_dim: lats, lon_dim: lons}, method="nearest")
-            df_nearest = sampled_nearest.to_dataframe().drop(columns=['lat', 'lon', 'latitude', 'longitude'], errors='ignore')
+        nearest_vars = [v for v in ["LandCover"] if v in target_vars]
+        if nearest_vars:
+            sampled_nearest = self._topo_ds[nearest_vars].sel({lat_dim: lats, lon_dim: lons}, method="nearest")
+            if hasattr(sampled_nearest, "compute"):
+                sampled_nearest = sampled_nearest.compute()
+            df_nearest = sampled_nearest.to_dataframe().drop(
+                columns=["lat", "lon", "latitude", "longitude", "station"], errors="ignore"
+            )
         else:
             df_nearest = pd.DataFrame(index=valid_stations.index)
 
         # Bilinear Interpolation for Continuous Physical Fields
-        continuous_vars = [v for v in self._topo_ds.data_vars if v not in nearest_vars]
+        continuous_vars = [v for v in target_vars if v not in nearest_vars]
         if continuous_vars:
             sampled_bilinear = self._topo_ds[continuous_vars].interp({lat_dim: lats, lon_dim: lons}, method="linear")
-            df_bilinear = sampled_bilinear.to_dataframe().drop(columns=['lat', 'lon', 'latitude', 'longitude'], errors='ignore')
+            if hasattr(sampled_bilinear, "compute"):
+                sampled_bilinear = sampled_bilinear.compute()
+            df_bilinear = sampled_bilinear.to_dataframe().drop(
+                columns=["lat", "lon", "latitude", "longitude", "station"], errors="ignore"
+            )
         else:
             df_bilinear = pd.DataFrame(index=valid_stations.index)
 
         # Combine and Join
         df_topo = pd.concat([df_nearest, df_bilinear], axis=1)
-        
-        # Physically sound defaults for ocean/coastal-masked terrain.
-        # Pattern-based to handle all multi-scale variables dynamically:
-        #   *_cos -> 1 (undefined direction defaults to unit vector on cos axis)
-        #   LandCover -> 0 (water/ocean class)
-        #   Everything else -> 0 (sea level, flat, no gradient)
+
+        # Physically sound defaults for ocean/coastal-masked terrain:
         for col in df_topo.columns:
-            if col == 'LandCover':
+            if col == "LandCover":
                 default_val = 0
-            elif col.endswith('_cos'):
+            elif col.endswith("_cos"):
                 default_val = 1
+            elif col.endswith("_sin"):
+                default_val = 0
             else:
                 default_val = 0
             df_topo[col] = df_topo[col].fillna(default_val)
@@ -2141,6 +2354,12 @@ class MasharikiWeatherDataset:
         new_cols = [c for c in df_topo.columns if c not in self.stations_table.columns]
         if new_cols:
             self.stations_table = self.stations_table.join(df_topo[new_cols])
+
+        # Synchronize elevation and dem columns
+        if "dem" in self.stations_table.columns and "elevation" in self.stations_table.columns:
+            self.stations_table["elevation"] = self.stations_table["elevation"].fillna(self.stations_table["dem"])
+        elif "dem" in self.stations_table.columns and "elevation" not in self.stations_table.columns:
+            self.stations_table["elevation"] = self.stations_table["dem"]
 
 
     def validate_stations(self, stations: Optional[Union[str, List[str]]] = None) -> List[str]:
@@ -3656,8 +3875,15 @@ class MasharikiWeatherDataset:
             mask = mask.resample(temporal_resolution).max()
 
         station_static_whitelist = [
-            'dem', 'Slope', 'Aspect_sin', 'Aspect_cos', 
-            'LandCover', 'DistanceToWater', 'TPI_2000M'
+            'dem', 'Slope', 'Aspect', 'Aspect_sin', 'Aspect_cos', 
+            'LandCover', 'DistanceToWater',
+            'ASPECT_2000M_SIGRATIO1', 'ASPECT_2000M_SIGRATIO1_sin', 'ASPECT_2000M_SIGRATIO1_cos',
+            'ASPECT_10000M_SIGRATIO1', 'ASPECT_10000M_SIGRATIO1_sin', 'ASPECT_10000M_SIGRATIO1_cos',
+            'SLOPE_2000M_SIGRATIO1', 'SLOPE_10000M_SIGRATIO1',
+            'SN_DERIVATIVE_2000M_SIGRATIO1', 'SN_DERIVATIVE_10000M_SIGRATIO1',
+            'WE_DERIVATIVE_2000M_SIGRATIO1', 'WE_DERIVATIVE_10000M_SIGRATIO1',
+            'STD_2000M', 'STD_10000M',
+            'TPI_2000M', 'TPI_10000M'
         ]
         available_static = [c for c in station_static_whitelist if c in self.stations_table.columns]
         
