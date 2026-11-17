@@ -672,31 +672,48 @@ class TAHMOExtractor(BaseExtractor):
                 or s.get("decommissiondate")
             )
 
+            name_val = loc.get("name") or s.get("name") or loc.get("city") or s.get("label") or s.get("code")
+
+            if start_raw:
+                start_dt = pd.to_datetime(start_raw)
+            else:
+                start_dt = pd.Timestamp("2014-01-01")
+
+            tz_start = getattr(start_dt, "tz", None)
+            if end_raw:
+                end_dt = pd.to_datetime(end_raw)
+            else:
+                end_dt = pd.Timestamp.now(tz=tz_start).floor("D") if tz_start else pd.Timestamp.now().floor("D")
+
             sensors_val = (
                 s.get("sensors")
                 or s.get("instruments")
                 or s.get("elements")
                 or s.get("variables")
             )
-            sensor_count: Optional[int] = None
-            if isinstance(sensors_val, (list, tuple, dict, set)):
+            sensor_count: int = 12
+            if isinstance(sensors_val, (list, tuple, dict, set)) and len(sensors_val) > 0:
                 sensor_count = len(sensors_val)
-            elif s.get("sensor_count") is not None:
+            elif s.get("sensor_count") is not None and not pd.isna(s.get("sensor_count")):
                 try:
-                    sensor_count = int(s.get("sensor_count"))
+                    sc = int(s.get("sensor_count"))
+                    sensor_count = sc if sc > 0 else 12
                 except (ValueError, TypeError):
-                    sensor_count = None
+                    sensor_count = 12
+            else:
+                sensor_count = 12
 
             rows.append({
                 "station_code": s.get("code"),
-                "name": s.get("name"),
+                "name": name_val,
+                "station_name": name_val,
                 "lat": lat_f,
                 "lon": lon_f,
-                "elevation": float(elev) if elev is not None else np.nan,
-                "country": str(country_code).upper() if country_code else None,
+                "elevation": float(elev) if elev is not None else 0.0,
+                "country": str(country_code).upper() if country_code else "KE",
                 "status": s.get("status"),
-                "start_date": pd.to_datetime(start_raw) if start_raw else pd.NaT,
-                "end_date": pd.to_datetime(end_raw) if end_raw else pd.NaT,
+                "start_date": start_dt,
+                "end_date": end_dt,
                 "sensor_count": sensor_count,
             })
 
@@ -705,6 +722,7 @@ class TAHMOExtractor(BaseExtractor):
             columns=[
                 "station_code",
                 "name",
+                "station_name",
                 "lat",
                 "lon",
                 "elevation",
@@ -815,10 +833,11 @@ class TAHMOExtractor(BaseExtractor):
         cur = s_date
         while cur < e_date:
             next_step = min(cur + timedelta(days=MAX_REQUEST_DAYS), e_date)
-            params = {
+            params: Dict[str, Any] = {
                 "start": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "end": next_step.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
+            # DEC-024 Maximum Juice: Omit "variable" param when requesting all variables to pull all 33 variables in 1 call
             if filter_vars and len(filter_vars) == 1:
                 params["variable"] = filter_vars[0]
 
@@ -942,29 +961,48 @@ class TAHMOExtractor(BaseExtractor):
             if raw_sc is not None and not pd.isna(raw_sc):
                 try:
                     sensor_cnt = int(raw_sc)
+                    if sensor_cnt <= 0:
+                        sensor_cnt = 12
                 except (ValueError, TypeError):
-                    sensor_cnt = 1
+                    sensor_cnt = 12
             else:
-                sensor_cnt = 1
+                sensor_cnt = 12
 
             start_val = row.get("start_date")
             end_val = row.get("end_date")
+            if start_val is None or pd.isna(start_val):
+                start_dt = pd.Timestamp("2014-01-01")
+            else:
+                start_dt = pd.to_datetime(start_val)
+
+            tz_start = getattr(start_dt, "tz", None)
+            if end_val is None or pd.isna(end_val):
+                end_dt = pd.Timestamp.now(tz=tz_start).floor("D") if tz_start else pd.Timestamp.now().floor("D")
+            else:
+                end_dt = pd.to_datetime(end_val)
+
+            st_name = str(row.get("name") or row.get("station_name") or st_id)
 
             install_rows.append({
                 "station_id": st_id,
-                "station_name": str(row.get("name") or row.get("station_name") or st_id),
+                "station_name": st_name,
+                "name": st_name,
                 "latitude": float(row.get("lat") or row.get("latitude") or 0.0),
                 "longitude": float(row.get("lon") or row.get("longitude") or 0.0),
                 "elevation": float(row.get("elevation") or row.get("elev") or 0.0),
                 "network": "tahmo",
                 "country": str(row.get("country")) if row.get("country") else "KE",
-                "start_date": pd.to_datetime(start_val or pd.NaT),
-                "end_date": pd.to_datetime(end_val or pd.NaT),
+                "start_date": start_dt,
+                "end_date": end_dt,
                 "sensor_count": sensor_cnt,
             })
         install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"])
         install_path = meta_dir / "installation.parquet"
         install_df.to_parquet(install_path, index=False)
+
+        # Also persist stations.parquet for PeakWeather compatibility
+        stations_path = meta_dir / "stations.parquet"
+        install_df.to_parquet(stations_path, index=False)
 
         # 2. Build parameters catalog
         param_df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS)

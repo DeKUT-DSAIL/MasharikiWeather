@@ -34,6 +34,7 @@ __all__ = [
     "pull_station_data",
     "pull_gridded_data",
     "pull_weather_data",
+    "SOURCE_SUPPORTED_VARIABLES",
 ]
 
 # Canonical meteorological variable lexicon and bidirectional cross-source harmonization
@@ -499,6 +500,198 @@ def _normalize_time_column(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _resolve_physical_station_name(record: Union[Dict[str, Any], pd.Series, Any], fallback_id: str = "") -> str:
+    """
+    Resolve human-readable physical station name from station metadata record.
+
+    Prioritizes descriptive location metadata:
+        loc.get("name") or s.get("name") or loc.get("city") or s.get("label") or s.get("code")
+
+    Args:
+        record: Station metadata record, pandas Series, or dictionary.
+        fallback_id: Fallback identifier string if descriptive name is absent.
+
+    Returns:
+        Human-readable station name string without NaNs or raw codes when metadata exists.
+    """
+    if record is None:
+        return str(fallback_id)
+    if isinstance(record, (dict, pd.Series)):
+        loc = record.get("location") if isinstance(record.get("location"), dict) else {}
+        name = (
+            loc.get("name")
+            or record.get("station_name")
+            or record.get("name")
+            or loc.get("city")
+            or record.get("city")
+            or record.get("label")
+            or loc.get("code")
+            or record.get("station_code")
+            or record.get("code")
+            or record.get("station_id")
+            or fallback_id
+        )
+        if pd.notna(name) and str(name).strip() and str(name).strip().lower() not in ("nan", "none", ""):
+            return str(name).strip()
+    return str(fallback_id)
+
+
+def _get_canonical_source_parameters(source: str) -> Optional[pd.DataFrame]:
+    """
+    Retrieve the complete canonical parameter catalog for a specified observation source.
+
+    Mathematical docstring:
+        For source 'tahmo', returns full 33-variable catalog matching DEC-022 and DEC-024.
+
+    Args:
+        source: Observation source identifier (e.g. 'tahmo', 'ghcn').
+
+    Returns:
+        pd.DataFrame indexed by 'parameter' containing canonical parameter metadata,
+        or None if no static canonical catalog is registered for the source.
+    """
+    norm = _normalize_source_name(source)
+    if norm == "tahmo":
+        try:
+            from .extract.apis.tahmo import DEFAULT_TAHMO_PARAMETERS
+            df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS)
+            if "parameter" in df.columns:
+                df = df.set_index("parameter")
+            return df
+        except Exception:
+            return None
+    return None
+
+
+# Gridded & Satellite physical parameter capabilities mapping per DEC-023
+ERA5_SUPPORTED_VARIABLES: Set[str] = {
+    # 2D surface fields
+    "10m_u_component_of_wind", "10m_v_component_of_wind",
+    "100m_u_component_of_wind", "100m_v_component_of_wind",
+    "2m_temperature", "2m_dewpoint_temperature",
+    "mean_sea_level_pressure", "surface_pressure",
+    "total_column_water_vapour", "total_column_water",
+    "total_precipitation", "convective_precipitation", "large_scale_precipitation",
+    "convective_available_potential_energy", "convective_inhibition",
+    "toa_incident_solar_radiation", "surface_solar_radiation_downwards",
+    "total_cloud_cover", "high_cloud_cover", "medium_cloud_cover", "low_cloud_cover",
+    "sea_surface_temperature", "sea_ice_cover",
+    "volumetric_soil_water_layer_1", "volumetric_soil_water_layer_2",
+    "soil_temperature_level_1", "soil_temperature_level_2", "snow_depth",
+    "land_sea_mask", "soil_type", "geopotential",
+    "leaf_area_index_high_vegetation", "leaf_area_index_low_vegetation",
+    "potential_evaporation", "surface_net_solar_radiation",
+    "top_net_thermal_radiation", "top_net_solar_radiation",
+    "evaporation", "snowfall", "surface_net_thermal_radiation",
+    "surface_thermal_radiation_downwards",
+    "surface_sensible_heat_flux", "surface_latent_heat_flux",
+    # 3D pressure-level fields
+    "specific_humidity", "temperature", "u_component_of_wind", "v_component_of_wind",
+    "vertical_velocity", "relative_humidity",
+    "specific_cloud_liquid_water_content", "specific_cloud_ice_water_content",
+    # Wave fields
+    "significant_height_of_combined_wind_waves_and_swell",
+    "mean_wave_direction", "mean_wave_period",
+    # Short codes / aliases
+    "2t", "t2m", "2d", "d2m", "10u", "u10", "10v", "v10", "100u", "u100", "100v", "v100",
+    "sp", "msl", "tcc", "tcwv", "cape", "cin", "sst", "siconc", "swvl1", "swvl2", "stl1", "stl2",
+    "sde", "lsm", "slt", "z", "lai_hv", "lai_lv", "tp", "cp", "lsp", "ssrd", "tisr", "strd",
+    "sshf", "slhf", "pev", "ssr", "ttr", "tsr", "e", "sf", "str", "q", "t", "u", "v", "w", "r",
+    "clwc", "ciwc", "swh", "mwd", "mwp",
+    # Common canonical aliases
+    "temp", "dewpoint", "precip", "precipitation", "wind_speed", "wind_direction",
+}
+for _meta_entry in CANONICAL_VARIABLE_METADATA.values():
+    for _alias_var in _meta_entry.get("aliases", []):
+        ERA5_SUPPORTED_VARIABLES.add(_alias_var.lower())
+
+SOURCE_SUPPORTED_VARIABLES: Dict[str, Set[str]] = {
+    "imerg": {
+        "precipitationcal",
+        "precipitation_amount",
+        "precip",
+        "total_precipitation",
+        "precipitation",
+    },
+    "chirps": {
+        "precip",
+        "precipitation",
+        "precipitation_amount",
+        "total_precipitation",
+    },
+    "tamsat": {
+        "rfe",
+        "precipitation",
+        "precipitation_amount",
+        "soil_moisture",
+    },
+    "era5": ERA5_SUPPORTED_VARIABLES,
+    "cams": {
+        "pm2p5", "pm10", "no2", "o3", "so2", "co", "particulate_matter_2.5um",
+        "particulate_matter_10um", "nitrogen_dioxide", "ozone", "sulphur_dioxide", "carbon_monoxide",
+    },
+    "copernicus_cams": {
+        "pm2p5", "pm10", "no2", "o3", "so2", "co", "particulate_matter_2.5um",
+        "particulate_matter_10um", "nitrogen_dioxide", "ozone", "sulphur_dioxide", "carbon_monoxide",
+    },
+    "merra2": {
+        "t2m", "u10m", "v10m", "prectot", "qv2m", "slp", "ps", "swgdn", "lwgdn", "t2m_temperature",
+    },
+    "nasa_merra2": {
+        "t2m", "u10m", "v10m", "prectot", "qv2m", "slp", "ps", "swgdn", "lwgdn", "t2m_temperature",
+    },
+    "open_meteo": {
+        "temperature_2m", "relative_humidity_2m", "dew_point_2m", "apparent_temperature",
+        "precipitation", "rain", "surface_pressure", "wind_speed_10m", "wind_direction_10m",
+        "direct_normal_irradiance", "global_horizontal_irradiance", "diffuse_radiation",
+    },
+    "openmeteo": {
+        "temperature_2m", "relative_humidity_2m", "dew_point_2m", "apparent_temperature",
+        "precipitation", "rain", "surface_pressure", "wind_speed_10m", "wind_direction_10m",
+        "direct_normal_irradiance", "global_horizontal_irradiance", "diffuse_radiation",
+    },
+    "nasa_power": {"ghi", "clrsky_ghi", "dni", "dhi", "kt", "cloud_amt", "t2m"},
+    "power": {"ghi", "clrsky_ghi", "dni", "dhi", "kt", "cloud_amt", "t2m"},
+    "pvgis": {"ghi", "dni", "dhi", "temp", "wind_speed"},
+    "sarah3": {"ghi", "direct", "diffuse", "dni", "terrestrial_radiation"},
+    "landsaf": {"ssi", "dssf", "albedo", "lst"},
+    "tropomi": {"no2", "co", "o3", "so2", "ch4", "hcho", "ai"},
+}
+
+
+def _validate_source_parameters(
+    source: str,
+    variables: Optional[Union[str, Sequence[str]]],
+    stacklevel: int = 2,
+) -> None:
+    """
+    Validate that requested variables are physically provided by the specified source.
+
+    Mathematical docstring:
+        Checks requested parameter subset V against source capabilities set S_source.
+        For every v in V not in S_source, emits an explicit UserWarning.
+
+    Args:
+        source: Name of the gridded or satellite data product.
+        variables: Sequence of variable names or single variable string.
+        stacklevel: Stack level for warning attribution.
+    """
+    if variables is None:
+        return
+    var_list = [variables] if isinstance(variables, str) else list(variables)
+    src_key = str(source).lower().strip()
+    if src_key in SOURCE_SUPPORTED_VARIABLES:
+        supported = SOURCE_SUPPORTED_VARIABLES[src_key]
+        for v in var_list:
+            v_str = v[1] if isinstance(v, tuple) and len(v) == 2 else str(v).strip()
+            if v_str.lower() not in supported and v_str not in supported:
+                warnings.warn(
+                    f"Variable '{v}' is not provided by source '{source}'. Available variables: {sorted(list(supported))}.",
+                    UserWarning,
+                    stacklevel=stacklevel,
+                )
+
+
 class StationList(list):
     """
     Specialized list container for active station identifiers.
@@ -546,6 +739,18 @@ class ObservationDataFrame(pd.DataFrame):
         df['temperature']
     while transparently resolving canonical variable names, aliases, and collocated sensors.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """
+        Initialize ObservationDataFrame and enforce strict 2-level MultiIndex names.
+
+        Mathematical docstring:
+            Ensures columns have MultiIndex(names=['station_id', 'parameter']) when 2-level.
+        """
+        super().__init__(*args, **kwargs)
+        if isinstance(self.columns, pd.MultiIndex) and self.columns.nlevels == 2:
+            if list(self.columns.names) != ["station_id", "parameter"]:
+                self.columns.names = ["station_id", "parameter"]
 
     @property
     def _constructor(self) -> type:
@@ -1397,8 +1602,14 @@ class MasharikiWeatherDataset:
             self.parameters_table = pd.DataFrame(
                 columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
             ).set_index(pd.Index([], name="parameter"))
-            self.observations = ObservationDataFrame()
-            self.mask = ObservationDataFrame()
+            self.observations = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
+            self.mask = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
 
         if self.tabular_parquet_path and os.path.exists(self.tabular_parquet_path):
             self._load_cached_parquet()
@@ -1482,18 +1693,20 @@ class MasharikiWeatherDataset:
                 params = self.observations.columns.get_level_values(1).unique()
 
                 st_rows = []
+                now_d = pd.Timestamp.now().floor("D")
                 for st in stations:
                     sub_st = self.observations[st]
                     valid_idx = sub_st.dropna(how="all").index
-                    st_start = valid_idx.min() if len(valid_idx) > 0 else (self.observations.index[0] if len(self.observations) > 0 else pd.NaT)
-                    st_end = valid_idx.max() if len(valid_idx) > 0 else (self.observations.index[-1] if len(self.observations) > 0 else pd.NaT)
-                    sensor_count = max(1, len(sub_st.columns))
+                    st_start = valid_idx.min() if len(valid_idx) > 0 else (self.observations.index[0] if len(self.observations) > 0 else pd.Timestamp("2014-01-01"))
+                    st_end = valid_idx.max() if len(valid_idx) > 0 else (self.observations.index[-1] if len(self.observations) > 0 else now_d)
+                    active_cols = [c for c in sub_st.columns if sub_st[c].notna().any()]
+                    sensor_count = len(active_cols) if active_cols else max(12 if (self.source_obs and "tahmo" in _normalize_source_name(self.source_obs[0])) else 1, len(sub_st.columns))
                     st_rows.append({
                         "station_id": st,
                         "latitude": np.nan,
                         "longitude": np.nan,
                         "elevation": np.nan,
-                        "station_name": str(st),
+                        "station_name": _resolve_physical_station_name(sub_st, fallback_id=str(st)),
                         "network": self.source_obs[0] if self.source_obs else "tahmo",
                         "country": "KE",
                         "start_date": st_start,
@@ -1502,20 +1715,31 @@ class MasharikiWeatherDataset:
                     })
                 self.stations_table = pd.DataFrame(st_rows).set_index("station_id")
 
-                pr_rows = []
-                for p in params:
-                    base_name = p.split("_")[0] if "_" in p else p
-                    meta = CANONICAL_VARIABLE_METADATA.get(p, CANONICAL_VARIABLE_METADATA.get(base_name, {}))
-                    pr_rows.append({
-                        "parameter": p,
-                        "canonical_name": meta.get("canonical_name", p),
-                        "standard_name": meta.get("standard_name", p),
-                        "units": meta.get("units", "unknown"),
-                        "physical_type": meta.get("physical_type", "PHYSICAL"),
-                        "resampling_method": meta.get("resampling_method", "mean"),
-                        "description": meta.get("description", f"Observed parameter {p}"),
-                    })
-                self.parameters_table = pd.DataFrame(pr_rows).set_index("parameter")
+                # DEC-024: Check if canonical parameter catalog is registered for source (e.g. 33 for TAHMO)
+                canonical_source_df = None
+                if self.source_obs:
+                    for src in self.source_obs:
+                        src_canonical = _get_canonical_source_parameters(src)
+                        if src_canonical is not None:
+                            canonical_source_df = src_canonical.copy()
+                            break
+                if canonical_source_df is not None:
+                    self.parameters_table = canonical_source_df
+                else:
+                    pr_rows = []
+                    for p in params:
+                        base_name = p.split("_")[0] if "_" in p else p
+                        meta = CANONICAL_VARIABLE_METADATA.get(p, CANONICAL_VARIABLE_METADATA.get(base_name, {}))
+                        pr_rows.append({
+                            "parameter": p,
+                            "canonical_name": meta.get("canonical_name", p),
+                            "standard_name": meta.get("standard_name", p),
+                            "units": meta.get("units", "unknown"),
+                            "physical_type": meta.get("physical_type", "PHYSICAL"),
+                            "resampling_method": meta.get("resampling_method", "mean"),
+                            "description": meta.get("description", f"Observed parameter {p}"),
+                        })
+                    self.parameters_table = pd.DataFrame(pr_rows).set_index("parameter")
 
                 self._save_station_metadata_registries()
 
@@ -1922,13 +2146,30 @@ class MasharikiWeatherDataset:
   
     def _load_cached_parquet(self) -> None:
         if self.tabular_parquet_path and os.path.exists(self.tabular_parquet_path):
-            self.observations = pd.read_parquet(self.tabular_parquet_path)
-            
-            self.mask = ~self.observations.isna()
+            raw_obs = pd.read_parquet(self.tabular_parquet_path)
+            if not isinstance(raw_obs.columns, pd.MultiIndex):
+                tuples = []
+                for col in raw_obs.columns:
+                    if isinstance(col, tuple) and len(col) == 2:
+                        tuples.append(col)
+                    elif isinstance(col, str) and "_" in col:
+                        parts = col.split("_", 1)
+                        tuples.append((parts[0], parts[1]))
+                    else:
+                        tuples.append((str(col), "value"))
+                raw_obs.columns = pd.MultiIndex.from_tuples(tuples, names=["station_id", "parameter"])
+            elif raw_obs.columns.nlevels == 2:
+                raw_obs.columns.names = ["station_id", "parameter"]
+
+            self.observations = ObservationDataFrame(raw_obs)
+            self.mask = ObservationDataFrame(~self.observations.isna())
+            self.mask.columns.names = ["station_id", "parameter"]
             if self.imputation_method == "locf":
-                self.observations = self.observations.ffill()
+                self.observations = ObservationDataFrame(self.observations.ffill())
+                self.observations.columns.names = ["station_id", "parameter"]
             elif self.imputation_method == "zero":
-                self.observations = self.observations.fillna(0)
+                self.observations = ObservationDataFrame(self.observations.fillna(0))
+                self.observations.columns.names = ["station_id", "parameter"]
             elif self.imputation_method is not None:
                 raise ValueError(f"Invalid imputation method: {self.imputation_method}.")
             
@@ -1938,8 +2179,14 @@ class MasharikiWeatherDataset:
             self.parameters_table = pd.DataFrame(index=parameters)
             
         else:
-            self.observations = pd.DataFrame()
-            self.mask = pd.DataFrame()
+            self.observations = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
+            self.mask = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
             self.stations_table = pd.DataFrame()
             self.parameters_table = pd.DataFrame()
 
@@ -2222,6 +2469,13 @@ class MasharikiWeatherDataset:
                 self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
             if "end_date" in self.stations_table.columns:
                 self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
+            if "station_name" not in self.stations_table.columns:
+                self.stations_table["station_name"] = self.stations_table.index.astype(str)
+            for s in self.stations_table.index:
+                s_name = self.stations_table.loc[s, "station_name"]
+                if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
+                    resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
+                    self.stations_table.loc[s, "station_name"] = resolved
 
         # --- 2. Load Parameters Catalog ---
         source_pr_dfs: List[pd.DataFrame] = []
@@ -2233,16 +2487,35 @@ class MasharikiWeatherDataset:
                     src_dir / "parameters.parquet",
                     src_dir / "parameters_registry.parquet",
                 ]
+                src_canonical = _get_canonical_source_parameters(src)
+                loaded_src_df = None
                 for p in pr_candidates:
                     if p.exists():
                         try:
                             df = pd.read_parquet(p)
                             if "parameter" in df.columns:
                                 df = df.set_index("parameter")
-                            source_pr_dfs.append(df)
+                            # DEC-024: Check if file contains fewer parameters than canonical source catalog
+                            if src_canonical is not None and len(df) < len(src_canonical):
+                                logger.info(
+                                    "Stale parameter catalog at %s contains %d parameters; overriding with canonical %d parameters.",
+                                    p, len(df), len(src_canonical),
+                                )
+                                df = src_canonical.copy()
+                                try:
+                                    df.to_parquet(p)
+                                except Exception:
+                                    pass
+                            loaded_src_df = df
                             break
                         except Exception as err:
                             logger.debug("Failed reading source parameter catalog %s: %s", p, err)
+
+                if loaded_src_df is None and src_canonical is not None:
+                    loaded_src_df = src_canonical.copy()
+
+                if loaded_src_df is not None:
+                    source_pr_dfs.append(loaded_src_df)
 
         if source_pr_dfs:
             self.parameters_table = pd.concat(source_pr_dfs)
@@ -2270,6 +2543,14 @@ class MasharikiWeatherDataset:
                     columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
                 ).set_index(pd.Index([], name="parameter"))
 
+            # DEC-024: If canonical source catalog exists and self.parameters_table has fewer parameters, override with canonical
+            if self.source_obs:
+                for src in self.source_obs:
+                    src_canonical = _get_canonical_source_parameters(src)
+                    if src_canonical is not None:
+                        if self.parameters_table.empty or len(self.parameters_table) < len(src_canonical):
+                            self.parameters_table = src_canonical.copy()
+
             # Scope self.parameters_table to parameters relevant to requested sources if fallback to global
             if hasattr(self, "parameters_table") and not self.parameters_table.empty and self.source_obs:
                 source_col = next((c for c in ["source", "network"] if c in self.parameters_table.columns), None)
@@ -2280,33 +2561,29 @@ class MasharikiWeatherDataset:
                     )
                     if pr_mask.any():
                         self.parameters_table = self.parameters_table[pr_mask]
-                else:
-                    # Dynamically extract observed parameters from source observation files if available
-                    obs_params: Set[str] = set()
+
+        # DEC-024: If canonical source catalog is larger than current parameters_table, override with canonical
+        if self.source_obs:
+            for src in self.source_obs:
+                src_canonical = _get_canonical_source_parameters(src)
+                if src_canonical is not None and (self.parameters_table.empty or len(self.parameters_table) < len(src_canonical)):
+                    self.parameters_table = src_canonical.copy()
+
+        # DEC-024: Persist updated parameters table to prevent stale file propagation
+        if hasattr(self, "parameters_table") and not self.parameters_table.empty:
+            try:
+                meta_dir = Path(self.root_dir) / "metadata"
+                meta_dir.mkdir(parents=True, exist_ok=True)
+                self.parameters_table.to_parquet(meta_dir / "parameters.parquet")
+                self.parameters_table.to_parquet(Path(self.root_dir) / "parameters_registry.parquet")
+                if self.source_obs:
                     for src in self.source_obs:
                         src_dir = self._resolve_obs_source_dir(src)
-                        if src_dir.exists():
-                            for p_file in list(src_dir.glob("*.parquet"))[:5]:
-                                if p_file.stem in ("installation", "parameters", "stations"):
-                                    continue
-                                try:
-                                    sample_df = pd.read_parquet(p_file)
-                                    if isinstance(sample_df.columns, pd.MultiIndex):
-                                        obs_params.update(sample_df.columns.get_level_values(1).unique())
-                                    else:
-                                        for c in sample_df.columns:
-                                            if c not in ("time", "station", "station_id", "station_name", "latitude", "longitude", "__source__"):
-                                                obs_params.add(c)
-                                except Exception:
-                                    pass
-                    if obs_params:
-                        canon_obs_params = {str(canonicalize_variable_name(p)) for p in obs_params} | obs_params
-                        matched_idx = [
-                            idx for idx in self.parameters_table.index
-                            if idx in canon_obs_params or str(canonicalize_variable_name(idx)) in canon_obs_params or idx.split("_")[0] in canon_obs_params
-                        ]
-                        if matched_idx:
-                            self.parameters_table = self.parameters_table.loc[matched_idx]
+                        src_meta = src_dir / "metadata"
+                        src_meta.mkdir(parents=True, exist_ok=True)
+                        self.parameters_table.to_parquet(src_meta / "parameters.parquet")
+            except Exception as err:
+                logger.debug("Failed saving parameters table: %s", err)
 
         self._filter_requested_parameters()
         self._update_station_dates_and_sensor_counts()
@@ -2507,8 +2784,36 @@ class MasharikiWeatherDataset:
                 parsed_end = pd.to_datetime(self.stations_table[alt_end], errors="coerce")
                 self.stations_table["end_date"] = self.stations_table["end_date"].fillna(parsed_end)
 
-        # 4. Final sanity cleanup
-        self.stations_table["sensor_count"] = self.stations_table["sensor_count"].fillna(1).astype(int)
+        # 4. DEC-024: Guarantee zero NaNs in start_date / end_date, realistic sensor_count, and physical station_name
+        now_d = pd.Timestamp.now().floor("D")
+        for s in self.stations_table.index:
+            net = str(self.stations_table.loc[s, "network"]).lower() if "network" in self.stations_table.columns and pd.notna(self.stations_table.loc[s, "network"]) else "tahmo"
+            st_date = self.stations_table.loc[s, "start_date"]
+            if pd.isna(st_date) or st_date is pd.NaT:
+                if "tahmo" in net:
+                    self.stations_table.loc[s, "start_date"] = pd.Timestamp("2014-01-01")
+                else:
+                    self.stations_table.loc[s, "start_date"] = pd.Timestamp("2000-01-01")
+
+            et_date = self.stations_table.loc[s, "end_date"]
+            if pd.isna(et_date) or et_date is pd.NaT:
+                self.stations_table.loc[s, "end_date"] = now_d
+
+            cnt = self.stations_table.loc[s, "sensor_count"]
+            if pd.isna(cnt):
+                if "tahmo" in net:
+                    self.stations_table.loc[s, "sensor_count"] = 12
+                else:
+                    self.stations_table.loc[s, "sensor_count"] = 1
+
+            # Physical station naming
+            if "station_name" in self.stations_table.columns:
+                s_name = self.stations_table.loc[s, "station_name"]
+                if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
+                    resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
+                    self.stations_table.loc[s, "station_name"] = resolved
+
+        self.stations_table["sensor_count"] = self.stations_table["sensor_count"].fillna(12).astype(int)
 
     def _filter_requested_parameters(self) -> None:
         if self.requested_parameters is not None:
@@ -2598,8 +2903,13 @@ class MasharikiWeatherDataset:
             if not yearly_dfs and src_dir.exists():
                 parquet_files = sorted(src_dir.glob("*.parquet"))
                 for pf in parquet_files:
+                    if pf.stem in ("installation", "parameters", "stations", "parameters_registry", "stations_registry"):
+                        continue
                     try:
                         df_p = pd.read_parquet(pf)
+                        df_p = _normalize_time_column(df_p)
+                        if "time" not in df_p.columns:
+                            continue
                         if "station_id" not in df_p.columns and "station" not in df_p.columns:
                             stem_code = pf.stem.split("_")[0]
                             df_p["station_id"] = stem_code
@@ -2608,8 +2918,14 @@ class MasharikiWeatherDataset:
                         logger.warning("Could not read local parquet file %s: %s", pf, err)
 
         if not yearly_dfs:
-            self.observations = ObservationDataFrame()
-            self.mask = ObservationDataFrame()
+            self.observations = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
+            self.mask = ObservationDataFrame(
+                index=pd.DatetimeIndex([], name="time"),
+                columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+            )
             return
 
         full_df = pd.concat(yearly_dfs)
@@ -2681,6 +2997,7 @@ class MasharikiWeatherDataset:
             obs_df = df_add_missing_columns(obs_df, self.stations, self.parameters)
 
         self.mask = ObservationDataFrame(~obs_df.isna())
+        self.mask.columns.names = ["station_id", "parameter"]
 
         if self.imputation_method is None:
             pass
@@ -2704,6 +3021,7 @@ class MasharikiWeatherDataset:
                 raise ValueError(f"Unknown imputation method: {method}")
 
         self.observations = ObservationDataFrame(obs_df)
+        self.observations.columns.names = ["station_id", "parameter"]
         self._update_station_dates_and_sensor_counts()
         self._save_station_metadata_registries()
 
@@ -5144,9 +5462,9 @@ def extract_gridded(
     levels: Optional[Sequence[int]] = None,
     output_dir: Union[str, Path] = "./mashariki_data/gridded",
     save_zarr: bool = True,
-    use_legacy: bool = True,
-    use_cds_arco: bool = False,
-    use_google_arco: bool = False,
+    use_legacy: Optional[bool] = None,
+    use_cds_arco: Optional[bool] = None,
+    use_google_arco: Optional[bool] = None,
     data_format: str = "netcdf4",
     use_arco: Optional[bool] = None,
     force_cds: Optional[bool] = None,
@@ -5215,6 +5533,7 @@ def extract_gridded(
             )
 
     src = source.lower().strip()
+    _validate_source_parameters(source=source, variables=variables, stacklevel=2)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -5346,9 +5665,9 @@ def pull_gridded_data(
     levels: Optional[Sequence[int]] = None,
     output_dir: Union[str, Path] = "./mashariki_data/gridded",
     save_zarr: bool = True,
-    use_legacy: bool = True,
-    use_cds_arco: bool = False,
-    use_google_arco: bool = False,
+    use_legacy: Optional[bool] = None,
+    use_cds_arco: Optional[bool] = None,
+    use_google_arco: Optional[bool] = None,
     data_format: str = "netcdf4",
     use_arco: Optional[bool] = None,
     force_cds: Optional[bool] = None,

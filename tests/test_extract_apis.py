@@ -48,6 +48,7 @@ from masharikiweather.extract.apis.era5 import (
     era5_canonical_to_short,
     flatten_accum_ds,
     generate_n_days_dict,
+    get_era5_variable_candidates,
     harmonize_era5_dataset,
     open_era5_grib,
     open_era5_netcdf,
@@ -489,9 +490,159 @@ class TestERA5Extractor:
             ext_default.extract("2023-01-01", "2023-01-02", save_zarr=False, use_google_arco=True)
             mock_google_arco.assert_called_once()
 
-            # Test 3: use_legacy=True (default)
+            # Test 3: use_legacy=True (explicit)
             ext_default.extract("2023-01-01", "2023-01-02", save_zarr=False, use_legacy=True)
             mock_legacy.assert_called_once()
+
+    def test_era5_variable_candidates_generation(self) -> None:
+        """Verify multi-alias candidate generation per DEC-023."""
+        cands_t2m = get_era5_variable_candidates("2m_temperature")
+        assert "2m_temperature" in cands_t2m
+        assert "2t" in cands_t2m
+        assert "t2m" in cands_t2m
+
+        cands_tp = get_era5_variable_candidates("total_precipitation")
+        assert "total_precipitation" in cands_tp
+        assert "tp" in cands_tp
+
+        cands_u10 = get_era5_variable_candidates("10m_u_component_of_wind")
+        assert "10u" in cands_u10
+        assert "u10" in cands_u10
+
+        cands_from_short = get_era5_variable_candidates("t2m")
+        assert "2m_temperature" in cands_from_short
+        assert "t2m" in cands_from_short
+        assert "2t" in cands_from_short
+
+    def test_era5_check_google_arco_availability(self, tmp_path: Path) -> None:
+        """Verify Google ARCO availability checking against store horizon and variables."""
+        extractor = ERA5Extractor(output_dir=tmp_path)
+
+        times = pd.date_range("2020-01-01", "2023-12-31", freq="1D")
+        mock_ds = xr.Dataset(
+            data_vars={
+                "2m_temperature": (("time", "lat", "lon"), np.zeros((len(times), 2, 2), dtype=np.float32)),
+                "total_precipitation": (("time", "lat", "lon"), np.zeros((len(times), 2, 2), dtype=np.float32)),
+            },
+            coords={"time": times, "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+
+        with patch.object(extractor, "_get_arco_dataset", return_value=mock_ds):
+            # In range and variables present -> True
+            assert extractor.check_google_arco_availability("2023-01-01", "2023-01-05", variables=["2m_temperature"]) is True
+
+            # Out of temporal range (future) -> False
+            assert extractor.check_google_arco_availability("2025-01-01", "2025-01-05") is False
+
+            # Missing variable in store -> False
+            assert extractor.check_google_arco_availability("2023-01-01", "2023-01-05", variables=["nonexistent_var"]) is False
+
+        # Store raises network/permission error -> False
+        with patch.object(extractor, "_get_arco_dataset", side_effect=RuntimeError("GCS network timeout")):
+            assert extractor.check_google_arco_availability("2023-01-01", "2023-01-05") is False
+
+    def test_era5_priority_cascade_google_arco_available(self, tmp_path: Path) -> None:
+        """Verify Priority Cascade defaults to Google ARCO when available."""
+        extractor = ERA5Extractor(output_dir=tmp_path)
+        mock_ds = xr.Dataset(
+            data_vars={"2m_temperature": (("time", "lat", "lon"), np.ones((2, 2, 2), dtype=np.float32) * 290.0)},
+            coords={"time": pd.date_range("2023-01-01", periods=2, freq="1h"), "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+
+        with patch.object(extractor, "check_google_arco_availability", return_value=True) as mock_check, \
+             patch.object(extractor, "extract_google_arco_slice", return_value=mock_ds) as mock_g_extract, \
+             patch.object(extractor, "extract_cds_slice") as mock_cds:
+
+            res = extractor.extract("2023-01-01", "2023-01-02", save_zarr=False)
+            mock_check.assert_called_once()
+            mock_g_extract.assert_called_once()
+            mock_cds.assert_not_called()
+            assert isinstance(res, xr.Dataset)
+            assert "2m_temperature" in res.data_vars
+
+    def test_era5_priority_cascade_fallback_to_cds_legacy(self, tmp_path: Path) -> None:
+        """Verify Priority Cascade falls back to CDS Legacy when Google ARCO is unavailable."""
+        extractor = ERA5Extractor(output_dir=tmp_path)
+        mock_ds = xr.Dataset(
+            data_vars={"2m_temperature": (("time", "lat", "lon"), np.ones((2, 2, 2), dtype=np.float32) * 290.0)},
+            coords={"time": pd.date_range("2023-01-01", periods=2, freq="1h"), "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+
+        with patch.object(extractor, "check_google_arco_availability", return_value=False) as mock_check, \
+             patch.object(extractor, "extract_cds_slice", return_value=[tmp_path / "mock.nc"]) as mock_cds, \
+             patch("masharikiweather.extract.apis.era5.open_era5_netcdf", return_value=mock_ds) as mock_open:
+
+            res = extractor.extract("2023-01-01", "2023-01-02", save_zarr=False)
+            mock_check.assert_called_once()
+            mock_cds.assert_called_once()
+            mock_open.assert_called_once()
+            assert isinstance(res, xr.Dataset)
+
+    def test_era5_priority_cascade_fallback_to_cds_arco(self, tmp_path: Path) -> None:
+        """Verify Priority Cascade falls back to CDS ARCO when both Google ARCO and CDS Legacy fail."""
+        extractor = ERA5Extractor(output_dir=tmp_path)
+        mock_ds = xr.Dataset(
+            data_vars={"2m_temperature": (("time", "lat", "lon"), np.ones((2, 2, 2), dtype=np.float32) * 290.0)},
+            coords={"time": pd.date_range("2023-01-01", periods=2, freq="1h"), "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+
+        with patch.object(extractor, "check_google_arco_availability", return_value=False), \
+             patch.object(extractor, "extract_cds_slice", side_effect=CopernicusCDSError("Quota exceeded")), \
+             patch.object(extractor, "extract_cds_arco_slice", return_value=mock_ds) as mock_arco:
+
+            res = extractor.extract("2023-01-01", "2023-01-02", save_zarr=False)
+            mock_arco.assert_called_once()
+            assert isinstance(res, xr.Dataset)
+
+    def test_era5_priority_cascade_all_failed_raises_runtime_error(self, tmp_path: Path) -> None:
+        """Verify actionable RuntimeError is raised when all backends in priority cascade fail."""
+        extractor = ERA5Extractor(output_dir=tmp_path)
+
+        with patch.object(extractor, "check_google_arco_availability", return_value=False), \
+             patch.object(extractor, "extract_cds_slice", side_effect=CopernicusCDSError("Cost limit")), \
+             patch.object(extractor, "extract_cds_arco_slice", side_effect=RuntimeError("obstore network 504")):
+
+            with pytest.raises(RuntimeError, match="All ERA5 extraction backends failed in priority cascade"):
+                extractor.extract("2023-01-01", "2023-01-02", save_zarr=False)
+
+    def test_cds_arco_cadl_multi_alias_variable_resolution(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """
+        Verify CADL multi-alias variable resolution in _extract_single_cds_arco_store per DEC-023.
+        CADL stores use 't2m' instead of GRIB '2t'. Both '2m_temperature' and 'total_precipitation'
+        must be extracted and harmonized cleanly without being dropped.
+        """
+        from masharikiweather.extract.apis.base import SpatialBoundingBox
+        monkeypatch.setenv("CDSAPI_KEY", "dummy-bearer-key")
+
+        mock_cadl_ds = xr.Dataset(
+            data_vars={
+                "t2m": (("time", "latitude", "longitude"), np.ones((2, 2, 2), dtype=np.float32) * 295.0),
+                "tp": (("time", "latitude", "longitude"), np.zeros((2, 2, 2), dtype=np.float32)),
+            },
+            coords={
+                "time": pd.date_range("2023-01-01", periods=2, freq="1h"),
+                "latitude": [1.0, 0.0],
+                "longitude": [36.0, 37.0],
+            },
+        )
+
+        with patch("obstore.store.HTTPStore"), \
+             patch("zarr.storage.ObjectStore"), \
+             patch("xarray.open_zarr", return_value=mock_cadl_ds):
+
+            extractor = ERA5Extractor(use_cds_arco=True)
+            box = SpatialBoundingBox(lat_min=0.0, lat_max=1.0, lon_min=36.0, lon_max=37.0)
+
+            res = extractor.extract_cds_arco_slice(
+                bbox=box,
+                start_date="2023-01-01",
+                end_date="2023-01-02",
+                variables=["2m_temperature", "total_precipitation"],
+            )
+
+            assert "2m_temperature" in res.data_vars, "2m_temperature was dropped during CADL extraction!"
+            assert "total_precipitation" in res.data_vars, "total_precipitation was dropped during CADL extraction!"
+            assert len(res.data_vars) == 2
 
 
 
@@ -911,10 +1062,11 @@ class TestTAHMOExtractor:
             assert pd.to_datetime(st3["end_date"]) == pd.Timestamp("2022-05-01")
             assert st3["sensor_count"] == 2
 
-            # Station 4: since_date, variables list of 4, no end_date
+            # Station 4: since_date, variables list of 4, end_date defaults to current date per DEC-024
             st4 = df_st[df_st["station_code"] == "TA00004"].iloc[0]
             assert pd.to_datetime(st4["start_date"]) == pd.Timestamp("2020-01-01")
-            assert pd.isna(st4["end_date"])
+            assert not pd.isna(st4["end_date"])
+            assert pd.to_datetime(st4["end_date"]).date() == pd.Timestamp.now().date()
             assert st4["sensor_count"] == 4
 
             # Station 5: start_date, sensor_count integer
@@ -922,11 +1074,12 @@ class TestTAHMOExtractor:
             assert pd.to_datetime(st5["start_date"]) == pd.Timestamp("2021-01-01")
             assert st5["sensor_count"] == 5
 
-            # Station 6: no dates, no sensors -> NaT and None/NaN
+            # Station 6: DEC-024 defaults missing dates to network inception (2014-01-01), current date, and 12 sensors
             st6 = df_st[df_st["station_code"] == "TA00006"].iloc[0]
-            assert pd.isna(st6["start_date"])
-            assert pd.isna(st6["end_date"])
-            assert pd.isna(st6["sensor_count"]) or st6["sensor_count"] is None
+            assert pd.to_datetime(st6["start_date"]).strftime("%Y-%m-%d") == "2014-01-01"
+            assert not pd.isna(st6["end_date"])
+            assert pd.to_datetime(st6["end_date"]).date() == pd.Timestamp.now().date()
+            assert st6["sensor_count"] == 12
 
     def test_tahmo_generate_metadata_catalogs_dec022(self, tmp_path: Path) -> None:
         """
@@ -992,17 +1145,19 @@ class TestTAHMOExtractor:
         assert pd.to_datetime(r1["start_date"]) == pd.Timestamp("2016-01-01 00:00:00+0000", tz="UTC")
         assert pd.to_datetime(r1["end_date"]) == pd.Timestamp("2022-12-31 00:00:00+0000", tz="UTC")
 
-        # Station 2: explicit start, end is NaT, string sensor_count parsed to 3
+        # Station 2: explicit start, end defaults to current date per DEC-024, string sensor_count parsed to 3
         r2 = df_inst[df_inst["station_id"] == "TA00002"].iloc[0]
         assert r2["sensor_count"] == 3
         assert pd.to_datetime(r2["start_date"]).strftime("%Y-%m-%d") == "2018-05-10"
-        assert pd.isna(r2["end_date"])
+        assert not pd.isna(r2["end_date"])
+        assert pd.to_datetime(r2["end_date"]).date() == pd.Timestamp.now().date()
 
-        # Station 3: missing dates -> NaT, missing sensor_count -> defaults to 1
+        # Station 3: missing dates -> defaults to 2014-01-01 and current date, sensor_count -> defaults to 12
         r3 = df_inst[df_inst["station_id"] == "TA00003"].iloc[0]
-        assert r3["sensor_count"] == 1
-        assert pd.isna(r3["start_date"])
-        assert pd.isna(r3["end_date"])
+        assert r3["sensor_count"] == 12
+        assert pd.to_datetime(r3["start_date"]).strftime("%Y-%m-%d") == "2014-01-01"
+        assert not pd.isna(r3["end_date"])
+        assert pd.to_datetime(r3["end_date"]).date() == pd.Timestamp.now().date()
 
         # Parameters catalog check: exactly 33 variables
         df_param = pd.read_parquet(param_p)
@@ -1016,6 +1171,100 @@ class TestTAHMOExtractor:
             "sr", "tc", "td", "te", "tp", "uv", "vp", "wd", "wg", "wl",
             "wq", "ws", "wv",
         }
+
+    def test_tahmo_dec024_maximum_juice_strategy(self, tmp_path: Path) -> None:
+        """
+        Verify DEC-024 'Maximum Juice' throughput strategy:
+        When variables is None or 'all', omit the 'variable' query param to pull all 33
+        channels in a single request. When an explicit single variable is requested, pass it.
+        """
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
+        recorded_params = []
+
+        def mock_request(endpoint, params=None):
+            recorded_params.append(dict(params or {}))
+            return {
+                "results": [
+                    {
+                        "series": [
+                            {
+                                "columns": ["time", "quality", "variable", "sensor", "value"],
+                                "values": [
+                                    ["2024-01-01T00:00:00Z", 1, "te", "S1", 21.0],
+                                    ["2024-01-01T00:00:00Z", 1, "rh", "S2", 65.0],
+                                ],
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        with patch.object(extractor, "_request", side_effect=mock_request):
+            # 1. Querying all variables: 'variable' param must be omitted for 33x throughput
+            extractor.extract_station("TA00001", "2024-01-01", "2024-01-02", variables=None)
+            assert len(recorded_params) > 0
+            assert "variable" not in recorded_params[-1]
+
+            # 2. Querying 'all': 'variable' param must also be omitted
+            extractor.extract_station("TA00001", "2024-01-01", "2024-01-02", variables="all")
+            assert "variable" not in recorded_params[-1]
+
+            # 3. Explicit single variable requested: 'variable' param should be included
+            extractor.extract_station("TA00001", "2024-01-01", "2024-01-02", variables=["2m_temperature"])
+            assert "variable" in recorded_params[-1]
+            assert recorded_params[-1]["variable"] == "te"
+
+    def test_tahmo_dec023_physical_location_naming(self, tmp_path: Path) -> None:
+        """Verify human-readable physical station naming per DEC-023."""
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
+        mock_raw = {
+            "data": [
+                {
+                    "code": "TA00001",
+                    "name": "Fallback Station Name",
+                    "location": {
+                        "name": "Benso Senior High School",
+                        "city": "Benso",
+                        "latitude": 5.15,
+                        "longitude": -1.95,
+                        "elevation": 80.0,
+                        "countrycode": "GH",
+                    },
+                },
+                {
+                    "code": "TA00002",
+                    "name": "Station With City Only",
+                    "location": {
+                        "city": "Nanyuki Town",
+                        "latitude": 0.01,
+                        "longitude": 37.07,
+                        "elevation": 1947.0,
+                        "countrycode": "KE",
+                    },
+                },
+            ]
+        }
+        with patch.object(extractor, "_request", return_value=mock_raw):
+            df_st = extractor.get_stations()
+            # Prioritizes location.name
+            st1 = df_st[df_st["station_code"] == "TA00001"].iloc[0]
+            assert st1["name"] == "Benso Senior High School"
+            assert st1["station_name"] == "Benso Senior High School"
+
+            # Prioritizes location.city when location.name is missing
+            st2 = df_st[df_st["station_code"] == "TA00002"].iloc[0]
+            assert st2["name"] == "Station With City Only"
+
+            # Check generate_metadata_catalogs writes human-readable names to both installation and stations parquet
+            inst_p, param_p = extractor.generate_metadata_catalogs(stations_df=df_st, output_dir=tmp_path / "meta_naming")
+            assert inst_p.exists()
+            stations_p = tmp_path / "meta_naming" / "stations.parquet"
+            assert stations_p.exists()
+
+            df_inst = pd.read_parquet(inst_p)
+            assert df_inst[df_inst["station_id"] == "TA00001"]["station_name"].iloc[0] == "Benso Senior High School"
+            df_stations = pd.read_parquet(stations_p)
+            assert df_stations[df_stations["station_id"] == "TA00001"]["station_name"].iloc[0] == "Benso Senior High School"
 
 
 # ==============================================================================

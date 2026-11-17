@@ -323,6 +323,37 @@ def era5_canonical_to_short(var: str) -> str:
     return ERA5_CANONICAL_TO_CDS_SHORT.get(var, var)
 
 
+def get_era5_variable_candidates(var: str) -> List[str]:
+    """
+    Generate all possible identifier aliases for an ERA5 variable across canonical,
+    legacy GRIB short codes, and CADL ARCO Zarr variable names.
+
+    Mathematical docstring:
+        Candidates(V) = {V, canonical(V)} U {k | ERA5_CDS_SHORT_TO_CANONICAL[k] == canonical(V)}
+                        U {ERA5_CANONICAL_TO_CDS_SHORT[V]}
+
+    Parameters
+    ----------
+    var : str
+        Variable identifier (e.g., '2m_temperature', '2t', 't2m', 'tp').
+
+    Returns
+    -------
+    List[str]
+        Ordered, deduplicated list of candidate variable identifiers.
+    """
+    canon = canonicalize_era5_variable(var)
+    candidates: List[str] = [var, canon]
+    for k, v in ERA5_CDS_SHORT_TO_CANONICAL.items():
+        if v == canon:
+            candidates.append(k)
+    if var in ERA5_CANONICAL_TO_CDS_SHORT:
+        candidates.append(ERA5_CANONICAL_TO_CDS_SHORT[var])
+    if canon in ERA5_CANONICAL_TO_CDS_SHORT:
+        candidates.append(ERA5_CANONICAL_TO_CDS_SHORT[canon])
+    return list(dict.fromkeys(candidates))
+
+
 def harmonize_era5_dataset(ds: xr.Dataset, to_canonical: bool = True) -> xr.Dataset:
     """
     Bidirectionally harmonize variable names in an ERA5 xarray.Dataset.
@@ -465,9 +496,9 @@ def resolve_cds_arco_url(
         if levels is not None and len(levels) > 0:
             chosen_stream = "pl"
         elif variables is not None and variables != "all" and not (isinstance(variables, (list, tuple)) and "all" in variables):
-            canon_vars = [canonicalize_era5_variable(v) for v in variables]
-            short_vars = [era5_canonical_to_short(v) for v in canon_vars]
-            all_req = set(canon_vars + short_vars)
+            all_req: Set[str] = set()
+            for v in variables:
+                all_req.update(get_era5_variable_candidates(v))
 
             wave_vars_set = {
                 "swh", "mwd", "mwp",
@@ -957,9 +988,9 @@ class ERA5Extractor(BaseExtractor):
         pressure_fields: Optional[Sequence[str]] = None,
         wave_fields: Optional[Sequence[str]] = None,
         pressure_levels: Optional[Sequence[int]] = None,
-        use_legacy: bool = True,
-        use_cds_arco: bool = False,
-        use_google_arco: bool = False,
+        use_legacy: Optional[bool] = None,
+        use_cds_arco: Optional[bool] = None,
+        use_google_arco: Optional[bool] = None,
         data_format: str = "netcdf4",
         arco_url: str = DEFAULT_GOOGLE_ARCO_URL,
         cds_arco_url: Optional[str] = None,
@@ -979,9 +1010,10 @@ class ERA5Extractor(BaseExtractor):
         self.wave_fields = list(wave_fields if wave_fields is not None else DEFAULT_WAVE_FIELDS)
         self.pressure_levels = list(pressure_levels if pressure_levels is not None else DEFAULT_PRESSURE_LEVELS)
 
-        self.use_legacy = use_legacy
-        self.use_cds_arco = use_cds_arco
-        self.use_google_arco = use_google_arco
+        self._user_specified_legacy = use_legacy is not None
+        self.use_legacy = use_legacy if use_legacy is not None else True
+        self.use_cds_arco = bool(use_cds_arco) if use_cds_arco is not None else False
+        self.use_google_arco = bool(use_google_arco) if use_google_arco is not None else False
         self.data_format = data_format
 
         self.prefer_arco = prefer_arco if prefer_arco is not None else False
@@ -995,6 +1027,85 @@ class ERA5Extractor(BaseExtractor):
         self.cds_url = cds_url
         self.cds_rc_file = cds_rc_file
         self._arco_ds: Optional[xr.Dataset] = None
+
+    def check_google_arco_availability(
+        self,
+        start_date: Union[str, datetime, date, pd.Timestamp],
+        end_date: Union[str, datetime, date, pd.Timestamp],
+        variables: Optional[Sequence[str]] = None,
+        bbox: Optional[SpatialBoundingBox] = None,
+    ) -> bool:
+        """
+        Check whether requested temporal interval and variables are available in Google ARCO ERA5.
+
+        Verifies:
+        1. Requested dates fall within valid ERA5 operational coverage (1940 to present).
+        2. Remote Google Cloud ARCO-ERA5 Zarr store is accessible without network/permission errors.
+        3. Store temporal horizon covers the requested start and end timestamps.
+        4. If variables are specified, candidate identifiers for each requested variable exist in the dataset.
+
+        Mathematical docstring:
+            Input: start_date, end_date, variables: Sequence[V], bbox: SpatialBoundingBox
+            Output: bool (True if all candidates exist in ds.data_vars and [t_start, t_end] in [t_min, t_max])
+
+        Parameters
+        ----------
+        start_date : Union[str, datetime, date, pd.Timestamp]
+            Initial observation timestamp.
+        end_date : Union[str, datetime, date, pd.Timestamp]
+            Terminal observation timestamp.
+        variables : Optional[Sequence[str]]
+            Variables to extract.
+        bbox : Optional[SpatialBoundingBox]
+            Spatial bounding box (unused for global store availability).
+
+        Returns
+        -------
+        bool
+            True if Google ARCO ERA5 covers the request; False otherwise.
+        """
+        try:
+            s_dt, e_dt = parse_date_range(start_date, end_date)
+            now_dt = pd.Timestamp.now(tz=e_dt.tz if e_dt.tzinfo else None)
+            if s_dt < pd.Timestamp("1940-01-01") or e_dt > now_dt:
+                return False
+
+            ds = self._get_arco_dataset()
+            if ds is None:
+                return False
+
+            time_dim = "time" if "time" in ds.coords or "time" in ds.dims else None
+            if time_dim is not None:
+                time_coord = ds[time_dim]
+                t_min = pd.to_datetime(time_coord[0].values)
+                t_max = pd.to_datetime(time_coord[-1].values)
+
+                s_naive = s_dt.tz_localize(None) if s_dt.tzinfo else s_dt
+                e_naive = e_dt.tz_localize(None) if e_dt.tzinfo else e_dt
+                t_min_naive = t_min.tz_localize(None) if t_min.tzinfo else t_min
+                t_max_naive = t_max.tz_localize(None) if t_max.tzinfo else t_max
+
+                if s_naive < t_min_naive or e_naive > t_max_naive:
+                    logger.info(
+                        "Google ARCO ERA5 temporal bounds [%s, %s] do not cover requested interval [%s, %s].",
+                        t_min_naive, t_max_naive, s_naive, e_naive,
+                    )
+                    return False
+
+            if variables is not None and variables != "all" and not (isinstance(variables, (list, tuple)) and "all" in variables):
+                for v in variables:
+                    cands = get_era5_variable_candidates(v)
+                    if not any(c in ds.data_vars for c in cands):
+                        logger.info(
+                            "Variable '%s' (candidates: %s) is not present in Google ARCO ERA5 catalog.",
+                            v, cands,
+                        )
+                        return False
+
+            return True
+        except Exception as exc:
+            logger.info("Google ARCO ERA5 availability check failed: %s", exc)
+            return False
 
     def _get_arco_dataset(self) -> xr.Dataset:
         """Lazily initialize anonymous Google Cloud ARCO-ERA5 connection."""
@@ -1029,13 +1140,19 @@ class ERA5Extractor(BaseExtractor):
         ds = self._get_arco_dataset()
         if variables is None or variables == "all" or (isinstance(variables, (list, tuple)) and "all" in variables):
             requested_vars = list(set(self.single_fields + self.pressure_fields))
+            valid_vars = [v for v in requested_vars if v in ds.data_vars]
         else:
-            requested_vars = [canonicalize_era5_variable(v) for v in variables]
-        valid_vars = [v for v in requested_vars if v in ds.data_vars]
+            matched: List[str] = []
+            for v in variables:
+                for cand in get_era5_variable_candidates(v):
+                    if cand in ds.data_vars:
+                        matched.append(cand)
+                        break
+            valid_vars = list(dict.fromkeys(matched))
         if not valid_vars:
-            raise ValueError(f"None of the requested variables {requested_vars} exist in ARCO catalog.")
+            raise ValueError(f"None of the requested variables {variables} exist in ARCO catalog.")
 
-        missing_vars = set(requested_vars) - set(valid_vars)
+        missing_vars = [v for v in (variables or []) if not any(c in valid_vars for c in get_era5_variable_candidates(v))]
         if missing_vars:
             logger.warning("Variables missing from ARCO catalog and skipped: %s", missing_vars)
 
@@ -1072,6 +1189,7 @@ class ERA5Extractor(BaseExtractor):
             dim_order.extend(["lat", "lon"])
         sliced = sliced.transpose(*dim_order)
 
+        sliced = harmonize_era5_dataset(sliced, to_canonical=True)
         return sliced
 
     def extract_google_arco_slice(
@@ -1129,23 +1247,20 @@ class ERA5Extractor(BaseExtractor):
         if variables is None or variables == "all" or (isinstance(variables, (list, tuple)) and "all" in variables):
             requested_vars = list(ds.data_vars)
         else:
-            canon_vars = [canonicalize_era5_variable(v) for v in variables]
-            short_vars = [era5_canonical_to_short(v) for v in canon_vars]
             matched: List[str] = []
             for v in variables:
-                c = canonicalize_era5_variable(v)
-                s = era5_canonical_to_short(v)
-                if s in ds.data_vars:
-                    matched.append(s)
-                elif c in ds.data_vars:
-                    matched.append(c)
-                elif v in ds.data_vars:
-                    matched.append(v)
-                elif c in ERA5_CANONICAL_TO_CDS_SHORT and ERA5_CANONICAL_TO_CDS_SHORT[c] in ds.data_vars:
-                    matched.append(ERA5_CANONICAL_TO_CDS_SHORT[c])
+                cands = get_era5_variable_candidates(v)
+                for cand in cands:
+                    if cand in ds.data_vars:
+                        matched.append(cand)
+                        break
             matched = list(dict.fromkeys(matched))
             if not matched:
-                matched = [v for v in (canon_vars + short_vars) if v in ds.data_vars]
+                for v in variables:
+                    for cand in get_era5_variable_candidates(v):
+                        if cand in ds.data_vars:
+                            matched.append(cand)
+                matched = list(dict.fromkeys(matched))
             requested_vars = matched if matched else list(ds.data_vars)
 
         start_str = pd.to_datetime(start_date).strftime("%Y-%m-%dT%H:00:00")
@@ -1272,7 +1387,6 @@ class ERA5Extractor(BaseExtractor):
 
         # When stream is not explicit, detect if variables span multiple streams
         if user_stream is None and variables is not None and variables != "all" and not (isinstance(variables, (list, tuple)) and "all" in variables):
-            canon_vars = [canonicalize_era5_variable(v) for v in variables]
             wave_vars_set = {
                 "swh", "mwd", "mwp",
                 "significant_height_of_combined_wind_waves_and_swell",
@@ -1280,9 +1394,17 @@ class ERA5Extractor(BaseExtractor):
             }
             pl_vars_set = set(DEFAULT_PRESSURE_LEVEL_FIELDS) | {"q", "r", "t", "u", "v", "w", "z", "clwc", "ciwc"}
 
-            req_sfc = [v for v in variables if canonicalize_era5_variable(v) not in (wave_vars_set | pl_vars_set) and era5_canonical_to_short(v) not in (wave_vars_set | pl_vars_set)]
-            req_wav = [v for v in variables if canonicalize_era5_variable(v) in wave_vars_set or era5_canonical_to_short(v) in wave_vars_set]
-            req_pl = [v for v in variables if canonicalize_era5_variable(v) in pl_vars_set or era5_canonical_to_short(v) in pl_vars_set]
+            req_sfc = []
+            req_wav = []
+            req_pl = []
+            for v in variables:
+                cands = set(get_era5_variable_candidates(v))
+                if cands & wave_vars_set:
+                    req_wav.append(v)
+                elif cands & pl_vars_set:
+                    req_pl.append(v)
+                else:
+                    req_sfc.append(v)
 
             streams_needed = []
             if req_sfc:
@@ -1634,20 +1756,142 @@ class ERA5Extractor(BaseExtractor):
         e_str = e_dt.strftime("%Y%m%d")
 
         # Backend determination
-        is_cds_arco = use_cds_arco if use_cds_arco is not None else self.use_cds_arco
-        is_google_arco = use_google_arco if use_google_arco is not None else self.use_google_arco
-        is_legacy = use_legacy if use_legacy is not None else self.use_legacy
-
-        if force_cds is True:
+        # Explicit user selection in extract() or explicit user selection in __init__()
+        if force_cds is True or (force_cds is None and self.force_cds):
             chosen = "legacy"
-        elif is_cds_arco:
-            chosen = "cds_arco"
-        elif is_google_arco:
+        elif use_google_arco is True or prefer_arco is True:
             chosen = "google_arco"
-        elif prefer_arco is True or (prefer_arco is None and self.prefer_arco and not is_legacy):
+        elif use_cds_arco is True:
+            chosen = "cds_arco"
+        elif use_legacy is True:
+            chosen = "legacy"
+        elif use_legacy is None and self._user_specified_legacy and self.use_legacy:
+            chosen = "legacy"
+        elif use_cds_arco is None and self.use_cds_arco:
+            chosen = "cds_arco"
+        elif use_google_arco is None and (self.use_google_arco or self.prefer_arco):
             chosen = "google_arco"
         else:
-            chosen = "legacy"
+            chosen = "cascade"
+
+        # 0. Priority Cascade: Google ARCO -> CDS Legacy -> CDS ARCO
+        if chosen == "cascade":
+            logger.info("Executing ERA5 extraction via Priority Cascade (Google ARCO -> CDS Legacy -> CDS ARCO)...")
+            arco_available = False
+            try:
+                arco_available = self.check_google_arco_availability(
+                    start_date=start_date,
+                    end_date=end_date,
+                    variables=variables,
+                    bbox=box,
+                )
+            except Exception as check_err:
+                logger.info("Google ARCO availability check encountered error: %s", check_err)
+                arco_available = False
+
+            if arco_available:
+                try:
+                    logger.info("Priority cascade [1/3]: Extracting from Google Cloud ARCO...")
+                    ds_slice = self.extract_google_arco_slice(
+                        bbox=box,
+                        start_date=start_date,
+                        end_date=end_date,
+                        variables=variables,
+                        levels=levels,
+                    )
+                    if save_zarr:
+                        name = zarr_name or f"era5_google_arco_{s_str}_{e_str}.zarr"
+                        zarr_path = self.output_dir / name
+                        target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
+                        if "level" in ds_slice.dims:
+                            target_chunks["level"] = ds_slice.sizes["level"]
+                        chunked = ds_slice.chunk(target_chunks)
+                        for var in chunked.variables:
+                            chunked[var].encoding.clear()
+                        chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+                        return zarr_path
+                    return ds_slice
+                except Exception as arco_err:
+                    logger.warning(
+                        "Google ARCO extraction failed despite availability check: %s. Falling back to CDS Legacy...",
+                        arco_err,
+                    )
+            else:
+                logger.info(
+                    "Google ARCO ERA5 is unavailable or lagging for requested range [%s, %s]. Falling back to CDS Legacy...",
+                    s_str, e_str,
+                )
+
+            # Fallback 1: CDS Legacy API
+            cds_legacy_err_msg = ""
+            try:
+                fmt = (data_format or self.data_format or "netcdf4").lower().strip()
+                logger.info("Priority cascade [2/3]: Attempting CDS Legacy API extraction (format: %s)...", fmt)
+                downloaded = self.extract_cds_slice(
+                    bbox=box,
+                    start_date=start_date,
+                    end_date=end_date,
+                    variables=variables,
+                    n_days_per_chunk=chunk_days,
+                    data_format=fmt,
+                    cds_key=cds_key or self.cds_key,
+                    cds_url=cds_url or self.cds_url,
+                )
+                if fmt in ("netcdf4", "netcdf", "nc"):
+                    combined = open_era5_netcdf(downloaded, harmonize=True)
+                else:
+                    combined = open_era5_grib(downloaded, harmonize=True)
+
+                if save_zarr:
+                    name = zarr_name or f"era5_legacy_{s_str}_{e_str}.zarr"
+                    zarr_path = self.output_dir / name
+                    combined.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+                    return zarr_path
+                return combined
+            except Exception as legacy_err:
+                cds_legacy_err_msg = str(legacy_err)
+                logger.warning(
+                    "CDS Legacy API extraction failed: %s. Falling back to CDS ARCO...",
+                    legacy_err,
+                )
+
+            # Fallback 2: CDS ARCO via obstore
+            try:
+                logger.info("Priority cascade [3/3]: Attempting CDS ARCO Zarr extraction...")
+                ds_slice = self.extract_cds_arco_slice(
+                    bbox=box,
+                    start_date=start_date,
+                    end_date=end_date,
+                    variables=variables,
+                    levels=levels,
+                    stream=stream or self.stream,
+                    chunking=chunking or self.chunking,
+                    url=cds_arco_url or self.cds_arco_url,
+                    cds_key=cds_key or self.cds_key,
+                )
+                if save_zarr:
+                    name = zarr_name or f"era5_cds_arco_{s_str}_{e_str}.zarr"
+                    zarr_path = self.output_dir / name
+                    target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
+                    if "level" in ds_slice.dims:
+                        target_chunks["level"] = ds_slice.sizes["level"]
+                    chunked = ds_slice.chunk(target_chunks)
+                    for var in chunked.variables:
+                        chunked[var].encoding.clear()
+                    chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+                    return zarr_path
+                return ds_slice
+            except Exception as arco_err:
+                logger.error(
+                    "All ERA5 backends in priority cascade failed. Google ARCO: unavailable; CDS Legacy: %s; CDS ARCO: %s",
+                    cds_legacy_err_msg, arco_err,
+                )
+                raise RuntimeError(
+                    f"All ERA5 extraction backends failed in priority cascade. "
+                    f"Google ARCO: unavailable or failed; "
+                    f"CDS Legacy: {cds_legacy_err_msg}; "
+                    f"CDS ARCO: {arco_err}"
+                ) from arco_err
 
         # 1. CDS ARCO Backend
         if chosen == "cds_arco":

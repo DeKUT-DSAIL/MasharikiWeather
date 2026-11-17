@@ -170,7 +170,8 @@ class TestTahmoMetadataDEC022:
         assert (ds.stations_table["network"] == "tahmo").all()
 
         assert hasattr(ds, "parameters_table")
-        assert len(ds.parameters_table) == 2
+        # DEC-024: Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
+        assert len(ds.parameters_table) == 33
         assert "surface_pressure" in ds.parameters_table.index
         assert "2m_temperature" in ds.parameters_table.index
         assert "prcp" not in ds.parameters_table.index
@@ -215,7 +216,8 @@ class TestTahmoMetadataDEC022:
         assert "KE000063612" not in ds.stations_table.index
         assert (ds.stations_table["network"] == "tahmo").all()
 
-        assert len(ds.parameters_table) == 1
+        # DEC-024: Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
+        assert len(ds.parameters_table) == 33
         assert "surface_pressure" in ds.parameters_table.index
         assert "ghcn_prcp" not in ds.parameters_table.index
 

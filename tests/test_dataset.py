@@ -12,6 +12,7 @@ Run via: python -m pytest tests/test_dataset.py -v
 """
 import copy
 import math
+import warnings
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock
 
@@ -22,12 +23,17 @@ import xarray as xr
 
 from masharikiweather.dataset import (
     MasharikiWeatherDataset,
+    ObservationDataFrame,
     Windows,
     sliding_window_view,
     df_add_missing_columns,
+    extract_gridded,
     pull_station_data,
     pull_gridded_data,
     pull_weather_data,
+    SOURCE_SUPPORTED_VARIABLES,
+    _validate_source_parameters,
+    _resolve_physical_station_name,
 )
 from masharikiweather.extract.apis.base import SpatialBoundingBox
 
@@ -1132,7 +1138,8 @@ class TestPeakWeatherOOPInterface:
         assert ds.stations.size == 1
         assert isinstance(ds.stations, list)
         assert "2m_temperature" in ds.parameters
-        assert ds.parameters.size == 2
+        assert "total_precipitation" in ds.parameters
+        assert ds.parameters.size == 33
         assert isinstance(ds.parameters, list)
         assert isinstance(ds.installation, pd.DataFrame)
         assert "TA00001" in ds.installation.index
@@ -1495,6 +1502,271 @@ class TestDEC022MetadataAndTopography:
             assert "dem" in saved_df.columns, f"'dem' must be persisted in {p}"
             assert "Slope" in saved_df.columns, f"'Slope' must be persisted in {p}"
             assert "TPI_2000M" in saved_df.columns, f"'TPI_2000M' must be persisted in {p}"
+
+
+class TestDEC023AndDEC024Directives:
+    """
+    Unit tests for DEC-023 and DEC-024 directives:
+    1. Gridded source parameter capability validation and explicit UserWarnings.
+    2. Default ERA5 priority cascade wiring in extract_gridded and pull_gridded_data.
+    3. Descriptive physical station name resolution without NaNs or raw codes.
+    4. Strict two-level (station_id, parameter) MultiIndex across observation matrices.
+    5. Automatic override of stale parameters.parquet with canonical 33-variable catalog.
+    6. Complete elimination of NaNs in station dates and realistic sensor count defaults.
+    """
+
+    def test_source_parameter_validation_warning_imerg(self) -> None:
+        """Verify requesting unsupported variables from IMERG emits an explicit UserWarning."""
+        with pytest.warns(UserWarning) as record:
+            _validate_source_parameters(source="imerg", variables=["temperature"])
+        assert len(record) == 1
+        expected_msg = (
+            "Variable 'temperature' is not provided by source 'imerg'. "
+            "Available variables: ['precip', 'precipitation', 'precipitation_amount', 'precipitationcal', 'total_precipitation']."
+        )
+        assert str(record[0].message) == expected_msg
+
+        # Supported variables must not emit warnings
+        with warnings.catch_warnings(record=True) as record_clean:
+            warnings.simplefilter("always")
+            _validate_source_parameters(source="imerg", variables=["precipitationcal", "precip"])
+            assert len(record_clean) == 0
+
+    def test_source_parameter_validation_warning_chirps_and_tamsat(self) -> None:
+        """Verify parameter validation warnings for CHIRPS and TAMSAT sources."""
+        with pytest.warns(UserWarning) as record_chirps:
+            _validate_source_parameters(source="chirps", variables=["2m_temperature"])
+        assert len(record_chirps) == 1
+        assert "Variable '2m_temperature' is not provided by source 'chirps'" in str(record_chirps[0].message)
+
+        with pytest.warns(UserWarning) as record_tamsat:
+            _validate_source_parameters(source="tamsat", variables=["wind_speed"])
+        assert len(record_tamsat) == 1
+        assert "Variable 'wind_speed' is not provided by source 'tamsat'" in str(record_tamsat[0].message)
+
+    def test_extract_gridded_parameter_warning_propagation(self, tmp_path: Path) -> None:
+        """Verify extract_gridded triggers UserWarning when unsupported variable is requested."""
+        mock_ds = xr.Dataset(
+            data_vars={"precipitationCal": (("time", "lat", "lon"), np.zeros((1, 2, 2)))},
+            coords={"time": [pd.Timestamp("2023-01-01")], "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+        mock_res = MagicMock()
+        mock_res.open.return_value = mock_ds
+        mock_res.zarr_stores = []
+        mock_res.zarr_dir = str(tmp_path)
+
+        with patch("masharikiweather.extract.apis.imerg.IMERGExtractor.extract", return_value=mock_res):
+            with pytest.warns(UserWarning) as record:
+                extract_gridded(
+                    source="imerg",
+                    start_date="2023-01-01",
+                    end_date="2023-01-02",
+                    bbox=[0.0, 36.0, 1.0, 37.0],
+                    variables=["temperature"],
+                    output_dir=tmp_path,
+                    save_zarr=False,
+                )
+            assert len(record) >= 1
+            assert any("Variable 'temperature' is not provided by source 'imerg'" in str(w.message) for w in record)
+
+    def test_pull_gridded_data_default_era5_priority_cascade_wiring(self, tmp_path: Path) -> None:
+        """Verify pull_gridded_data propagates None backend flags by default for ERA5 cascade."""
+        with patch("masharikiweather.dataset.extract_gridded", return_value=xr.Dataset()) as mock_extract:
+            pull_gridded_data(
+                source="era5",
+                start_date="2023-01-01",
+                end_date="2023-01-02",
+                output_dir=tmp_path / "gridded",
+                save_zarr=False,
+            )
+            mock_extract.assert_called_once()
+            kwargs = mock_extract.call_args[1]
+            # Must propagate None so ERA5Extractor can execute its priority cascade
+            assert kwargs["use_legacy"] is None
+            assert kwargs["use_cds_arco"] is None
+            assert kwargs["use_google_arco"] is None
+
+        # Verify explicit flags are forwarded directly
+        with patch("masharikiweather.dataset.extract_gridded", return_value=xr.Dataset()) as mock_extract_explicit:
+            pull_gridded_data(
+                source="era5",
+                start_date="2023-01-01",
+                end_date="2023-01-02",
+                output_dir=tmp_path / "gridded",
+                save_zarr=False,
+                use_cds_arco=True,
+            )
+            mock_extract_explicit.assert_called_once()
+            kwargs_explicit = mock_extract_explicit.call_args[1]
+            assert kwargs_explicit["use_cds_arco"] is True
+            assert kwargs_explicit["use_legacy"] is None
+
+    def test_extract_gridded_era5_extractor_cascade_wiring(self, tmp_path: Path) -> None:
+        """Verify extract_gridded forwards None backend flags directly to ERA5Extractor."""
+        from masharikiweather.extract.apis.era5 import ERA5Extractor
+
+        mock_ds = xr.Dataset()
+        with patch.object(ERA5Extractor, "extract", return_value=mock_ds) as mock_extract_method, \
+             patch("masharikiweather.extract.apis.era5.ERA5Extractor.__init__", return_value=None) as mock_init:
+            extract_gridded(
+                source="era5",
+                start_date="2023-01-01",
+                end_date="2023-01-02",
+                output_dir=tmp_path / "gridded",
+                save_zarr=False,
+            )
+            mock_init.assert_called_once()
+            init_kwargs = mock_init.call_args[1]
+            assert init_kwargs["use_legacy"] is None
+            assert init_kwargs["use_cds_arco"] is None
+            assert init_kwargs["use_google_arco"] is None
+
+            mock_extract_method.assert_called_once()
+            extract_kwargs = mock_extract_method.call_args[1]
+            assert extract_kwargs["use_legacy"] is None
+            assert extract_kwargs["use_cds_arco"] is None
+            assert extract_kwargs["use_google_arco"] is None
+
+    def test_physical_station_names_resolution_priority(self) -> None:
+        """Verify _resolve_physical_station_name prioritizes human-readable names over codes and NaNs."""
+        # 1. Location name priority
+        rec1 = {
+            "station_code": "TA00001",
+            "name": "Fallback Name",
+            "location": {"name": "Benso Secondary School", "city": "Benso"},
+        }
+        assert _resolve_physical_station_name(rec1, fallback_id="TA00001") == "Benso Secondary School"
+
+        # 2. Location city priority
+        rec2 = {
+            "station_code": "TA00002",
+            "location": {"city": "Nairobi Chiromo"},
+        }
+        assert _resolve_physical_station_name(rec2, fallback_id="TA00002") == "Nairobi Chiromo"
+
+        # 3. Station label priority
+        rec3 = {
+            "station_code": "TA00003",
+            "label": "DeKUT Weather Observatory",
+        }
+        assert _resolve_physical_station_name(rec3, fallback_id="TA00003") == "DeKUT Weather Observatory"
+
+        # 4. Fallback code when no descriptive info
+        rec4 = {"station_code": "TA00004"}
+        assert _resolve_physical_station_name(rec4, fallback_id="TA00004") == "TA00004"
+
+        # 5. NaN handling
+        rec5 = {"station_name": np.nan, "name": None, "station_code": "TA00005"}
+        assert _resolve_physical_station_name(rec5, fallback_id="TA00005") == "TA00005"
+
+    def test_peakweather_two_level_multiindex_enforcement(self, tmp_path: Path) -> None:
+        """Verify strict two-level (station_id, parameter) MultiIndex across observations and mask."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        meta_dir = tmp_path / "metadata"
+        obs_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+
+        idx = pd.date_range("2023-01-01", periods=3, freq="h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("TA00001", "2m_temperature"), ("TA00001", "total_precipitation")])
+        df = pd.DataFrame([[24.5, 0.0], [25.0, 1.2], [23.8, 0.4]], index=idx, columns=cols)
+        flat_df = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat_df.to_parquet(obs_dir / "2023.parquet")
+
+        inst_df = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1680.0]},
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        assert isinstance(ds.observations, ObservationDataFrame)
+        assert isinstance(ds.observations.columns, pd.MultiIndex)
+        assert ds.observations.columns.nlevels == 2
+        assert list(ds.observations.columns.names) == ["station_id", "parameter"]
+
+        assert isinstance(ds.mask, ObservationDataFrame)
+        assert isinstance(ds.mask.columns, pd.MultiIndex)
+        assert ds.mask.columns.nlevels == 2
+        assert list(ds.mask.columns.names) == ["station_id", "parameter"]
+
+        # Slicing test on ObservationDataFrame
+        s_slice = ds.observations["TA00001", "2m_temperature"]
+        assert len(s_slice) == 3
+        st_df = ds.observations["TA00001"]
+        assert isinstance(st_df, ObservationDataFrame)
+
+    def test_dec024_stale_parameters_registry_override_33_variables(self, tmp_path: Path) -> None:
+        """Verify stale parameters catalog containing fewer variables is overwritten with canonical 33."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        meta_dir = tmp_path / "metadata"
+        obs_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+
+        idx = pd.date_range("2023-01-01", periods=2, freq="h", tz="UTC")
+        cols = pd.MultiIndex.from_tuples([("TA00001", "total_precipitation")])
+        df = pd.DataFrame([[0.0], [1.5]], index=idx, columns=cols)
+        flat_df = df.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
+        flat_df.to_parquet(obs_dir / "2023.parquet")
+
+        inst_df = pd.DataFrame(
+            {"latitude": [-1.28], "longitude": [36.82], "network": ["tahmo"], "elevation": [1680.0]},
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        # Create a stale parameters catalog with only 1 parameter
+        stale_param_df = pd.DataFrame(
+            {"standard_name": ["precipitation_amount"], "units": ["mm"]},
+            index=pd.Index(["total_precipitation"], name="parameter"),
+        )
+        stale_param_df.to_parquet(meta_dir / "parameters.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        # Must have overridden stale 1-variable catalog with the full 33-variable catalog
+        assert len(ds.parameters_table) == 33
+        assert "2m_temperature" in ds.parameters_table.index
+        assert "relative_humidity" in ds.parameters_table.index
+        assert "wind_speed" in ds.parameters_table.index
+        assert "total_precipitation" in ds.parameters_table.index
+
+        # Must have physically overwritten stale file on disk
+        persisted = pd.read_parquet(meta_dir / "parameters.parquet")
+        assert len(persisted) == 33
+
+    def test_dec024_zero_nans_in_station_dates_and_sensor_count_default(self, tmp_path: Path) -> None:
+        """Verify zero NaNs in station dates and sensor_count defaulting to 12 for TAHMO."""
+        obs_dir = tmp_path / "obs" / "tahmo"
+        meta_dir = tmp_path / "metadata"
+        obs_dir.mkdir(parents=True)
+        meta_dir.mkdir(parents=True)
+
+        inst_df = pd.DataFrame(
+            {
+                "latitude": [-1.28],
+                "longitude": [36.82],
+                "network": ["tahmo"],
+                "elevation": [1680.0],
+                "start_date": [pd.NaT],
+                "end_date": [pd.NaT],
+                "sensor_count": [np.nan],
+            },
+            index=pd.Index(["TA00001"], name="station_id"),
+        )
+        inst_df.to_parquet(meta_dir / "installation.parquet")
+
+        ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
+
+        st = ds.stations_table.loc["TA00001"]
+        # Must have zero NaNs in start_date and end_date
+        assert pd.notna(st["start_date"])
+        assert pd.notna(st["end_date"])
+        assert st["start_date"] == pd.Timestamp("2014-01-01")
+        assert st["end_date"] == pd.Timestamp.now().floor("D")
+
+        # Must reflect the 12-sensor payload default for TAHMO (never 1)
+        assert int(st["sensor_count"]) == 12
 
 
 # Run via python -m pytest tests/test_dataset.py -v
