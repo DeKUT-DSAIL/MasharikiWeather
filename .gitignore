@@ -223,6 +223,7 @@ mashariki_data/
 
 # Agents
 .agents/
+AGENTS.md
 
 # log
 agent_interaction_log.json
@@ -232,6 +233,8 @@ docs/_build/
 logs/
 specs/
 data/
+validation_data/
+*validation_data/
 internal_docs/
 docs/internal/
 
@@ -240,3 +243,9 @@ tests/run_*.sh
 tests/verify_all_extractions.py
 *_task.txt
 /extract
+
+# Notebooks (local validation and tutorial workflows - do not commit yet)
+notebooks/
+build_validation_notebook.py
+tests/test_extraction_workflow.ipynb
+tests/test_notebook_extraction.py

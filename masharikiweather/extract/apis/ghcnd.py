@@ -19,6 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import hashlib
 import io
+import logging
+logger = logging.getLogger("MasharikiWeather.GHCN")
 import math
 import os
 import pathlib
@@ -2974,11 +2976,72 @@ def get_african_stations(
 
 from .base import BaseExtractor, SpatialBoundingBox, AFRICA_BBOX
 
+# Standard PeakWeather parameters catalog inventory for NOAA GHCN
+DEFAULT_GHCN_PARAMETERS: List[Dict[str, Any]] = [
+    {
+        "parameter": "t2m_max",
+        "canonical_name": "2m_temperature_maximum",
+        "standard_name": "air_temperature_maximum",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "max",
+        "description": "Maximum daily air temperature at ~2m elevation.",
+    },
+    {
+        "parameter": "t2m_min",
+        "canonical_name": "2m_temperature_minimum",
+        "standard_name": "air_temperature_minimum",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "min",
+        "description": "Minimum daily air temperature at ~2m elevation.",
+    },
+    {
+        "parameter": "t2m_mean",
+        "canonical_name": "2m_temperature",
+        "standard_name": "air_temperature",
+        "units": "degC",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Mean daily air temperature at ~2m elevation.",
+    },
+    {
+        "parameter": "precipitation",
+        "canonical_name": "total_precipitation",
+        "standard_name": "precipitation_amount",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Daily total liquid and water-equivalent precipitation amount.",
+    },
+    {
+        "parameter": "snowfall",
+        "canonical_name": "snowfall",
+        "standard_name": "fresh_snow_thickness",
+        "units": "mm",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Daily snowfall accumulation depth.",
+    },
+    {
+        "parameter": "snow_depth",
+        "canonical_name": "snow_depth",
+        "standard_name": "surface_snow_thickness",
+        "units": "mm",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Total snow depth on the ground.",
+    },
+]
+
 class GHCNExtractor(BaseExtractor):
     """
     NOAA Global Historical Climatology Network (GHCN) Extraction Engine.
     Implements the unified BaseExtractor interface for daily and hourly weather station observations.
     """
+
+    extractor_name: str = "ghcnd"
+    network_name: str = "ghcn"
 
     def __init__(
         self,
@@ -3025,6 +3088,13 @@ class GHCNExtractor(BaseExtractor):
             else None
         )
         target_stations = list(stations) if stations is not None else self.stations
+        t_range = self.validate_temporal_range(start_date, end_date)
+        if target_stations:
+            self.validate_stations(target_stations, strict=True)
+        if variables is not None:
+            self.validate_variables(variables, strict=True)
+        self.validate_temporal_bounds(t_range, strict=False)
+
         vars_to_fetch = list(variables) if variables is not None else ["t2m_max", "t2m_min", "precipitation"]
 
         ghcn_inst = GHCN(
@@ -3061,6 +3131,90 @@ class GHCNExtractor(BaseExtractor):
             return out_file
 
         return df
+
+    def generate_metadata_catalogs(
+        self,
+        stations_df: Optional[pd.DataFrame] = None,
+        output_dir: Optional[Union[str, pathlib.Path]] = None,
+        bbox: Optional[SpatialBoundingBox] = None,
+    ) -> Tuple[pathlib.Path, pathlib.Path]:
+        """
+        Generate standardized PeakWeather metadata catalogs for GHCN stations:
+        - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
+        - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
+
+        Mathematical docstring:
+        Output catalogs:
+          installation: (N_stations, C_metadata) -> {output_dir}/metadata/installation.parquet
+          parameters: (N_parameters, C_param_info) -> {output_dir}/metadata/parameters.parquet
+
+        Parameters
+        ----------
+        stations_df : Optional[pd.DataFrame]
+            Pre-queried station metadata DataFrame. If None, queries get_stations().
+        output_dir : Optional[Union[str, Path]]
+            Target directory for metadata files. Defaults to self.output_dir / "metadata".
+        bbox : Optional[SpatialBoundingBox]
+            Spatial bounding box for station filtering if querying dynamically.
+
+        Returns
+        -------
+        Tuple[Path, Path]
+            Paths to (installation.parquet, parameters.parquet).
+        """
+        meta_dir = pathlib.Path(output_dir) if output_dir is not None else (self.output_dir / "metadata")
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        if stations_df is None:
+            bounds_dict = {
+                "min_lat": bbox.lat_min,
+                "max_lat": bbox.lat_max,
+                "min_lon": bbox.lon_min,
+                "max_lon": bbox.lon_max,
+            } if bbox is not None else None
+            try:
+                stations_df = get_stations(
+                    resolution=self.resolution,
+                    region=self.region,
+                    bounds=bounds_dict,
+                    cache_dir=str(self.output_dir / "cache"),
+                )
+            except Exception as exc:
+                logger.warning("Dynamic GHCN station lookup exception (%s); using fallback schema.", exc)
+                stations_df = pd.DataFrame()
+
+        install_rows: List[Dict[str, Any]] = []
+        if stations_df is not None and not stations_df.empty:
+            for _, row in stations_df.iterrows():
+                st_id = str(row.get("ID") or row.get("station") or row.get("station_id") or "")
+                country_code = st_id[:2] if len(st_id) >= 2 else "XX"
+                install_rows.append({
+                    "station_id": st_id,
+                    "station_name": str(row.get("NAME") or row.get("name") or st_id),
+                    "latitude": float(row.get("LAT") or row.get("latitude") or 0.0),
+                    "longitude": float(row.get("LON") or row.get("longitude") or 0.0),
+                    "elevation": float(row.get("ELEV") or row.get("elevation") or 0.0),
+                    "network": f"ghcn_{self.resolution.lower()}",
+                    "country": str(row.get("country") or country_code),
+                    "start_date": pd.to_datetime(row.get("first_year", "") if row.get("first_year") else pd.NaT, errors="coerce"),
+                    "end_date": pd.to_datetime(row.get("last_year", "") if row.get("last_year") else pd.NaT, errors="coerce"),
+                    "sensor_count": int(row.get("element_count") or 3),
+                })
+        install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"]) if install_rows else pd.DataFrame(
+            columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "start_date", "end_date", "sensor_count"]
+        )
+        install_path = meta_dir / "installation.parquet"
+        install_df.to_parquet(install_path, index=False)
+
+        param_df = pd.DataFrame(DEFAULT_GHCN_PARAMETERS)
+        param_path = meta_dir / "parameters.parquet"
+        param_df.to_parquet(param_path, index=False)
+
+        logger.info(
+            "Generated GHCN metadata catalogs at %s: installation.parquet (%d stations), parameters.parquet (%d variables)",
+            meta_dir, len(install_df), len(param_df),
+        )
+        return install_path, param_path
 
 
 ghcn_daily = query_ghcn_daily

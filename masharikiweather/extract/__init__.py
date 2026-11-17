@@ -10,6 +10,7 @@ from __future__ import annotations
 from . import apis
 from .apis import (
     AFRICA_BBOX,
+    EAST_AFRICA_BBOX,
     KENYA_BBOX,
     PAN_AFRICA_BBOX,
     CDSInSituExtractor,
@@ -42,6 +43,7 @@ __all__ = [
     "SpatialBoundingBox",
     "TemporalRange",
     "AFRICA_BBOX",
+    "EAST_AFRICA_BBOX",
     "KENYA_BBOX",
     "PAN_AFRICA_BBOX",
     "ERA5Extractor",

@@ -18,6 +18,7 @@ import xarray as xr
 
 from masharikiweather.extract.apis.base import (
     AFRICA_BBOX,
+    EAST_AFRICA_BBOX,
     KENYA_BBOX,
     SpatialBoundingBox,
     TemporalRange,
@@ -585,6 +586,175 @@ class TestTAHMOExtractor:
         assert canonicalize_tahmo_variable("te") == "2m_temperature"
         assert canonicalize_tahmo_variable("pr") == "total_precipitation"
         assert tahmo_canonical_to_short("2m_temperature") == "te"
+
+    def test_tahmo_parse_measurements_fast(self, tmp_path: Path):
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy", dataset="controlled")
+        payload = {
+            "results": [
+                {
+                    "series": [
+                        {
+                            "columns": ["time", "quality", "variable", "sensor", "value"],
+                            "values": [
+                                ["2024-01-01T00:00:00Z", 1, "te", "S1", 21.5],
+                                ["2024-01-01T01:00:00Z", 0, "te", "S1", 99.0],  # Bad quality -> NaN
+                                ["2024-01-01T00:00:00Z", 1, "rh", "S001402", 70.0],
+                                ["2024-01-01T00:00:00Z", 1, "rh", "S001403", 69.5],  # Collocated sensor
+                                ["2024-01-01T00:00:00Z", 1, "pr", None, 0.2],  # Rain gauge with None sensor
+                            ],
+                        }
+                    ]
+                }
+            ]
+        }
+        flat_df = extractor._parse_measurements_fast(payload)
+        assert not flat_df.empty
+        assert "time" in flat_df.columns
+        assert "col" in flat_df.columns
+        assert "value" in flat_df.columns
+        # Check col names
+        cols = flat_df["col"].tolist()
+        assert "te_S1" in cols
+        assert "rh_S001402" in cols
+        assert "rh_S001403" in cols
+        assert "pr" in cols
+        assert "pr_None" not in cols
+        assert "pr_nan" not in cols
+        # Check NaN on bad quality
+        te_bad_val = flat_df[(flat_df["time"] == "2024-01-01T01:00:00Z") & (flat_df["col"] == "te_S1")]["value"].iloc[0]
+        assert np.isnan(te_bad_val)
+
+    def test_tahmo_get_stations_nested_country_code(self, tmp_path: Path):
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
+        mock_raw = {
+            "data": [
+                {
+                    "code": "TA00001",
+                    "name": "Kenya Station",
+                    "status": 1,
+                    "location": {"latitude": -1.28, "longitude": 36.82, "elevationmsl": 1600, "countrycode": "KE"},
+                },
+                {
+                    "code": "TA00500",
+                    "name": "Uganda Station",
+                    "status": 1,
+                    "location": {"latitude": 0.34, "longitude": 32.58, "elevationmsl": 1200, "countrycode": "UG"},
+                },
+                {
+                    "code": "TA00900",
+                    "name": "West Africa Station",
+                    "status": 1,
+                    "location": {"latitude": 5.60, "longitude": -0.18, "elevationmsl": 50, "countrycode": "GH"},
+                },
+            ]
+        }
+        with patch.object(extractor, "_request", return_value=mock_raw):
+            df_all = extractor.get_stations(bbox=None)
+            assert len(df_all) == 3
+            assert set(df_all["country"].tolist()) == {"KE", "UG", "GH"}
+
+            # Bounding box filter for East Africa
+            df_ea = extractor.get_stations(bbox=EAST_AFRICA_BBOX)
+            assert len(df_ea) == 2
+            assert set(df_ea["country"].tolist()) == {"KE", "UG"}
+            assert "GH" not in df_ea["country"].tolist()
+
+    def test_tahmo_concurrency_and_server_protection(self, tmp_path: Path):
+        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy", request_delay=0.0)
+        assert extractor.request_delay == 0.0
+
+        # Mock extract_station to succeed for TA00001 and fail for TA00002
+        def mock_extract(station_code, start_date, end_date, variables=None):
+            if station_code == "TA00001":
+                idx = pd.date_range("2024-01-01", periods=3, freq="h", tz="UTC")
+                return pd.DataFrame({"te_S1": [20.0, 21.0, 22.0]}, index=idx)
+            raise RuntimeError("Legacy server timeout")
+
+        with patch.object(extractor, "get_stations") as mock_get_st, \
+             patch.object(extractor, "extract_station", side_effect=mock_extract):
+            mock_get_st.return_value = pd.DataFrame([
+                {"station_code": "TA00001", "name": "St1", "lat": -1.2, "lon": 36.8, "country": "KE"},
+                {"station_code": "TA00002", "name": "St2", "lat": -1.3, "lon": 36.9, "country": "KE"},
+            ])
+            results = extractor.extract(
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                stations=["TA00001", "TA00002"],
+                save_parquet=True,
+                max_workers=2,
+            )
+            # Batch should not crash: TA00001 succeeded, TA00002 recorded in failed_stations
+            assert "TA00001" in results
+            assert "TA00002" not in results
+            assert "TA00002" in extractor.failed_stations
+            assert "Legacy server timeout" in extractor.failed_stations["TA00002"]
+
+    def test_tahmo_concurrency_configuration(self, tmp_path: Path):
+        """Test default and custom concurrency worker configuration for TAHMO."""
+        import concurrent.futures
+        from masharikiweather.extract.apis.tahmo import TAHMOExtractor
+        from masharikiweather.dataset import pull_station_data
+
+        # Default max_workers is 4
+        default_ext = TAHMOExtractor(output_dir=tmp_path, api_key="k", api_secret="s")
+        assert default_ext.max_workers == 4
+
+        # Custom max_workers in __init__
+        custom_ext = TAHMOExtractor(output_dir=tmp_path, api_key="k", api_secret="s", max_workers=3)
+        assert custom_ext.max_workers == 3
+
+        # Test extraction respects fallback to self.max_workers and explicit override
+        idx = pd.date_range("2024-01-01", periods=3, freq="h")
+        mock_df = pd.DataFrame({"te_S1": [20.0, 21.0, 22.0]}, index=idx)
+
+        with patch.object(default_ext, "get_stations") as mock_get_st, \
+             patch.object(default_ext, "extract_station", return_value=mock_df) as mock_st, \
+             patch("concurrent.futures.ThreadPoolExecutor", wraps=concurrent.futures.ThreadPoolExecutor) as mock_pool:
+            mock_get_st.return_value = pd.DataFrame([
+                {"station_code": "TA00001", "name": "St1", "lat": -1.2, "lon": 36.8, "country": "KE"},
+                {"station_code": "TA00002", "name": "St2", "lat": -1.3, "lon": 36.9, "country": "KE"},
+            ])
+            # Fallback to self.max_workers (4)
+            res1 = default_ext.extract(
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                stations=["TA00001", "TA00002"],
+                save_parquet=False,
+            )
+            assert len(res1) == 2
+            mock_pool.assert_called_with(max_workers=4)
+
+            # Explicit override to 2
+            res2 = default_ext.extract(
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                stations=["TA00001", "TA00002"],
+                save_parquet=False,
+                max_workers=2,
+            )
+            assert len(res2) == 2
+            mock_pool.assert_called_with(max_workers=2)
+
+        # Test pull_station_data forwards max_workers to TAHMOExtractor and extract
+        with patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor.get_stations") as mock_ps_st, \
+             patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor.extract_station", return_value=mock_df), \
+             patch("concurrent.futures.ThreadPoolExecutor", wraps=concurrent.futures.ThreadPoolExecutor) as mock_pool_ps:
+            mock_ps_st.return_value = pd.DataFrame([
+                {"station_code": "TA00001", "name": "St1", "lat": -1.2, "lon": 36.8, "country": "KE"},
+                {"station_code": "TA00002", "name": "St2", "lat": -1.3, "lon": 36.9, "country": "KE"},
+            ])
+            res_df = pull_station_data(
+                source="tahmo",
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                output_dir=tmp_path / "ps_tahmo",
+                save_parquet=False,
+                max_workers=3,
+                api_key="k",
+                api_secret="s",
+            )
+            assert not res_df.empty
+            mock_pool_ps.assert_called_with(max_workers=3)
 
 
 # ==============================================================================

@@ -315,6 +315,9 @@ class IMERGExtractor(BaseExtractor):
     NASA IMERG Extraction and Zarr Compilation Pipeline.
     """
 
+    extractor_name: str = "imerg"
+    network_name: str = "imerg"
+
     def __init__(
         self,
         output_dir: Union[str, Path] = "./data/imerg",
@@ -365,6 +368,9 @@ class IMERGExtractor(BaseExtractor):
 
         box = bbox if bbox is not None else AFRICA_BBOX
         t_range = self.validate_temporal_range(start_date, end_date)
+        if variables is not None:
+            self.validate_variables(variables, strict=True)
+        self.validate_temporal_bounds(t_range, strict=False)
         s_dt = t_range.start.to_pydatetime()
         e_dt = t_range.end.to_pydatetime()
 

@@ -1161,6 +1161,16 @@ class MasharikiWeatherDataset:
             Path(self.root_dir) / "parameters.parquet",
             Path(self.root_dir) / "parameters_registry.parquet",
         ]
+        for src in self.source_obs:
+            src_dir = self._resolve_obs_source_dir(src)
+            st_candidates.extend([
+                src_dir / "metadata" / "installation.parquet",
+                src_dir / "installation.parquet",
+            ])
+            pr_candidates.extend([
+                src_dir / "metadata" / "parameters.parquet",
+                src_dir / "parameters.parquet",
+            ])
         st_exists = any(p.exists() for p in st_candidates)
         pr_exists = any(p.exists() for p in pr_candidates)
 
@@ -1760,6 +1770,12 @@ class MasharikiWeatherDataset:
             Path(self.root_dir) / "installation.parquet",
             Path(self.root_dir) / "stations_registry.parquet",
         ]
+        for src in self.source_obs:
+            src_dir = self._resolve_obs_source_dir(src)
+            st_candidates.extend([
+                src_dir / "metadata" / "installation.parquet",
+                src_dir / "installation.parquet",
+            ])
         for st_p in st_candidates:
             if st_p.exists():
                 self.stations_table = pd.read_parquet(st_p)
@@ -1770,6 +1786,12 @@ class MasharikiWeatherDataset:
             Path(self.root_dir) / "parameters.parquet",
             Path(self.root_dir) / "parameters_registry.parquet",
         ]
+        for src in self.source_obs:
+            src_dir = self._resolve_obs_source_dir(src)
+            pr_candidates.extend([
+                src_dir / "metadata" / "parameters.parquet",
+                src_dir / "parameters.parquet",
+            ])
         for pr_p in pr_candidates:
             if pr_p.exists():
                 self.parameters_table = pd.read_parquet(pr_p)
@@ -3560,7 +3582,23 @@ class MasharikiWeatherDataset:
             copy=True,
         )
 
-        valid_stations_subset = self.validate_stations(stations) if stations else self.stations_table.index.tolist()
+        if stations:
+            valid_stations_subset = self.validate_stations(stations)
+        else:
+            obs_st = set(observations.columns.get_level_values(0)) if not observations.empty else set()
+            tbl_st = set(self.stations_table.index) if hasattr(self, "stations_table") and not self.stations_table.empty else set()
+            if obs_st and tbl_st:
+                valid_stations_subset = sorted(list(tbl_st.intersection(obs_st)))
+            elif tbl_st:
+                valid_stations_subset = self.stations_table.index.tolist()
+            else:
+                valid_stations_subset = sorted(list(obs_st))
+
+        # Ensure all valid_stations_subset exist in stations_table to prevent KeyError
+        missing_in_tbl = [s for s in valid_stations_subset if s not in self.stations_table.index]
+        if missing_in_tbl:
+            for s in missing_in_tbl:
+                self.stations_table.loc[s] = [np.nan] * len(self.stations_table.columns)
 
         # Geographic bounding box filtering: filter stations to those within bbox
         if bbox is not None:
@@ -4144,7 +4182,7 @@ def extract_stations(
             of station IDs to Paths. If False, returns a unified pd.DataFrame.
         api_key: Optional API key for services requiring authentication (e.g. TAHMO).
         api_secret: Optional API secret for services requiring authentication (e.g. TAHMO).
-        **kwargs: Additional parameters forwarded to the underlying extractor.
+        **kwargs: Additional parameters forwarded to the underlying extractor (e.g. max_workers).
 
     Returns:
         Union[pd.DataFrame, Dict[str, Path]]: Pandas DataFrame if save_parquet=False,
@@ -4172,10 +4210,12 @@ def extract_stations(
 
     if src == "tahmo":
         from .extract.apis.tahmo import TAHMOExtractor
+        max_workers = kwargs.pop("max_workers", 4)
         extractor = TAHMOExtractor(
             output_dir=out_dir,
             api_key=api_key,
             api_secret=api_secret,
+            max_workers=max_workers,
             **kwargs,
         )
         res = extractor.extract(
@@ -4184,6 +4224,7 @@ def extract_stations(
             bbox=s_box,
             variables=variables,
             save_parquet=save_parquet,
+            max_workers=max_workers,
         )
         if save_parquet:
             return {str(k): Path(v) for k, v in res.items()}

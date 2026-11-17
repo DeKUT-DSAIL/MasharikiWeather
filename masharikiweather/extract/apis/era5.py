@@ -947,6 +947,9 @@ class ERA5Extractor(BaseExtractor):
        Accesses the public Google Cloud Public Dataset ERA5 ARCO Zarr store.
     """
 
+    extractor_name: str = "era5"
+    network_name: str = "era5"
+
     def __init__(
         self,
         output_dir: Union[str, Path] = "./data/era5",
@@ -1622,6 +1625,10 @@ class ERA5Extractor(BaseExtractor):
             Extracted Dataset or local Zarr store Path.
         """
         box = bbox if bbox is not None else AFRICA_BBOX
+        t_range = self.validate_temporal_range(start_date, end_date)
+        if variables is not None:
+            self.validate_variables(variables, strict=True)
+        self.validate_temporal_bounds(t_range, strict=False)
         s_dt, e_dt = parse_date_range(start_date, end_date)
         s_str = s_dt.strftime("%Y%m%d")
         e_str = e_dt.strftime("%Y%m%d")

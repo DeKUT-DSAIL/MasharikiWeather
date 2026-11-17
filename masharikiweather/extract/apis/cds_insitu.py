@@ -16,7 +16,7 @@ import shutil
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -63,6 +63,100 @@ CDS_INSITU_RAW_TO_CANONICAL: Dict[str, str] = {
 CDS_INSITU_CANONICAL_TO_RAW: Dict[str, str] = {
     v: k for k, v in CDS_INSITU_RAW_TO_CANONICAL.items()
 }
+
+# Standard PeakWeather parameters catalog inventory for CDS In-Situ
+DEFAULT_CDS_INSITU_PARAMETERS: List[Dict[str, Any]] = [
+    {
+        "parameter": "2m_temperature",
+        "canonical_name": "2m_temperature",
+        "standard_name": "air_temperature",
+        "units": "K",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Near-surface dry bulb air temperature at station elevation.",
+    },
+    {
+        "parameter": "2m_dewpoint_temperature",
+        "canonical_name": "2m_dewpoint_temperature",
+        "standard_name": "dew_point_temperature",
+        "units": "K",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Near-surface dew point temperature.",
+    },
+    {
+        "parameter": "total_precipitation",
+        "canonical_name": "total_precipitation",
+        "standard_name": "precipitation_amount",
+        "units": "m",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Accumulated liquid and water-equivalent precipitation.",
+    },
+    {
+        "parameter": "surface_pressure",
+        "canonical_name": "surface_pressure",
+        "standard_name": "surface_air_pressure",
+        "units": "Pa",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Atmospheric pressure measured at station level.",
+    },
+    {
+        "parameter": "mean_sea_level_pressure",
+        "canonical_name": "mean_sea_level_pressure",
+        "standard_name": "air_pressure_at_mean_sea_level",
+        "units": "Pa",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Atmospheric surface pressure reduced to mean sea level.",
+    },
+    {
+        "parameter": "relative_humidity",
+        "canonical_name": "relative_humidity",
+        "standard_name": "relative_humidity",
+        "units": "%",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Relative humidity measured at station level.",
+    },
+    {
+        "parameter": "wind_speed",
+        "canonical_name": "wind_speed",
+        "standard_name": "wind_speed",
+        "units": "m s-1",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Horizontal wind speed scalar.",
+    },
+    {
+        "parameter": "wind_from_direction",
+        "canonical_name": "wind_from_direction",
+        "standard_name": "wind_from_direction",
+        "units": "degrees",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Direction from which the wind is blowing (0-360 degrees).",
+    },
+    {
+        "parameter": "snowfall",
+        "canonical_name": "snowfall",
+        "standard_name": "fresh_snow_thickness",
+        "units": "m",
+        "physical_type": "PRECIPITATION",
+        "resampling_method": "sum",
+        "description": "Depth of newly fallen snow.",
+    },
+    {
+        "parameter": "snow_depth",
+        "canonical_name": "snow_depth",
+        "standard_name": "surface_snow_thickness",
+        "units": "m",
+        "physical_type": "PHYSICAL",
+        "resampling_method": "mean",
+        "description": "Total depth of snow on the ground.",
+    },
+]
 
 
 def canonicalize_cds_insitu_variable(var: str) -> str:
@@ -226,6 +320,9 @@ class CDSInSituExtractor(BaseExtractor):
     Automated extraction pipeline for Copernicus CDS in-situ surface land observations.
     """
 
+    extractor_name: str = "cds_insitu"
+    network_name: str = "cds_insitu"
+
     def __init__(
         self,
         output_dir: Union[str, Path] = "./data/cds_insitu",
@@ -373,6 +470,9 @@ class CDSInSituExtractor(BaseExtractor):
         Execute sequential extraction across specified years.
         Supports direct year list or start_date/end_date range.
         """
+        if variables is not None:
+            self.validate_variables(variables, strict=True)
+
         if years is not None:
             year_list = [years] if isinstance(years, int) else list(years)
         elif start_date is not None and end_date is not None:
@@ -394,3 +494,82 @@ class CDSInSituExtractor(BaseExtractor):
             )
             results.append(res_path)
         return results
+
+    def generate_metadata_catalogs(
+        self,
+        stations_df: Optional[pd.DataFrame] = None,
+        output_dir: Optional[Union[str, Path]] = None,
+    ) -> Tuple[Path, Path]:
+        """
+        Generate standardized PeakWeather metadata catalogs for CDS In-Situ observations:
+        - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
+        - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
+
+        Mathematical docstring:
+        Output catalogs:
+          installation: (N_stations, C_metadata) -> {output_dir}/metadata/installation.parquet
+          parameters: (N_parameters, C_param_info) -> {output_dir}/metadata/parameters.parquet
+
+        Parameters
+        ----------
+        stations_df : Optional[pd.DataFrame]
+            Station DataFrame or parsed observation DataFrame containing station metadata.
+        output_dir : Optional[Union[str, Path]]
+            Target directory for metadata files. Defaults to self.output_dir / "metadata".
+
+        Returns
+        -------
+        Tuple[Path, Path]
+            Paths to (installation.parquet, parameters.parquet).
+        """
+        meta_dir = Path(output_dir) if output_dir is not None else (self.output_dir / "metadata")
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        # 1. Build installation catalog
+        install_rows: List[Dict[str, Any]] = []
+        if stations_df is not None and not stations_df.empty:
+            st_col = "station_id" if "station_id" in stations_df.columns else (
+                "primary_station_id" if "primary_station_id" in stations_df.columns else None
+            )
+            df_unique = stations_df.drop_duplicates(subset=[st_col]) if st_col else stations_df
+            for _, row in df_unique.iterrows():
+                raw_id = row.get("station_id") if pd.notna(row.get("station_id")) else row.get("primary_station_id")
+                if isinstance(raw_id, (bytes, bytearray)):
+                    st_id = raw_id.decode("utf-8", errors="ignore").strip()
+                else:
+                    st_id = str(raw_id or "").strip()
+
+                raw_name = row.get("station_name")
+                if isinstance(raw_name, (bytes, bytearray)):
+                    st_name = raw_name.decode("utf-8", errors="ignore").strip()
+                else:
+                    st_name = str(raw_name or st_id).strip()
+
+                install_rows.append({
+                    "station_id": st_id,
+                    "station_name": st_name,
+                    "latitude": float(row.get("latitude") or row.get("lat") or 0.0),
+                    "longitude": float(row.get("longitude") or row.get("lon") or 0.0),
+                    "elevation": float(row.get("elevation") or row.get("height_of_station_above_sea_level") or 0.0),
+                    "network": "cds_insitu",
+                    "country": str(row.get("country") or "KE"),
+                    "start_date": pd.to_datetime(row.get("start_date") or pd.NaT),
+                    "end_date": pd.to_datetime(row.get("end_date") or pd.NaT),
+                    "sensor_count": int(row.get("sensor_count") or 1),
+                })
+        install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"]) if install_rows else pd.DataFrame(
+            columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "start_date", "end_date", "sensor_count"]
+        )
+        install_path = meta_dir / "installation.parquet"
+        install_df.to_parquet(install_path, index=False)
+
+        # 2. Build parameters catalog
+        param_df = pd.DataFrame(DEFAULT_CDS_INSITU_PARAMETERS)
+        param_path = meta_dir / "parameters.parquet"
+        param_df.to_parquet(param_path, index=False)
+
+        logger.info(
+            "Generated CDS In-Situ metadata catalogs at %s: installation.parquet (%d stations), parameters.parquet (%d variables)",
+            meta_dir, len(install_df), len(param_df),
+        )
+        return install_path, param_path

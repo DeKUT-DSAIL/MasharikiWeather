@@ -134,6 +134,36 @@ class CredentialsManager:
     """
 
     @classmethod
+    def _get_colab_secret(cls, key: str) -> Optional[str]:
+        r"""
+        Safely retrieve secret from Google Colab userdata when executing within Colab.
+
+        Mathematical docstring:
+        f: key \in String -> secret \in String \cup {None}
+
+        Parameters
+        ----------
+        key : str
+            Secret identifier name.
+
+        Returns
+        -------
+        Optional[str]
+            Discovered secret value if running in Colab and present, else None.
+        """
+        try:
+            from google.colab import userdata
+
+            val = userdata.get(key)
+            if val is not None:
+                s = str(val).strip()
+                if s:
+                    return s
+        except Exception:
+            pass
+        return None
+
+    @classmethod
     def _get_candidate_env_paths(cls, env_file: Optional[Union[str, Path]] = None) -> List[Path]:
         """
         Generate candidate search paths for environment files.
@@ -177,8 +207,20 @@ class CredentialsManager:
         Dict[str, str]
             Dictionary containing 'api_key' and 'api_secret'.
         """
-        key = api_key or os.environ.get("TAHMO_API_KEY") or os.environ.get("TAHMO_KEY")
-        secret = api_secret or os.environ.get("TAHMO_API_SECRET") or os.environ.get("TAHMO_SECRET")
+        key = (
+            api_key
+            or os.environ.get("TAHMO_API_KEY")
+            or os.environ.get("TAHMO_KEY")
+            or cls._get_colab_secret("TAHMO_API_KEY")
+            or cls._get_colab_secret("TAHMO_KEY")
+        )
+        secret = (
+            api_secret
+            or os.environ.get("TAHMO_API_SECRET")
+            or os.environ.get("TAHMO_SECRET")
+            or cls._get_colab_secret("TAHMO_API_SECRET")
+            or cls._get_colab_secret("TAHMO_SECRET")
+        )
 
         if key and secret:
             return {"api_key": key, "api_secret": secret}
@@ -240,8 +282,22 @@ class CredentialsManager:
             Dictionary containing 'url' and 'key'.
         """
         default_url = "https://cds.climate.copernicus.eu/api"
-        u = url or cds_url or os.environ.get("CDSAPI_URL")
-        k = key or cds_key or os.environ.get("CDSAPI_KEY")
+        u = (
+            url
+            or cds_url
+            or os.environ.get("CDSAPI_URL")
+            or os.environ.get("CDS_API_URL")
+            or cls._get_colab_secret("CDSAPI_URL")
+            or cls._get_colab_secret("CDS_API_URL")
+        )
+        k = (
+            key
+            or cds_key
+            or os.environ.get("CDSAPI_KEY")
+            or os.environ.get("CDS_API_KEY")
+            or cls._get_colab_secret("CDSAPI_KEY")
+            or cls._get_colab_secret("CDS_API_KEY")
+        )
 
         if k:
             return {"url": u or default_url, "key": k}
@@ -285,6 +341,12 @@ class CredentialsManager:
             return key
         if os.environ.get("CDSAPI_KEY"):
             return os.environ["CDSAPI_KEY"]
+        if os.environ.get("CDS_API_KEY"):
+            return os.environ["CDS_API_KEY"]
+
+        colab_key = cls._get_colab_secret("CDSAPI_KEY") or cls._get_colab_secret("CDS_API_KEY")
+        if colab_key:
+            return colab_key
 
         target_rc = Path(rc_file).expanduser().resolve() if rc_file else Path("~/.cdsapirc").expanduser().resolve()
         if target_rc.is_file():
@@ -333,9 +395,27 @@ class CredentialsManager:
         Dict[str, str]
             Dictionary containing credentials.
         """
-        user = username or os.environ.get("EARTHDATA_USERNAME") or os.environ.get("EARTHDATA_USER")
-        pwd = password or os.environ.get("EARTHDATA_PASSWORD") or os.environ.get("EARTHDATA_PASS")
-        tok = token or os.environ.get("EARTHDATA_TOKEN") or os.environ.get("EDL_TOKEN")
+        user = (
+            username
+            or os.environ.get("EARTHDATA_USERNAME")
+            or os.environ.get("EARTHDATA_USER")
+            or cls._get_colab_secret("EARTHDATA_USERNAME")
+            or cls._get_colab_secret("EARTHDATA_USER")
+        )
+        pwd = (
+            password
+            or os.environ.get("EARTHDATA_PASSWORD")
+            or os.environ.get("EARTHDATA_PASS")
+            or cls._get_colab_secret("EARTHDATA_PASSWORD")
+            or cls._get_colab_secret("EARTHDATA_PASS")
+        )
+        tok = (
+            token
+            or os.environ.get("EARTHDATA_TOKEN")
+            or os.environ.get("EDL_TOKEN")
+            or cls._get_colab_secret("EARTHDATA_TOKEN")
+            or cls._get_colab_secret("EDL_TOKEN")
+        )
 
         if user and pwd:
             res = {"username": user, "password": pwd}
@@ -403,6 +483,48 @@ class CredentialsManager:
             "Register for a free NASA Earthdata account at https://urs.earthdata.nasa.gov/",
         ]
         raise CredentialsError("NASA Earthdata / IMERG", "Missing Earthdata username/password or token.", hints)
+
+    @classmethod
+    def inspect_status(cls, env_file: Optional[Union[str, Path]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Inspect discovery status for all supported data provider credentials.
+        Returns a dictionary mapping service name to discovery status and masked details.
+
+        Mathematical docstring:
+        f: void -> Dict[str, Dict[str, Any]]
+        """
+        services: Dict[str, Dict[str, Any]] = {}
+        # TAHMO DataHub
+        try:
+            t_creds = cls.get_tahmo_credentials(env_file=env_file)
+            services["TAHMO DataHub"] = {
+                "available": True,
+                "api_key_preview": t_creds["api_key"][:4] + "..." if len(t_creds["api_key"]) > 4 else "present",
+            }
+        except Exception as e:
+            services["TAHMO DataHub"] = {"available": False, "error": str(e)}
+
+        # Copernicus CDS
+        try:
+            c_creds = cls.get_cds_credentials(env_file=env_file)
+            services["Copernicus CDS"] = {
+                "available": True,
+                "api_url": c_creds.get("url", "https://cds.climate.copernicus.eu/api"),
+            }
+        except Exception as e:
+            services["Copernicus CDS"] = {"available": False, "error": str(e)}
+
+        # NASA Earthdata
+        try:
+            e_creds = cls.get_earthdata_credentials(env_file=env_file)
+            services["NASA Earthdata"] = {
+                "available": True,
+                "username": e_creds.get("username", "present"),
+            }
+        except Exception as e:
+            services["NASA Earthdata"] = {"available": False, "error": str(e)}
+
+        return services
 
 
 def get_credentials(service: str, **kwargs: Any) -> Dict[str, Any]:
