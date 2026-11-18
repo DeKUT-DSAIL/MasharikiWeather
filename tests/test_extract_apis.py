@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 import xarray as xr
 
 from masharikiweather.extract.apis.base import (
@@ -906,6 +907,146 @@ class TestTAHMOExtractor:
             )
             assert not res_df.empty
             mock_pool_ps.assert_called_with(max_workers=3)
+
+    def test_tahmo_retry_and_ssl_configuration(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """
+        Verify default, custom, and environment-driven retry and SSL configuration.
+
+        Mathematical docstring:
+        Input: Temporary path and monkeypatched environment variables.
+        Output: Verified configuration properties on TAHMOExtractor instance.
+        """
+        from masharikiweather.extract.apis.tahmo import TAHMOExtractor
+
+        # Default configuration
+        default_ext = TAHMOExtractor(output_dir=tmp_path, api_key="k", api_secret="s")
+        assert default_ext.retry_delay == 120.0
+        assert default_ext.retries == 3
+        assert default_ext.verify_ssl is True
+
+        # Custom initialization arguments
+        custom_ext = TAHMOExtractor(
+            output_dir=tmp_path,
+            api_key="k",
+            api_secret="s",
+            retry_delay=45.0,
+            retries=5,
+            verify_ssl=False,
+        )
+        assert custom_ext.retry_delay == 45.0
+        assert custom_ext.retries == 5
+        assert custom_ext.verify_ssl is False
+
+        # Environment variable overrides
+        monkeypatch.setenv("TAHMO_RETRY_DELAY", "90.0")
+        monkeypatch.setenv("TAHMO_RETRIES", "4")
+        monkeypatch.setenv("TAHMO_VERIFY_SSL", "false")
+        env_ext = TAHMOExtractor(output_dir=tmp_path, api_key="k", api_secret="s")
+        assert env_ext.retry_delay == 90.0
+        assert env_ext.retries == 4
+        assert env_ext.verify_ssl is False
+
+    def test_tahmo_request_retry_and_ssl_passthrough(self, tmp_path: Path) -> None:
+        """
+        Verify that _request respects retry_delay across retries, passes verify_ssl to session.get,
+        and halts immediately on non-retryable 401 authentication errors.
+
+        Mathematical docstring:
+        Input: Mocked requests session and mocked time.sleep.
+        Output: Assertions verifying call count, sleep intervals, and exception behavior.
+        """
+        from unittest.mock import MagicMock, patch
+        from masharikiweather.extract.apis.credentials import CredentialsError
+        from masharikiweather.extract.apis.tahmo import TAHMOExtractor
+        from masharikiweather.dataset import pull_station_data
+
+        extractor = TAHMOExtractor(
+            output_dir=tmp_path,
+            api_key="k",
+            api_secret="s",
+            retry_delay=120.0,
+            retries=3,
+            verify_ssl=False,
+            request_delay=0.0,
+        )
+
+        mock_session = MagicMock()
+        extractor._local.session = mock_session
+
+        # 1. Successful request with verify=False
+        mock_resp_success = MagicMock()
+        mock_resp_success.status_code = 200
+        mock_resp_success.json.return_value = {"status": "ok"}
+        mock_session.get.return_value = mock_resp_success
+
+        res = extractor._request("test/endpoint")
+        assert res == {"status": "ok"}
+        mock_session.get.assert_called_with(
+            "https://datahub.tahmo.org/test/endpoint",
+            params=None,
+            timeout=60,
+            verify=False,
+        )
+
+        # 2. Network error retried with retry_delay
+        mock_session.reset_mock()
+        mock_session.get.side_effect = [
+            requests.exceptions.SSLError("certificate has expired"),
+            requests.exceptions.SSLError("certificate has expired"),
+            mock_resp_success,
+        ]
+
+        with patch("time.sleep") as mock_sleep:
+            res_retry = extractor._request("test/endpoint")
+            assert res_retry == {"status": "ok"}
+            assert mock_session.get.call_count == 3
+            # Two retries sleep for 120.0 seconds each
+            assert mock_sleep.call_count == 2
+            mock_sleep.assert_called_with(120.0)
+
+        # 3. Exhausted retries raises exception
+        mock_session.reset_mock()
+        mock_session.get.side_effect = requests.exceptions.ConnectionError("connection broken")
+        with patch("time.sleep"):
+            with pytest.raises(requests.exceptions.ConnectionError):
+                extractor._request("test/endpoint", retries=2)
+            assert mock_session.get.call_count == 2
+
+        # 4. Immediate failure on HTTP 401 without retry sleep
+        mock_session.reset_mock()
+        mock_resp_401 = MagicMock()
+        mock_resp_401.status_code = 401
+        mock_session.get.side_effect = None
+        mock_session.get.return_value = mock_resp_401
+
+        with patch("time.sleep") as mock_sleep_401:
+            with pytest.raises(CredentialsError):
+                extractor._request("test/endpoint")
+            assert mock_session.get.call_count == 1
+            mock_sleep_401.assert_not_called()
+
+        # 5. pull_station_data forwards verify_ssl and retry_delay
+        mock_df = pd.DataFrame({"te_S1": [20.0]}, index=pd.date_range("2024-01-01", periods=1, freq="h"))
+        with patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor.get_stations") as mock_ps_st, \
+             patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor.extract_station", return_value=mock_df), \
+             patch("masharikiweather.extract.apis.tahmo.TAHMOExtractor.__init__", return_value=None) as mock_ext_init:
+            try:
+                pull_station_data(
+                    source="tahmo",
+                    start_date="2024-01-01",
+                    end_date="2024-01-02",
+                    output_dir=tmp_path / "ps_forward",
+                    api_key="k",
+                    api_secret="s",
+                    verify_ssl=False,
+                    retry_delay=120.0,
+                )
+            except Exception:
+                pass
+            assert mock_ext_init.call_count >= 1
+            _, kwargs_init = mock_ext_init.call_args
+            assert kwargs_init.get("verify_ssl") is False
+            assert kwargs_init.get("retry_delay") == 120.0
 
     def test_tahmo_33_variable_catalog(self) -> None:
         """

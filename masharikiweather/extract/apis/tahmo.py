@@ -17,6 +17,7 @@ from __future__ import annotations
 import concurrent.futures
 import gc
 import logging
+import os
 import random
 import re
 import threading
@@ -529,6 +530,9 @@ class TAHMOExtractor(BaseExtractor):
         env_file: Optional[Union[str, Path]] = None,
         dataset: str = "controlled",
         request_delay: float = 0.1,
+        retry_delay: float = 120.0,
+        retries: int = 3,
+        verify_ssl: bool = True,
         max_workers: Optional[int] = 4,
     ) -> None:
         """
@@ -548,6 +552,15 @@ class TAHMOExtractor(BaseExtractor):
             Dataset tier ("controlled" or "raw").
         request_delay : float, default 0.1
             Inter-request pacing delay in seconds between HTTP queries to protect legacy servers.
+        retry_delay : float, default 120.0
+            Delay in seconds to wait before retrying a failed HTTP request across failure modes.
+            Can also be set via the TAHMO_RETRY_DELAY environment variable.
+        retries : int, default 3
+            Maximum number of retry attempts for failed HTTP requests. Can also be set
+            via the TAHMO_RETRIES environment variable.
+        verify_ssl : bool, default True
+            Whether to enforce SSL/TLS certificate verification. Can also be overridden
+            via the TAHMO_VERIFY_SSL environment variable ('false', '0', 'no').
         max_workers : Optional[int], default 4
             Maximum number of concurrent worker threads for batch extraction. Kept at a maximum
             of 4 to protect legacy TAHMO server infrastructure while accelerating retrieval.
@@ -567,6 +580,40 @@ class TAHMOExtractor(BaseExtractor):
         self.env_file = env_file
         self.auth = HTTPBasicAuth(self.credentials["api_key"], self.credentials["api_secret"])
         self.request_delay = max(0.0, float(request_delay))
+
+        # Configurable retry delay and retry attempts
+        env_retry_delay = os.getenv("TAHMO_RETRY_DELAY", "").strip()
+        if env_retry_delay:
+            try:
+                self.retry_delay = max(0.0, float(env_retry_delay))
+            except ValueError:
+                self.retry_delay = max(0.0, float(retry_delay))
+        else:
+            self.retry_delay = max(0.0, float(retry_delay))
+
+        env_retries = os.getenv("TAHMO_RETRIES", "").strip()
+        if env_retries:
+            try:
+                self.retries = max(1, int(env_retries))
+            except ValueError:
+                self.retries = max(1, int(retries))
+        else:
+            self.retries = max(1, int(retries))
+
+        # SSL verification configuration with environment variable override
+        env_verify = os.getenv("TAHMO_VERIFY_SSL", "").strip().lower()
+        if env_verify in ("0", "false", "no"):
+            self.verify_ssl = False
+        elif env_verify in ("1", "true", "yes"):
+            self.verify_ssl = True
+        else:
+            self.verify_ssl = bool(verify_ssl)
+
+        if not self.verify_ssl:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            logger.warning("SSL certificate verification is disabled for TAHMO DataHub.")
+
         self.max_workers = max_workers
         self._local = threading.local()
         self.failed_stations: Dict[str, str] = {}
@@ -579,48 +626,82 @@ class TAHMOExtractor(BaseExtractor):
             adapter = HTTPAdapter(
                 pool_connections=8,
                 pool_maxsize=8,
-                max_retries=Retry(
-                    total=3,
-                    backoff_factor=1.0,
-                    status_forcelist=[429, 500, 502, 503, 504],
-                ),
+                max_retries=False,
             )
             session.mount("https://", adapter)
             session.mount("http://", adapter)
             self._local.session = session
         return self._local.session
 
-    def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None, retries: int = 3) -> Dict[str, Any]:
+    def _request(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        retries: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Execute authenticated HTTP GET request with retries, exponential backoff,
+        Execute authenticated HTTP GET request with retries, configurable retry delay,
         and respectful inter-request delay to protect legacy TAHMO server infrastructure.
         """
         url = f"{API_BASE_URL.rstrip('/')}/{endpoint.lstrip('/')}"
         session = self._get_thread_session()
-        delay = 1.0
-        for attempt in range(1, retries + 1):
+        max_attempts = retries if retries is not None else self.retries
+        for attempt in range(1, max_attempts + 1):
             try:
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
-                resp = session.get(url, params=params, timeout=60)
+                resp = session.get(url, params=params, timeout=60, verify=self.verify_ssl)
                 if resp.status_code == 200:
                     return resp.json()
                 elif resp.status_code in (401, 403):
                     raise CredentialsError("TAHMO DataHub", f"Authentication failed (HTTP {resp.status_code})")
                 elif resp.status_code == 429:
                     retry_after = resp.headers.get("Retry-After")
-                    sleep_time = float(retry_after) if retry_after else (delay * 2.0 + random.uniform(0.1, 0.5))
-                    logger.warning("TAHMO rate limit (HTTP 429). Server-respecting backoff for %.1f s", sleep_time)
-                    time.sleep(sleep_time)
+                    sleep_time = float(retry_after) if retry_after else self.retry_delay
+                    logger.warning(
+                        "TAHMO rate limit (HTTP 429). Waiting %.1f s before retry (attempt %d/%d)",
+                        sleep_time,
+                        attempt,
+                        max_attempts,
+                    )
+                    if attempt < max_attempts:
+                        time.sleep(sleep_time)
+                        continue
+                    else:
+                        resp.raise_for_status()
                 else:
-                    logger.warning("TAHMO request %s failed with HTTP %d (attempt %d/%d)", url, resp.status_code, attempt, retries)
+                    logger.warning(
+                        "TAHMO request %s failed with HTTP %d (attempt %d/%d)",
+                        url,
+                        resp.status_code,
+                        attempt,
+                        max_attempts,
+                    )
+                    if attempt == max_attempts:
+                        resp.raise_for_status()
+            except (CredentialsError, KeyboardInterrupt):
+                raise
             except Exception as e:
-                if attempt == retries:
+                if attempt == max_attempts:
                     raise
-                logger.warning("Network retry on %s: %s", url, e)
-            time.sleep(delay + random.uniform(0.1, 0.4))
-            delay *= 2.0
-        raise RuntimeError(f"Failed to fetch {url} after {retries} attempts.")
+                logger.warning(
+                    "Network retry on %s: %s (attempt %d/%d)",
+                    url,
+                    e,
+                    attempt,
+                    max_attempts,
+                )
+
+            if attempt < max_attempts:
+                logger.info(
+                    "Waiting %.1f s before retry attempt %d/%d on %s",
+                    self.retry_delay,
+                    attempt + 1,
+                    max_attempts,
+                    url,
+                )
+                time.sleep(self.retry_delay)
+        raise RuntimeError(f"Failed to fetch {url} after {max_attempts} attempts.")
 
     def get_stations(
         self,
