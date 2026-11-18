@@ -48,9 +48,12 @@ Place a `.env` file in your project root directory (ensure `.env` is listed in `
 # Hugging Face Hub (Topography Zarr Streaming & Datasets)
 HF_TOKEN="hf_your_personal_access_token"
 
-# TAHMO DataHub Credentials
+# TAHMO DataHub Credentials & Options
 TAHMO_API_KEY="your-tahmo-api-key"
 TAHMO_API_SECRET="your-tahmo-api-secret"
+# TAHMO_RETRY_DELAY=120.0       # Optional: delay in seconds before retrying failed requests (default: 120.0)
+# TAHMO_RETRIES=3               # Optional: maximum retry attempts (default: 3)
+# TAHMO_VERIFY_SSL=false        # Optional: set false to bypass TLS verification during upstream cert outages
 
 # Copernicus Climate Data Store
 CDSAPI_KEY="your-cds-api-key"
