@@ -1,6 +1,6 @@
 # Step 2: Data Extraction Pipelines (In-Situ Stations & Gridded Products)
 
-The extraction layer in `masharikiweather/extract/apis/` provides modular, robust data pipelines for downloading, validating, and formatting meteorological data from ground weather stations, satellite remote sensing instruments, and numerical reanalysis models across Africa.
+The extraction layer in `masharikiweather/extract/apis/` provides data pipelines for downloading, validating, and formatting meteorological data from ground weather stations, satellite remote sensing instruments, and numerical reanalysis models across Africa.
 
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
