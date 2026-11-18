@@ -11,6 +11,14 @@ from .dataset import (
     pull_station_data,
     pull_gridded_data,
     pull_weather_data,
+    AFRICA_BBOX,
+    EAST_AFRICA_BBOX,
+    EASTERN_AFRICA_BBOX,
+    EAST_AFRICA_COUNTRIES,
+    EASTERN_AFRICA_COUNTRIES,
+    SpatialBoundingBox,
+    is_eastern_africa_country,
+    parse_spatial_bbox,
 )
 from .rechunker import rechunk_dataset
 
@@ -35,4 +43,12 @@ __all__ = [
     "pull_gridded_data",
     "pull_weather_data",
     "extract",
+    "AFRICA_BBOX",
+    "EAST_AFRICA_BBOX",
+    "EASTERN_AFRICA_BBOX",
+    "EAST_AFRICA_COUNTRIES",
+    "EASTERN_AFRICA_COUNTRIES",
+    "SpatialBoundingBox",
+    "is_eastern_africa_country",
+    "parse_spatial_bbox",
 ]

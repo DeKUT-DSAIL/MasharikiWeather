@@ -6,7 +6,7 @@ Data handling architectures natively evaluating N-Grids dynamically.
 Graph Construction:
     Station-to-Station edges use K-Nearest Neighbors with anisotropic
     edge_attr encoding inverse haversine distance, elevation gradients,
-    slope differences, and aspect alignment (PeakWeather methodology).
+    slope differences, and aspect alignment.
 
     Grid-to-Target bipartite edges spatially map coarse macroscopic grid
     nodes to target nodes (stations or finer grids) using KNN (K=4 default
@@ -771,7 +771,7 @@ class EarthSystemAdapter(Dataset):
         if target_node == "tahmo" or target_node is None:
             if self.station_y is not None:
                 # Pre-formatted as [Time, Stations, Params]
-                # Permute to [Stations, Time, Params] (PeakWeather Spatial Node Convention)
+                # Permute to [Stations, Time, Params] (Spatial Node Convention)
                 data["tahmo"].y = self.station_y[idx].permute(1, 0, 2)
                 data["tahmo"].mask_y = self.station_mask_y[idx].permute(1, 0, 2)
         elif target_node in self.windows.grids_y:
@@ -815,14 +815,14 @@ class EarthSystemAdapter(Dataset):
             data[target_node].y = self._reshape_grid_for_pyg(target_tensor)
 
         # 4. Point-Station Nodes
-        # PeakWeather standard: X_t \in R^{N x T x D_x} (stations, time, params)
+        # Spatial tensor layout: X_t \in R^{N x T x D_x} (stations, time, params)
         if self.station_x is not None:
             # Pre-formatted as [Time, Stations, Params]
             # Permute to [Stations, Time, Params] (O(1) View transformation)
             tahmo_x = self.station_x[idx].permute(1, 0, 2)
             tahmo_mask = self.station_mask_x[idx].permute(1, 0, 2)
             
-            # FIX Gap 2: PeakWeather-compliant mask concatenation.
+            # Concatenate binary observation mask
             mask_reshaped = tahmo_mask.float()
             
             # INJECT TEMPORAL ENCODINGS

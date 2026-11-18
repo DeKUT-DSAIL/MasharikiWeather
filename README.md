@@ -59,7 +59,7 @@ For account creation and credential setup, consult the official documentation:
 - Copernicus Climate Data Store: [Copernicus CDS User Guide](https://cds.climate.copernicus.eu/user-guide)
 - NASA Earthdata / IMERG: [NASA earthaccess Documentation](https://earthaccess.readthedocs.io/en/stable/)
 
-If reading from remote Hugging Face stores, you can authenticate via the CLI (`huggingface-cli login`) or pass a token to the dataset constructor.
+If reading from online Hugging Face stores, you can authenticate via the CLI (`huggingface-cli login`) or pass a token to the dataset constructor.
 
 ### Quickstart
 
@@ -116,7 +116,7 @@ print("Targets (y):", windows.y.shape)
 
 ## Objectives
 
-1. **Reproduce and understand the PeakWeather pipeline**
+1. **Establish a standardized meteorological pipeline**
    - Explore dataset schema, preprocessing design, and data fusion principles.
 2. **Develop an Africa-centered multi-source fusion framework**
    - Harmonize station, reanalysis, satellite, and static prior datasets in a unified structure.
@@ -142,7 +142,7 @@ MasharikiWeather addresses these challenges through:
 - **Integration of static priors** to capture topographic and land-surface context.  
 - **Unified variable alignment** for consistent modeling inputs.  
 - **Multi-scale representation**, enabling both local and continental evaluation.  
-- **ML-ready exports**, inspired by PeakWeather's compatibility-first design.
+- **ML-ready exports**, providing compatibility across major deep learning frameworks.
 
 ---
 
@@ -175,17 +175,17 @@ The core package logic is modularized inside `masharikiweather/`:
 
 ### Core Data & Preprocessing (`masharikiweather/`)
 - **`dataset.py`**: User-facing dataset interface. Implements `MasharikiWeatherDataset`, separated observation accessors (`get_tahmo_observations`, `get_cds_insitu_observations`, `get_ghcn_observations`), cross-strand alignment (`align_observations`), metadata catalogs (`installation.parquet`, `parameters.parquet`), and high-level extraction entrypoints (`pull_station_data`, `pull_gridded_data`, `pull_weather_data`).
-- **`extract/apis/`**: Dagster extraction layer. Software-Defined Assets with native temporal partitioning, decoupled IO managers (`ParquetStationIOManager`, `ZarrGriddedIOManager`), and Bring-Your-Own-Key resolution (`CredentialsManager`).
+- **`extract/apis/`**: Dagster extraction layer. Software-Defined Assets with native temporal partitioning, custom IO managers (`ParquetStationIOManager`, `ZarrGriddedIOManager`), and Bring-Your-Own-Key resolution (`CredentialsManager`).
 - **`dataloader.py`**: Constructs PyTorch Geometric `HeteroData` graphs with distance-bounded edges and terrain-steered advection.
 - **`losses.py` / `metrics.py`**: Evaluation metrics and loss functions.
 - **`rechunker.py` / `utils.py`**: Dask and Zarr chunking optimizations.
 
 ---
 
-## Alignment with PeakWeather Roadmap
+## Roadmap & Design Alignment
 
-| PeakWeather Focus | MasharikiWeather Adaptation |
-|-------------------|-----------------------------|
+| Design Objective | MasharikiWeather Adaptation |
+|------------------|-----------------------------|
 | Global ML-ready weather dataset | African-focused ML-ready dataset |
 | Harmonized across ERA5, GFS, and observations | Fusion of TAHMO, GHCN, CDS In-Situ, ERA5, IMERG, static priors |
 | Precipitation-focused benchmarking | Multi-variable (precip, temp, humidity, radiation, topography) |
@@ -196,8 +196,8 @@ The core package logic is modularized inside `masharikiweather/`:
 
 ## Phased Roadmap
 
-### Phase 1 — PeakWeather Exploration
-- Study PeakWeather's documentation, schema, and data loaders.
+### Phase 1 — Exploration & Schema Study
+- Study open meteorological schemas, documentation, and data loaders.
 - Analyze variable harmonization and metadata organization.
 
 ### Phase 2 — MasharikiWeather Schema Design
@@ -222,7 +222,7 @@ The core package logic is modularized inside `masharikiweather/`:
 - Provide data loaders for PyTorch Geometric, TensorFlow, and JAX.
 
 ### Phase 7 — Benchmark & Evaluation
-- Implement baseline models using PeakWeather-style workflows.
+- Implement baseline models using standardized spatiotemporal workflows.
 - Compare performance across variables and African regions.
 
 ---

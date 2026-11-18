@@ -24,7 +24,7 @@ source_suffix = {
     ".md": "markdown",
 }
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "README.md"]
 
 # Napoleon extension settings for Google and NumPy docstrings
 napoleon_google_docstring = True

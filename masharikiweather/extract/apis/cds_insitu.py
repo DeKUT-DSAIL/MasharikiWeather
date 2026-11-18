@@ -64,7 +64,7 @@ CDS_INSITU_CANONICAL_TO_RAW: Dict[str, str] = {
     v: k for k, v in CDS_INSITU_RAW_TO_CANONICAL.items()
 }
 
-# Standard PeakWeather parameters catalog inventory for CDS In-Situ
+# Standard parameters catalog inventory for CDS In-Situ
 DEFAULT_CDS_INSITU_PARAMETERS: List[Dict[str, Any]] = [
     {
         "parameter": "2m_temperature",
@@ -501,7 +501,7 @@ class CDSInSituExtractor(BaseExtractor):
         output_dir: Optional[Union[str, Path]] = None,
     ) -> Tuple[Path, Path]:
         """
-        Generate standardized PeakWeather metadata catalogs for CDS In-Situ observations:
+        Generate standardized metadata catalogs for CDS In-Situ observations:
         - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
         - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
 
@@ -545,21 +545,46 @@ class CDSInSituExtractor(BaseExtractor):
                 else:
                     st_name = str(raw_name or st_id).strip()
 
-                install_rows.append({
+                elev_val = row.get("elevation")
+                if elev_val is None or pd.isna(elev_val):
+                    elev_val = row.get("height_of_station_above_sea_level")
+                if elev_val is None or pd.isna(elev_val):
+                    elev_val = row.get("elev")
+                try:
+                    f_elev = float(elev_val)
+                    elevation_clean = 0.0 if np.isnan(f_elev) else f_elev
+                except (ValueError, TypeError):
+                    elevation_clean = 0.0
+
+                row_dict: Dict[str, Any] = {
                     "station_id": st_id,
                     "station_name": st_name,
                     "latitude": float(row.get("latitude") or row.get("lat") or 0.0),
                     "longitude": float(row.get("longitude") or row.get("lon") or 0.0),
-                    "elevation": float(row.get("elevation") or row.get("height_of_station_above_sea_level") or 0.0),
+                    "elevation": elevation_clean,
                     "network": "cds_insitu",
                     "country": str(row.get("country") or "KE"),
-                    "start_date": pd.to_datetime(row.get("start_date") or pd.NaT),
-                    "end_date": pd.to_datetime(row.get("end_date") or pd.NaT),
                     "sensor_count": int(row.get("sensor_count") or 1),
-                })
-        install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"]) if install_rows else pd.DataFrame(
-            columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "start_date", "end_date", "sensor_count"]
-        )
+                }
+                raw_start = row.get("start_date")
+                raw_end = row.get("end_date")
+                if raw_start and pd.notna(raw_start):
+                    row_dict["start_date"] = pd.to_datetime(raw_start, errors="coerce")
+                if raw_end and pd.notna(raw_end):
+                    row_dict["end_date"] = pd.to_datetime(raw_end, errors="coerce")
+
+                install_rows.append(row_dict)
+
+        if install_rows:
+            install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"])
+            if "start_date" in install_df.columns and install_df["start_date"].isna().all():
+                install_df = install_df.drop(columns=["start_date"])
+            if "end_date" in install_df.columns and install_df["end_date"].isna().all():
+                install_df = install_df.drop(columns=["end_date"])
+        else:
+            install_df = pd.DataFrame(
+                columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "sensor_count"]
+            )
         install_path = meta_dir / "installation.parquet"
         install_df.to_parquet(install_path, index=False)
 

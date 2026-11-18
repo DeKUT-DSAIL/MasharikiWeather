@@ -2582,10 +2582,10 @@ def query_ghcn_daily(
         except Exception:
             pass
 
-    # Enrich variable lifecycle with actual returned data observations and last date
+    # Update variable lifecycle with actual returned data observations and last date
     if not var_lifecycle_df.empty:
         try:
-            enriched_rows = []
+            lifecycle_rows = []
             for _, r in var_lifecycle_df.iterrows():
                 st = r["station"]
                 var = r["variable"]
@@ -2595,8 +2595,8 @@ def query_ghcn_daily(
                 r_dict = dict(r)
                 r_dict["records_returned"] = rec_count
                 r_dict["last_recorded_date"] = last_date
-                enriched_rows.append(r_dict)
-            res.attrs["variable_lifecycle"] = enriched_rows
+                lifecycle_rows.append(r_dict)
+            res.attrs["variable_lifecycle"] = lifecycle_rows
         except Exception:
             res.attrs["variable_lifecycle"] = var_lifecycle_df.to_dict(orient="records")
 
@@ -2976,7 +2976,7 @@ def get_african_stations(
 
 from .base import BaseExtractor, SpatialBoundingBox, AFRICA_BBOX
 
-# Standard PeakWeather parameters catalog inventory for NOAA GHCN
+# Standard parameters catalog inventory for NOAA GHCN
 DEFAULT_GHCN_PARAMETERS: List[Dict[str, Any]] = [
     {
         "parameter": "t2m_max",
@@ -3139,7 +3139,7 @@ class GHCNExtractor(BaseExtractor):
         bbox: Optional[SpatialBoundingBox] = None,
     ) -> Tuple[pathlib.Path, pathlib.Path]:
         """
-        Generate standardized PeakWeather metadata catalogs for GHCN stations:
+        Generate standardized metadata catalogs for GHCN stations:
         - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
         - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
 
@@ -3188,21 +3188,46 @@ class GHCNExtractor(BaseExtractor):
             for _, row in stations_df.iterrows():
                 st_id = str(row.get("ID") or row.get("station") or row.get("station_id") or "")
                 country_code = st_id[:2] if len(st_id) >= 2 else "XX"
-                install_rows.append({
+                elev_val = row.get("ELEV")
+                if elev_val is None or pd.isna(elev_val):
+                    elev_val = row.get("elevation")
+                if elev_val is None or pd.isna(elev_val):
+                    elev_val = row.get("elev")
+                try:
+                    f_elev = float(elev_val)
+                    elevation_clean = 0.0 if np.isnan(f_elev) else f_elev
+                except (ValueError, TypeError):
+                    elevation_clean = 0.0
+
+                row_dict: Dict[str, Any] = {
                     "station_id": st_id,
                     "station_name": str(row.get("NAME") or row.get("name") or st_id),
                     "latitude": float(row.get("LAT") or row.get("latitude") or 0.0),
                     "longitude": float(row.get("LON") or row.get("longitude") or 0.0),
-                    "elevation": float(row.get("ELEV") or row.get("elevation") or 0.0),
+                    "elevation": elevation_clean,
                     "network": f"ghcn_{self.resolution.lower()}",
                     "country": str(row.get("country") or country_code),
-                    "start_date": pd.to_datetime(row.get("first_year", "") if row.get("first_year") else pd.NaT, errors="coerce"),
-                    "end_date": pd.to_datetime(row.get("last_year", "") if row.get("last_year") else pd.NaT, errors="coerce"),
                     "sensor_count": int(row.get("element_count") or 3),
-                })
-        install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"]) if install_rows else pd.DataFrame(
-            columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "start_date", "end_date", "sensor_count"]
-        )
+                }
+                first_y = row.get("first_year")
+                last_y = row.get("last_year")
+                if first_y and pd.notna(first_y) and str(first_y).strip() != "":
+                    row_dict["start_date"] = pd.to_datetime(first_y, errors="coerce")
+                if last_y and pd.notna(last_y) and str(last_y).strip() != "":
+                    row_dict["end_date"] = pd.to_datetime(last_y, errors="coerce")
+
+                install_rows.append(row_dict)
+
+        if install_rows:
+            install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"])
+            if "start_date" in install_df.columns and install_df["start_date"].isna().all():
+                install_df = install_df.drop(columns=["start_date"])
+            if "end_date" in install_df.columns and install_df["end_date"].isna().all():
+                install_df = install_df.drop(columns=["end_date"])
+        else:
+            install_df = pd.DataFrame(
+                columns=["station_id", "station_name", "latitude", "longitude", "elevation", "network", "country", "sensor_count"]
+            )
         install_path = meta_dir / "installation.parquet"
         install_df.to_parquet(install_path, index=False)
 
