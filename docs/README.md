@@ -82,7 +82,7 @@ ds = MasharikiWeatherDataset(
 print("Parameters:", len(ds.parameters_table))
 print(ds.parameters_table.head())
 
-# Inspect station inventory (enriched with topography, non-NaN lifecycles, and sensor counts)
+# Inspect station inventory (with topography, operational dates, and sensor counts)
 print("Stations:", len(ds.stations_table))
 print(ds.stations_table[["station_name", "latitude", "longitude", "dem", "Slope", "Aspect"]].head())
 

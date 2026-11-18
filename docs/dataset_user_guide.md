@@ -8,7 +8,7 @@ The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` cla
 > 3. **Step 3: Dataset Ingestion & Data Interface** (This guide)
 > 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
 >
-> **Prerequisites:** This guide assumes that you have already configured credentials (Step 1) and extracted weather station observations and/or gridded reanalyses into your local root directory (`root="./mashariki_data"`) via Step 2 (or enabled remote Hugging Face streaming via `use_hf=True`).
+> **Prerequisites:** This guide assumes that you have already configured credentials (Step 1) and extracted weather station observations and/or gridded reanalyses into your local root directory (`root="./mashariki_data"`) via Step 2 (or enabled Hugging Face streaming via `use_hf=True`).
 
 The interface provides framework-agnostic exports for PyTorch, NumPy, and JAX.
 
@@ -31,11 +31,11 @@ dataset = MasharikiWeatherDataset(
 )
 ```
 
-### 1.2 Remote Streaming via Hugging Face Hub
+### 1.2 Online Streaming via Hugging Face Hub
 If observations or continental topography are not present on local disk, `MasharikiWeatherDataset` can lazily stream chunked Zarr stores and Parquet files directly from the `DeKUT-DSAIL/weather-data` repository on Hugging Face Hub using `fsspec`:
 
 ```python
-# Enable remote streaming by passing use_hf=True or setting HF_TOKEN in the environment
+# Enable online streaming by passing use_hf=True or setting HF_TOKEN in the environment
 dataset = MasharikiWeatherDataset(
     root="./mashariki_data",
     years=[2023],
@@ -57,8 +57,8 @@ Authentication is resolved automatically from the `HF_TOKEN` or `HUGGINGFACE_HUB
 | `parameters` | `Optional[Sequence[str]]` | `None` | Subset of physical parameters to load |
 | `extended_topo_vars` | `Union[str, Sequence[str], None]` | `None` | Topographic variables to load (`'all'`, sequence of names, or `None`) |
 | `aggregation_methods` | `Optional[Dict[str, str]]` | `None` | Variable-specific temporal aggregation overrides (`'sum'`, `'mean'`, `'max'`) |
-| `prefer_zarr` (or `use_zarr`) | `bool` | `False` | Prioritize local or remote Zarr store reading for station observations |
-| `use_hf` | `bool` | `False` | Opt-in to remote Hugging Face Hub streaming |
+| `prefer_zarr` (or `use_zarr`) | `bool` | `False` | Prioritize local or online Zarr store reading for station observations |
+| `use_hf` | `bool` | `False` | Opt-in to online Hugging Face Hub streaming |
 | `token` | `Optional[str]` | `None` | Optional Hugging Face access token |
 
 ---
@@ -196,7 +196,7 @@ During dataset initialization, `interpolate_topography()` samples the continenta
 * Categorical fields (`LandCover`) are sampled using nearest-neighbor interpolation.
 * Aspect angles are decomposed into sine and cosine pairs:
   $$\text{aspect\_sin} = \sin\left(\theta \cdot \frac{\pi}{180}\right), \quad \text{aspect\_cos} = \cos\left(\theta \cdot \frac{\pi}{180}\right)$$
-* Enriched attributes are stored directly in `stations_table` and `installation`, and persisted to `{root_dir}/metadata/stations.parquet` and `{root_dir}/metadata/installation.parquet`.
+* These attributes are stored directly in `stations_table` and `installation`, and saved to `{root_dir}/metadata/stations.parquet` and `{root_dir}/metadata/installation.parquet`.
 
 ```python
 # Inspect station installation catalog with injected topographic priors

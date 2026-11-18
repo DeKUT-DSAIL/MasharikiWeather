@@ -16,7 +16,16 @@ import pandas as pd
 from tqdm import tqdm
 import xarray as xr
 
-from .extract.apis.base import AFRICA_BBOX, SpatialBoundingBox
+from .extract.apis.base import (
+    AFRICA_BBOX,
+    EAST_AFRICA_BBOX,
+    EASTERN_AFRICA_BBOX,
+    EAST_AFRICA_COUNTRIES,
+    EASTERN_AFRICA_COUNTRIES,
+    SpatialBoundingBox,
+    is_eastern_africa_country,
+    parse_spatial_bbox,
+)
 from .rechunker import DEFAULT_TIME_CHUNKS, get_zarr_encoding, rechunk_dataset
 
 logger = logging.getLogger(__name__)
@@ -35,6 +44,14 @@ __all__ = [
     "pull_gridded_data",
     "pull_weather_data",
     "SOURCE_SUPPORTED_VARIABLES",
+    "AFRICA_BBOX",
+    "EAST_AFRICA_BBOX",
+    "EASTERN_AFRICA_BBOX",
+    "EAST_AFRICA_COUNTRIES",
+    "EASTERN_AFRICA_COUNTRIES",
+    "SpatialBoundingBox",
+    "is_eastern_africa_country",
+    "parse_spatial_bbox",
 ]
 
 # Canonical meteorological variable lexicon and bidirectional cross-source harmonization
@@ -1677,7 +1694,7 @@ class MasharikiWeatherDataset:
         st_exists = any(p.exists() for p in st_candidates)
         pr_exists = any(p.exists() for p in pr_candidates)
 
-        if st_exists and pr_exists:
+        if st_exists or pr_exists:
             self._load_local_registries()
         else:
             self.stations_table = pd.DataFrame(
@@ -2462,6 +2479,16 @@ class MasharikiWeatherDataset:
                     self.stations_table = self.stations_table[mask]
 
         if hasattr(self, "stations_table") and not self.stations_table.empty:
+            # 1. Coalesce station elevation from metadata aliases
+            elev_aliases = ["elevation", "elevationmsl", "height_of_station_above_sea_level", "elev", "altitude", "z", "dem", "DEM"]
+            found_elev = [c for c in elev_aliases if c in self.stations_table.columns]
+            if "elevation" not in self.stations_table.columns:
+                self.stations_table["elevation"] = np.nan
+            for c in found_elev:
+                self.stations_table["elevation"] = self.stations_table["elevation"].fillna(
+                    pd.to_numeric(self.stations_table[c], errors="coerce")
+                )
+
             if "start_date" in self.stations_table.columns:
                 self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
             if "end_date" in self.stations_table.columns:
@@ -2651,13 +2678,17 @@ class MasharikiWeatherDataset:
         if not hasattr(self, "stations_table") or self.stations_table is None or self.stations_table.empty:
             return
 
-        for col, default_val in [("start_date", pd.NaT), ("end_date", pd.NaT), ("sensor_count", 1)]:
-            if col not in self.stations_table.columns:
-                self.stations_table[col] = default_val
+        if "sensor_count" not in self.stations_table.columns:
+            self.stations_table["sensor_count"] = 1
 
-        if "start_date" in self.stations_table.columns:
+        if "start_date" not in self.stations_table.columns:
+            self.stations_table["start_date"] = pd.NaT
+        else:
             self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
-        if "end_date" in self.stations_table.columns:
+
+        if "end_date" not in self.stations_table.columns:
+            self.stations_table["end_date"] = pd.NaT
+        else:
             self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
 
         observed_stations: Set[str] = set()
@@ -2786,20 +2817,27 @@ class MasharikiWeatherDataset:
                 parsed_end = pd.to_datetime(self.stations_table[alt_end], errors="coerce")
                 self.stations_table["end_date"] = self.stations_table["end_date"].fillna(parsed_end)
 
-        # 4. Guarantee non-NaN bounds in start_date / end_date, realistic sensor_count, and physical station_name
+        # 4. Guarantee realistic sensor_count, physical station_name, non-NaN elevation, and genuine dates
         now_d = pd.Timestamp.now().floor("D")
         for s in self.stations_table.index:
             net = str(self.stations_table.loc[s, "network"]).lower() if "network" in self.stations_table.columns and pd.notna(self.stations_table.loc[s, "network"]) else "tahmo"
-            st_date = self.stations_table.loc[s, "start_date"]
-            if pd.isna(st_date) or st_date is pd.NaT:
-                if "tahmo" in net:
-                    self.stations_table.loc[s, "start_date"] = pd.Timestamp("2014-01-01")
-                else:
-                    self.stations_table.loc[s, "start_date"] = pd.Timestamp("2000-01-01")
+            if "start_date" in self.stations_table.columns:
+                st_date = self.stations_table.loc[s, "start_date"]
+                if pd.isna(st_date) or st_date is pd.NaT:
+                    if "tahmo" in net:
+                        self.stations_table.loc[s, "start_date"] = pd.Timestamp("2014-01-01")
+                    elif "ghcn" in net or "cds" in net:
+                        pass  # Do not invent synthetic dates for GHCN or CDS In-Situ
+                    else:
+                        self.stations_table.loc[s, "start_date"] = pd.Timestamp("2000-01-01")
 
-            et_date = self.stations_table.loc[s, "end_date"]
-            if pd.isna(et_date) or et_date is pd.NaT:
-                self.stations_table.loc[s, "end_date"] = now_d
+            if "end_date" in self.stations_table.columns:
+                et_date = self.stations_table.loc[s, "end_date"]
+                if pd.isna(et_date) or et_date is pd.NaT:
+                    if "ghcn" in net or "cds" in net:
+                        pass  # Do not invent synthetic dates for GHCN or CDS In-Situ
+                    else:
+                        self.stations_table.loc[s, "end_date"] = now_d
 
             if s not in observed_stations:
                 cnt = self.stations_table.loc[s, "sensor_count"]
@@ -2815,6 +2853,18 @@ class MasharikiWeatherDataset:
                 if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
                     resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
                     self.stations_table.loc[s, "station_name"] = resolved
+
+        # Ensure station elevation is never NaN
+        if "elevation" in self.stations_table.columns:
+            if "dem" in self.stations_table.columns:
+                self.stations_table["elevation"] = self.stations_table["elevation"].fillna(self.stations_table["dem"])
+            self.stations_table["elevation"] = pd.to_numeric(self.stations_table["elevation"], errors="coerce").fillna(0.0)
+
+        # Omit start_date and end_date columns if not stored by the network (e.g. GHCN or CDS In-Situ)
+        # and no observations were loaded to calculate them
+        for d_col in ["start_date", "end_date"]:
+            if d_col in self.stations_table.columns and self.stations_table[d_col].isna().all():
+                self.stations_table = self.stations_table.drop(columns=[d_col])
 
         self.stations_table["sensor_count"] = self.stations_table["sensor_count"].fillna(12).astype(int)
 
@@ -3269,12 +3319,15 @@ class MasharikiWeatherDataset:
             self.stations_table = self.stations_table.join(df_topo[new_cols])
 
         # Synchronize elevation and dem columns
-        if "dem" in self.stations_table.columns and "elevation" in self.stations_table.columns:
-            self.stations_table["elevation"] = self.stations_table["elevation"].fillna(self.stations_table["dem"])
-        elif "dem" in self.stations_table.columns and "elevation" not in self.stations_table.columns:
-            self.stations_table["elevation"] = self.stations_table["dem"]
+        if "dem" in self.stations_table.columns:
+            if "elevation" in self.stations_table.columns:
+                zero_or_nan = self.stations_table["elevation"].isna() | (self.stations_table["elevation"] == 0.0)
+                if zero_or_nan.any():
+                    self.stations_table.loc[zero_or_nan, "elevation"] = self.stations_table.loc[zero_or_nan, "dem"]
+            else:
+                self.stations_table["elevation"] = self.stations_table["dem"]
 
-        # Persist enriched station metadata with static topography features
+        # Persist station metadata with static topography features
         self._save_station_metadata_registries()
 
 
@@ -5332,19 +5385,9 @@ def extract_stations(
     """
     s_box: SpatialBoundingBox = AFRICA_BBOX
     if bbox is not None:
-        if isinstance(bbox, SpatialBoundingBox):
-            s_box = bbox
-        elif isinstance(bbox, (list, tuple, np.ndarray)) and len(bbox) == 4:
-            s_box = SpatialBoundingBox(
-                lat_min=float(bbox[0]),
-                lon_min=float(bbox[1]),
-                lat_max=float(bbox[2]),
-                lon_max=float(bbox[3]),
-            )
-        else:
-            raise ValueError(
-                f"Invalid bbox format: {bbox}. Expected SpatialBoundingBox or [lat_min, lon_min, lat_max, lon_max]."
-            )
+        parsed = parse_spatial_bbox(bbox)
+        if parsed is not None:
+            s_box = parsed
 
     src = source.lower().strip()
     out_dir = Path(output_dir)
@@ -5521,19 +5564,9 @@ def extract_gridded(
     """
     s_box: SpatialBoundingBox = AFRICA_BBOX
     if bbox is not None:
-        if isinstance(bbox, SpatialBoundingBox):
-            s_box = bbox
-        elif isinstance(bbox, (list, tuple, np.ndarray)) and len(bbox) == 4:
-            s_box = SpatialBoundingBox(
-                lat_min=float(bbox[0]),
-                lon_min=float(bbox[1]),
-                lat_max=float(bbox[2]),
-                lon_max=float(bbox[3]),
-            )
-        else:
-            raise ValueError(
-                f"Invalid bbox format: {bbox}. Expected SpatialBoundingBox or [lat_min, lon_min, lat_max, lon_max]."
-            )
+        parsed = parse_spatial_bbox(bbox)
+        if parsed is not None:
+            s_box = parsed
 
     src = source.lower().strip()
     _validate_source_parameters(source=source, variables=variables, stacklevel=2)
@@ -5755,7 +5788,7 @@ def pull_weather_data(
     root_p = Path(output_dir)
     obs_root = root_p / "obs"
     gridded_root = root_p / "gridded"
-    target_bbox = bbox if bbox is not None else AFRICA_BBOX
+    target_bbox = parse_spatial_bbox(bbox) if bbox is not None else AFRICA_BBOX
 
     save_parquet_val = kwargs.pop("save_parquet", True)
     save_zarr_val = kwargs.pop("save_zarr", True)

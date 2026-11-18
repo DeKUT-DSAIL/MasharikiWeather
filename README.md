@@ -59,7 +59,7 @@ For account creation and credential setup, consult the official documentation:
 - Copernicus Climate Data Store: [Copernicus CDS User Guide](https://cds.climate.copernicus.eu/user-guide)
 - NASA Earthdata / IMERG: [NASA earthaccess Documentation](https://earthaccess.readthedocs.io/en/stable/)
 
-If reading from remote Hugging Face stores, you can authenticate via the CLI (`huggingface-cli login`) or pass a token to the dataset constructor.
+If reading from online Hugging Face stores, you can authenticate via the CLI (`huggingface-cli login`) or pass a token to the dataset constructor.
 
 ### Quickstart
 

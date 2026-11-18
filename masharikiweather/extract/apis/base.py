@@ -284,10 +284,95 @@ def synthetic_fallback_allowed() -> bool:
 
 
 # Canonical preset regions for Africa and continent
+# Eastern Africa domain is defined as 17°E - 52°E, 18°S - 19°N (covering 12 countries)
 AFRICA_BBOX = SpatialBoundingBox(lat_min=-35.0, lat_max=38.0, lon_min=-20.0, lon_max=55.0)
-EAST_AFRICA_BBOX = SpatialBoundingBox(lat_min=-12.0, lat_max=15.0, lon_min=28.0, lon_max=52.0)
+EAST_AFRICA_BBOX = SpatialBoundingBox(lat_min=-18.0, lat_max=19.0, lon_min=17.0, lon_max=52.0)
+EASTERN_AFRICA_BBOX = EAST_AFRICA_BBOX
 KENYA_BBOX = SpatialBoundingBox(lat_min=-4.7, lat_max=5.5, lon_min=33.8, lon_max=41.9)
 PAN_AFRICA_BBOX = AFRICA_BBOX
+
+# 12 Eastern Africa countries defined in AI4Weather
+EASTERN_AFRICA_COUNTRIES: Dict[str, str] = {
+    "KE": "Kenya",
+    "UG": "Uganda",
+    "TZ": "Tanzania",
+    "RW": "Rwanda",
+    "BI": "Burundi",
+    "ET": "Ethiopia",
+    "SS": "South Sudan",
+    "CD": "Democratic Republic of the Congo",
+    "ER": "Eritrea",
+    "DJ": "Djibouti",
+    "MW": "Malawi",
+    "SO": "Somalia",
+}
+EAST_AFRICA_COUNTRIES: Dict[str, str] = EASTERN_AFRICA_COUNTRIES
+
+PRESET_BBOXES: Dict[str, SpatialBoundingBox] = {
+    "africa": AFRICA_BBOX,
+    "pan_africa": AFRICA_BBOX,
+    "pan-africa": AFRICA_BBOX,
+    "east_africa": EAST_AFRICA_BBOX,
+    "east-africa": EAST_AFRICA_BBOX,
+    "eastern_africa": EASTERN_AFRICA_BBOX,
+    "eastern-africa": EASTERN_AFRICA_BBOX,
+    "kenya": KENYA_BBOX,
+}
+
+
+def is_eastern_africa_country(country: Optional[str]) -> bool:
+    """
+    Check whether a country code or name belongs to the 12 Eastern Africa countries.
+    """
+    if not country:
+        return False
+    c = str(country).strip().upper()
+    if c in EASTERN_AFRICA_COUNTRIES:
+        return True
+    for code, name in EASTERN_AFRICA_COUNTRIES.items():
+        if c == name.upper():
+            return True
+        if code == "CD" and c in (
+            "DR CONGO",
+            "DRC",
+            "DEMOCRATIC REPUBLIC OF CONGO",
+            "CONGO, DEMOCRATIC REPUBLIC OF THE",
+            "CONGO, THE DEMOCRATIC REPUBLIC OF THE",
+        ):
+            return True
+    return False
+
+
+def parse_spatial_bbox(
+    bbox: Optional[Union[SpatialBoundingBox, Sequence[float], str]]
+) -> Optional[SpatialBoundingBox]:
+    """
+    Parse a spatial boundary from SpatialBoundingBox, preset name string, or coordinate sequence.
+
+    Supported string presets: 'eastern_africa', 'east_africa', 'africa', 'kenya'.
+    Supported sequence format: [lat_min, lon_min, lat_max, lon_max].
+    """
+    if bbox is None:
+        return None
+    if isinstance(bbox, SpatialBoundingBox):
+        return bbox
+    if isinstance(bbox, str):
+        key = bbox.strip().lower().replace(" ", "_")
+        if key in PRESET_BBOXES:
+            return PRESET_BBOXES[key]
+        raise ValueError(
+            f"Unknown preset bounding box: '{bbox}'. Available presets: {sorted(list(PRESET_BBOXES.keys()))}"
+        )
+    if isinstance(bbox, (list, tuple, np.ndarray)) and len(bbox) == 4:
+        return SpatialBoundingBox(
+            lat_min=float(bbox[0]),
+            lon_min=float(bbox[1]),
+            lat_max=float(bbox[2]),
+            lon_max=float(bbox[3]),
+        )
+    raise ValueError(
+        f"Invalid bbox format: {bbox}. Expected SpatialBoundingBox, preset name string, or [lat_min, lon_min, lat_max, lon_max]."
+    )
 
 
 @dataclass(frozen=True)

@@ -491,7 +491,7 @@ class TestTahmoMetadata:
         inst_df.to_parquet(meta_dir / "installation.parquet")
 
         # 3. Instantiate dataset: should automatically trigger interpolate_topography
-        #    and persist enriched station metadata to stations.parquet
+        #    and persist updated station metadata to stations.parquet
         ds = MasharikiWeatherDataset(
             root_dir=tmp_path,
             source_obs=["tahmo"],
@@ -526,7 +526,7 @@ class TestTahmoMetadata:
         ]
 
         for p in persisted_paths:
-            assert p.exists(), f"Enriched metadata parquet missing from {p}"
+            assert p.exists(), f"Metadata parquet missing from {p}"
             saved_df = pd.read_parquet(p)
             for col in expected_topo_cols:
                 assert col in saved_df.columns, f"Column '{col}' was not saved to {p}"

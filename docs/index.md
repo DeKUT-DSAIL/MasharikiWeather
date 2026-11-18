@@ -14,7 +14,7 @@ The framework is tailored to the observational, convective, and topographic real
 * **Bidirectional CADL ARCO Variable Resolution:** Maps between Copernicus Analysis-Ready Data Layer (CADL) ARCO identifiers (such as `t2m`, `u10`, `v10`, `d2m`), legacy CDS GRIB codes (`2t`, `10u`, `10v`, `2d`), and canonical names (`2m_temperature`, `10m_u_component_of_wind`).
 * **Source Parameter Validation:** Verifies requested variables against provider capability registries and issues clear `UserWarning` advisories when an unsupported variable is requested.
 * **Continental Multi-Scale Topography Streaming:** Lazily streams 17 African topographic channels (`dem`, `Slope`, `Aspect`, `LandCover`, `DistanceToWater`, multi-scale `TPI`, `STD`, and directional derivatives) from Hugging Face Hub or local Zarr caches.
-* **Instantiation-Time Topography Injection:** Interpolates topographic attributes onto station coordinates (bilinear for continuous fields, nearest-neighbor for categorical land cover) and persists enriched metadata to `stations.parquet` and `installation.parquet`.
+* **Instantiation-Time Topography Injection:** Interpolates topographic attributes onto station coordinates (bilinear for continuous fields, nearest-neighbor for categorical land cover) and saves updated metadata to `stations.parquet` and `installation.parquet`.
 * **Cyclical Aspect Angle Encoding:** Decomposes terrain aspect angles into continuous $(\sin\theta, \cos\theta)$ pairs to eliminate boundary discontinuities at $0^\circ / 360^\circ$ for machine learning models.
 * **Dynamic Station Lifecycles & Scoped Registries:** Computes non-NaN operational date bounds ($\min(t)$ to $\max(t)$) and dynamic sensor counts per station, filtering metadata tables strictly to requested observation sources.
 * **Flux-Conservative Temporal Resampling:** Resamples time series to arbitrary temporal frequencies while strictly conserving physical flux quantities (summing precipitation and solar energy, averaging state variables, taking maximum for wind gusts).
@@ -47,7 +47,7 @@ scikit-learn>=1.4.2
 
 ### Extraction and Cloud Access Dependencies
 
-To retrieve data from remote APIs, cloud storage buckets, and analysis-ready cloud stores, the following packages are required:
+To retrieve data from online APIs, cloud storage buckets, and analysis-ready cloud stores, the following packages are required:
 
 | Package | Purpose | Target Services |
 |---|---|---|

@@ -983,13 +983,24 @@ class TAHMOExtractor(BaseExtractor):
 
             st_name = str(row.get("name") or row.get("station_name") or st_id)
 
+            elev_val = row.get("elevation")
+            if elev_val is None or pd.isna(elev_val):
+                elev_val = row.get("elevationmsl")
+            if elev_val is None or pd.isna(elev_val):
+                elev_val = row.get("elev")
+            try:
+                f_elev = float(elev_val)
+                elevation_clean = 0.0 if np.isnan(f_elev) else f_elev
+            except (ValueError, TypeError):
+                elevation_clean = 0.0
+
             install_rows.append({
                 "station_id": st_id,
                 "station_name": st_name,
                 "name": st_name,
                 "latitude": float(row.get("lat") or row.get("latitude") or 0.0),
                 "longitude": float(row.get("lon") or row.get("longitude") or 0.0),
-                "elevation": float(row.get("elevation") or row.get("elev") or 0.0),
+                "elevation": elevation_clean,
                 "network": "tahmo",
                 "country": str(row.get("country")) if row.get("country") else "KE",
                 "start_date": start_dt,

@@ -1,6 +1,6 @@
 # Step 2: Data Extraction Pipelines (In-Situ Stations & Gridded Products)
 
-The extraction layer in `masharikiweather/extract/apis/` provides data pipelines for downloading, validating, and formatting meteorological data from ground weather stations, satellite remote sensing instruments, and numerical reanalysis models across Africa.
+The extraction layer in `masharikiweather/extract/apis/` provides data pipelines for downloading, validating, and formatting meteorological data from ground weather stations, satellites, and numerical reanalysis models across Africa.
 
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
@@ -31,7 +31,7 @@ The extraction layer in `masharikiweather/extract/apis/` provides data pipelines
 | NASA MERRA-2 | `merra2` | Zarr | `{root_dir}/gridded/merra2/` | NASA Goddard Earth Sciences (GES DISC) |
 | Open-Meteo | `open_meteo` | Zarr | `{root_dir}/gridded/open_meteo/` | Open-Meteo Historical Reanalysis API |
 
-### Satellite Remote Sensing
+### Satellites
 
 | Source Name | Source Key | Output Format | Default Storage Location | Provider / Instrument |
 |---|---|---|---|---|

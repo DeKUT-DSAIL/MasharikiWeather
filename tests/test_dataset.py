@@ -1454,7 +1454,7 @@ class TestMetadataAndTopography:
         assert int(st_row["sensor_count"]) == 3
 
     def test_topography_persistence_on_disk(self, tmp_path: Path) -> None:
-        """Verify instantiation topography interpolation persists enriched stations.parquet to disk."""
+        """Verify instantiation topography interpolation persists updated stations.parquet to disk."""
         obs_dir = tmp_path / "obs" / "tahmo"
         meta_dir = tmp_path / "metadata"
         topo_dir = tmp_path / "topography"
@@ -1484,7 +1484,7 @@ class TestMetadataAndTopography:
 
         ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
 
-        # Verify in-memory station table was enriched
+        # Verify in-memory station table has topography
         assert "dem" in ds.stations_table.columns
         assert "Slope" in ds.stations_table.columns
         assert "TPI_2000M" in ds.stations_table.columns
@@ -1497,7 +1497,7 @@ class TestMetadataAndTopography:
             tmp_path / "installation.parquet",
         ]
         for p in expected_paths:
-            assert p.exists(), f"Enriched metadata file must exist at {p}"
+            assert p.exists(), f"Metadata file must exist at {p}"
             saved_df = pd.read_parquet(p)
             assert "dem" in saved_df.columns, f"'dem' must be persisted in {p}"
             assert "Slope" in saved_df.columns, f"'Slope' must be persisted in {p}"

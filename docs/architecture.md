@@ -37,7 +37,7 @@ The architecture is tailored to the observational, meteorological, and topograph
        +-----------------------------------------------------------------------------------------+
        | - obs/{source}/{year}.parquet           (Two-level MultiIndex: station_id, parameter)   |
        | - gridded/{source}/{year-month}.zarr    (WGS 84 EPSG:4326 consolidated stores)          |
-       | - metadata/stations.parquet & installation.parquet (Enriched with topographic priors)   |
+       | - metadata/stations.parquet & installation.parquet (Station inventory with topographic priors)   |
        | - metadata/parameters.parquet           (Source-scoped parameter inventories)           |
        | - topography/africa_topography.zarr     (17 continental multi-scale terrain channels)   |
        +-----------------------------------------------------------------------------------------+
@@ -70,7 +70,7 @@ The architecture is tailored to the observational, meteorological, and topograph
 
 ### 1. Ingestion and Extraction Layer (`masharikiweather/extract/apis/`)
 
-The extraction layer provides modular extractors for remote weather stations, satellites, and numerical reanalysis models:
+The extraction layer provides modular extractors for ground weather stations, satellites, and numerical reanalysis models:
 * **Automated Credential Discovery:** Implements a Bring Your Own Key (BYOK) model. Credentials are automatically resolved from function arguments, shell environment variables (`CDSAPI_KEY`, `TAHMO_API_KEY`, `EARTHDATA_USERNAME`, `HF_TOKEN`), standard configuration files (`~/.cdsapirc`, `~/.netrc`), or local `.env` files without hardcoded secrets.
 * **Concurrency Controls:** Ingestion rates are throttled to respect provider server limits. TAHMO ground station extraction uses configurable thread concurrency capped at a maximum of 4 workers with connection pooling (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), inter-request pacing, and exponential backoff on HTTP 429 status codes.
 * **Adaptive Temporal Chunking:** For legacy Copernicus CDS API requests, queries start at 5-day intervals. If CDS returns a request-size-exceeded error, the chunk window automatically decreases (4 days, 3 days, down to 1 day) to prevent download failures.
@@ -147,7 +147,7 @@ Topography is streamed lazily from the Hugging Face Hub (`DeKUT-DSAIL/weather-da
 When `MasharikiWeatherDataset` is instantiated, `interpolate_topography()` samples the active topographic fields directly onto station coordinates:
 * Continuous fields (`dem`, `Slope`, `TPI`, `STD`, directional derivatives) are interpolated via bilinear interpolation.
 * Categorical fields (`LandCover`) are sampled using nearest-neighbor interpolation.
-* The enriched attributes are stored directly in `stations_table` and `installation`, and persisted to `{root_dir}/metadata/stations.parquet` and `{root_dir}/metadata/installation.parquet`.
+* These attributes are stored directly in `stations_table` and `installation`, and saved to `{root_dir}/metadata/stations.parquet` and `{root_dir}/metadata/installation.parquet`.
 
 #### Continuous Cyclical Aspect Encoding
 Raw aspect angles ($[0^\circ, 360^\circ)$) create an artificial discontinuity between $359^\circ$ and $1^\circ$. MasharikiWeather computes continuous sine and cosine pairs for all aspect variables:
@@ -216,8 +216,8 @@ $$\text{Latitude} \in [-35.0^\circ, 38.0^\circ], \quad \text{Longitude} \in [-20
 
 All coordinate axes are standardized to monotonically ascending orders with EPSG:4326 (WGS 84) coordinate reference system compliance.
 
-### Enriched Metadata (`metadata/`)
-Contains `stations.parquet` and `installation.parquet` enriched with interpolated multi-scale topographic priors (`dem`, `Slope`, `aspect_sin`, `aspect_cos`, `TPI_2000M`, `TPI_10000M`, `LandCover`), alongside `parameters.parquet` detailing variable units and flux-conservation rules.
+### Station and Parameter Metadata (`metadata/`)
+Contains `stations.parquet` and `installation.parquet` with interpolated multi-scale topographic priors (`dem`, `Slope`, `aspect_sin`, `aspect_cos`, `TPI_2000M`, `TPI_10000M`, `LandCover`), alongside `parameters.parquet` detailing variable units and flux-conservation rules.
 
 ### Topography Stores (`topography/`)
 Houses local caches of `africa_topography.zarr` containing the 17 continental terrain descriptor variables.
