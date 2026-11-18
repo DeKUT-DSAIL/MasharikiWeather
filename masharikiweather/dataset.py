@@ -541,7 +541,7 @@ def _get_canonical_source_parameters(source: str) -> Optional[pd.DataFrame]:
     Retrieve the complete canonical parameter catalog for a specified observation source.
 
     Mathematical docstring:
-        For source 'tahmo', returns full 33-variable catalog matching DEC-022 and DEC-024.
+        For source 'tahmo', returns full 33-variable catalog.
 
     Args:
         source: Observation source identifier (e.g. 'tahmo', 'ghcn').
@@ -563,7 +563,7 @@ def _get_canonical_source_parameters(source: str) -> Optional[pd.DataFrame]:
     return None
 
 
-# Gridded & Satellite physical parameter capabilities mapping per DEC-023
+# Gridded & Satellite physical parameter capabilities mapping
 ERA5_SUPPORTED_VARIABLES: Set[str] = {
     # 2D surface fields
     "10m_u_component_of_wind", "10m_v_component_of_wind",
@@ -728,7 +728,7 @@ class ParameterList(list):
 
 class ObservationDataFrame(pd.DataFrame):
     """
-    PeakWeather-inspired DataFrame container for multi-station observation matrices.
+    Two-level MultiIndex DataFrame container for multi-station observation matrices.
 
     Features 2-level MultiIndex columns: Level 0 = station_id, Level 1 = parameter.
     Supports multi-key tuple slicing:
@@ -1399,7 +1399,7 @@ class MasharikiWeatherDataset:
         **kwargs: Any,
     ):
         """
-        Initialize MasharikiWeatherDataset with PeakWeather-inspired offline-first architecture.
+        Initialize MasharikiWeatherDataset with an offline-first architecture.
 
         Primary data loading path is local disk (root_dir), reading Parquet files in
         root_dir/obs/{source} and Zarr groups in root_dir/gridded/{group}.
@@ -1428,9 +1428,8 @@ class MasharikiWeatherDataset:
             prefer_zarr (bool): Whether to prioritize Zarr reading over Parquet for TAHMO observations.
             extended_topo_vars (Optional[Union[str, Sequence[str]]]): Static topographic descriptors to load
                 and interpolate onto station coordinates ('all', list of variables, or None for defaults).
-                Directly mirrors MeteoSwiss PeakWeather's extended_topo_vars interface.
             extended_nwp_vars (Optional[Union[str, Sequence[str]]]): Numerical weather prediction variables
-                to include, provided for PeakWeather API parity.
+                to include.
             **kwargs (Any): Additional configuration parameters.
         """
         actual_root = root if root is not None else (root_dir if root_dir is not None else "./mashariki_data")
@@ -1715,7 +1714,7 @@ class MasharikiWeatherDataset:
                     })
                 self.stations_table = pd.DataFrame(st_rows).set_index("station_id")
 
-                # DEC-024: Check if canonical parameter catalog is registered for source (e.g. 33 for TAHMO)
+                # Check if canonical parameter catalog is registered for source (e.g. 33 for TAHMO)
                 canonical_source_df = None
                 if self.source_obs:
                     for src in self.source_obs:
@@ -1755,10 +1754,10 @@ class MasharikiWeatherDataset:
 
                 self._filter_requested_parameters()
 
-    # --- PEAKWEATHER OOP DATASET PROPERTIES ---
+    # --- DATASET ACCESSORS & PROPERTIES ---
     @property
     def root(self) -> Path:
-        """Convenience alias for root_dir (MeteoSwiss PeakWeather API)."""
+        """Convenience alias for root_dir."""
         return Path(self.root_dir)
 
     @property
@@ -1885,8 +1884,7 @@ class MasharikiWeatherDataset:
     @property
     def available_topography(self) -> Set[str]:
         """
-        Set of available static topographic descriptor variable names,
-        mirroring the MeteoSwiss PeakWeather dataset interface.
+        Set of available static topographic descriptor variable names.
         """
         if self._topo_ds is not None:
             raw_vars = set(self._topo_ds.data_vars)
@@ -1910,8 +1908,7 @@ class MasharikiWeatherDataset:
         bbox: Optional[Sequence[float]] = None,
     ) -> xr.Dataset:
         """
-        Retrieve gridded topographic fields filtered by variable name(s) and bounding box,
-        mirroring PeakWeather's data retrieval methods (such as get_icon_data).
+        Retrieve gridded topographic fields filtered by variable name(s) and bounding box.
 
         Mathematical docstring:
             Input:
@@ -2495,7 +2492,7 @@ class MasharikiWeatherDataset:
                             df = pd.read_parquet(p)
                             if "parameter" in df.columns:
                                 df = df.set_index("parameter")
-                            # DEC-024: Check if file contains fewer parameters than canonical source catalog
+                            # Check if file contains fewer parameters than canonical source catalog
                             if src_canonical is not None and len(df) < len(src_canonical):
                                 logger.info(
                                     "Stale parameter catalog at %s contains %d parameters; overriding with canonical %d parameters.",
@@ -2543,7 +2540,7 @@ class MasharikiWeatherDataset:
                     columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
                 ).set_index(pd.Index([], name="parameter"))
 
-            # DEC-024: If canonical source catalog exists and self.parameters_table has fewer parameters, override with canonical
+            # If canonical source catalog exists and self.parameters_table has fewer parameters, override with canonical
             if self.source_obs:
                 for src in self.source_obs:
                     src_canonical = _get_canonical_source_parameters(src)
@@ -2562,14 +2559,14 @@ class MasharikiWeatherDataset:
                     if pr_mask.any():
                         self.parameters_table = self.parameters_table[pr_mask]
 
-        # DEC-024: If canonical source catalog is larger than current parameters_table, override with canonical
+        # If canonical source catalog is larger than current parameters_table, override with canonical
         if self.source_obs:
             for src in self.source_obs:
                 src_canonical = _get_canonical_source_parameters(src)
                 if src_canonical is not None and (self.parameters_table.empty or len(self.parameters_table) < len(src_canonical)):
                     self.parameters_table = src_canonical.copy()
 
-        # DEC-024: Persist updated parameters table to prevent stale file propagation
+        # Persist updated parameters table to prevent stale file propagation
         if hasattr(self, "parameters_table") and not self.parameters_table.empty:
             try:
                 meta_dir = Path(self.root_dir) / "metadata"
@@ -2590,7 +2587,7 @@ class MasharikiWeatherDataset:
 
     def _save_station_metadata_registries(self) -> None:
         """
-        Persist active station metadata to standard PeakWeather-compliant catalogs.
+        Persist active station metadata to standard metadata catalogs.
 
         Mathematical docstring:
             Input:
@@ -2789,7 +2786,7 @@ class MasharikiWeatherDataset:
                 parsed_end = pd.to_datetime(self.stations_table[alt_end], errors="coerce")
                 self.stations_table["end_date"] = self.stations_table["end_date"].fillna(parsed_end)
 
-        # 4. DEC-024: Guarantee zero NaNs in start_date / end_date, realistic sensor_count, and physical station_name
+        # 4. Guarantee non-NaN bounds in start_date / end_date, realistic sensor_count, and physical station_name
         now_d = pd.Timestamp.now().floor("D")
         for s in self.stations_table.index:
             net = str(self.stations_table.loc[s, "network"]).lower() if "network" in self.stations_table.columns and pd.notna(self.stations_table.loc[s, "network"]) else "tahmo"
@@ -3178,7 +3175,7 @@ class MasharikiWeatherDataset:
     def interpolate_topography(self, variables: Optional[Union[str, Sequence[str]]] = None) -> None:
         """
         Interpolate topography data to the station locations.
-        Mirrors MeteoSwiss PeakWeather's station metadata augmentation
+        Station metadata augmentation
         (populating stations.parquet and installation.parquet with static terrain attributes).
 
         Args:
@@ -3277,7 +3274,7 @@ class MasharikiWeatherDataset:
         elif "dem" in self.stations_table.columns and "elevation" not in self.stations_table.columns:
             self.stations_table["elevation"] = self.stations_table["dem"]
 
-        # Persist enriched station metadata with PeakWeather-compliant topography features
+        # Persist enriched station metadata with static topography features
         self._save_station_metadata_registries()
 
 

@@ -495,7 +495,7 @@ class TestERA5Extractor:
             mock_legacy.assert_called_once()
 
     def test_era5_variable_candidates_generation(self) -> None:
-        """Verify multi-alias candidate generation per DEC-023."""
+        """Verify multi-alias candidate generation."""
         cands_t2m = get_era5_variable_candidates("2m_temperature")
         assert "2m_temperature" in cands_t2m
         assert "2t" in cands_t2m
@@ -607,7 +607,7 @@ class TestERA5Extractor:
 
     def test_cds_arco_cadl_multi_alias_variable_resolution(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """
-        Verify CADL multi-alias variable resolution in _extract_single_cds_arco_store per DEC-023.
+        Verify CADL multi-alias variable resolution in _extract_single_cds_arco_store.
         CADL stores use 't2m' instead of GRIB '2t'. Both '2m_temperature' and 'total_precipitation'
         must be extracted and harmonized cleanly without being dropped.
         """
@@ -907,10 +907,10 @@ class TestTAHMOExtractor:
             assert not res_df.empty
             mock_pool_ps.assert_called_with(max_workers=3)
 
-    def test_tahmo_33_variable_catalog_dec022(self) -> None:
+    def test_tahmo_33_variable_catalog(self) -> None:
         """
-        Verify that DEFAULT_TAHMO_PARAMETERS contains exactly 33 variables formulated
-        by Agent 10 per DEC-022, matching taxonomy classes, CF standards, and resampling rules.
+        Verify that DEFAULT_TAHMO_PARAMETERS contains exactly 33 variables
+        matching taxonomy classes, CF standards, and resampling rules.
 
         Mathematical docstring:
         Input: None
@@ -1062,7 +1062,7 @@ class TestTAHMOExtractor:
             assert pd.to_datetime(st3["end_date"]) == pd.Timestamp("2022-05-01")
             assert st3["sensor_count"] == 2
 
-            # Station 4: since_date, variables list of 4, end_date defaults to current date per DEC-024
+            # Station 4: since_date, variables list of 4, end_date defaults to current date
             st4 = df_st[df_st["station_code"] == "TA00004"].iloc[0]
             assert pd.to_datetime(st4["start_date"]) == pd.Timestamp("2020-01-01")
             assert not pd.isna(st4["end_date"])
@@ -1074,14 +1074,14 @@ class TestTAHMOExtractor:
             assert pd.to_datetime(st5["start_date"]) == pd.Timestamp("2021-01-01")
             assert st5["sensor_count"] == 5
 
-            # Station 6: DEC-024 defaults missing dates to network inception (2014-01-01), current date, and 12 sensors
+            # Station 6: defaults missing dates to network inception (2014-01-01), current date, and 12 sensors
             st6 = df_st[df_st["station_code"] == "TA00006"].iloc[0]
             assert pd.to_datetime(st6["start_date"]).strftime("%Y-%m-%d") == "2014-01-01"
             assert not pd.isna(st6["end_date"])
             assert pd.to_datetime(st6["end_date"]).date() == pd.Timestamp.now().date()
             assert st6["sensor_count"] == 12
 
-    def test_tahmo_generate_metadata_catalogs_dec022(self, tmp_path: Path) -> None:
+    def test_tahmo_generate_metadata_catalogs(self, tmp_path: Path) -> None:
         """
         Verify generate_metadata_catalogs populates installation.parquet with non-null start/end
         dates and valid sensor_counts, and writes all 33 parameters into parameters.parquet.
@@ -1145,7 +1145,7 @@ class TestTAHMOExtractor:
         assert pd.to_datetime(r1["start_date"]) == pd.Timestamp("2016-01-01 00:00:00+0000", tz="UTC")
         assert pd.to_datetime(r1["end_date"]) == pd.Timestamp("2022-12-31 00:00:00+0000", tz="UTC")
 
-        # Station 2: explicit start, end defaults to current date per DEC-024, string sensor_count parsed to 3
+        # Station 2: explicit start, end defaults to current date, string sensor_count parsed to 3
         r2 = df_inst[df_inst["station_id"] == "TA00002"].iloc[0]
         assert r2["sensor_count"] == 3
         assert pd.to_datetime(r2["start_date"]).strftime("%Y-%m-%d") == "2018-05-10"
@@ -1172,9 +1172,9 @@ class TestTAHMOExtractor:
             "wq", "ws", "wv",
         }
 
-    def test_tahmo_dec024_maximum_juice_strategy(self, tmp_path: Path) -> None:
+    def test_tahmo_maximum_throughput_strategy(self, tmp_path: Path) -> None:
         """
-        Verify DEC-024 'Maximum Juice' throughput strategy:
+        Verify maximum throughput strategy:
         When variables is None or 'all', omit the 'variable' query param to pull all 33
         channels in a single request. When an explicit single variable is requested, pass it.
         """
@@ -1214,8 +1214,8 @@ class TestTAHMOExtractor:
             assert "variable" in recorded_params[-1]
             assert recorded_params[-1]["variable"] == "te"
 
-    def test_tahmo_dec023_physical_location_naming(self, tmp_path: Path) -> None:
-        """Verify human-readable physical station naming per DEC-023."""
+    def test_tahmo_physical_location_naming(self, tmp_path: Path) -> None:
+        """Verify human-readable physical station naming."""
         extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy")
         mock_raw = {
             "data": [

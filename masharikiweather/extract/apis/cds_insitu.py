@@ -64,7 +64,7 @@ CDS_INSITU_CANONICAL_TO_RAW: Dict[str, str] = {
     v: k for k, v in CDS_INSITU_RAW_TO_CANONICAL.items()
 }
 
-# Standard PeakWeather parameters catalog inventory for CDS In-Situ
+# Standard parameters catalog inventory for CDS In-Situ
 DEFAULT_CDS_INSITU_PARAMETERS: List[Dict[str, Any]] = [
     {
         "parameter": "2m_temperature",
@@ -501,7 +501,7 @@ class CDSInSituExtractor(BaseExtractor):
         output_dir: Optional[Union[str, Path]] = None,
     ) -> Tuple[Path, Path]:
         """
-        Generate standardized PeakWeather metadata catalogs for CDS In-Situ observations:
+        Generate standardized metadata catalogs for CDS In-Situ observations:
         - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
         - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
 

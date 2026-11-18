@@ -5,7 +5,7 @@ Before downloading or querying data with MasharikiWeather, configure the require
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** (This guide)
 > 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
-> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 3. **Step 3: Dataset Ingestion & Data Interface** ([dataset_user_guide.md](dataset_user_guide.md))
 > 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
 
 ---

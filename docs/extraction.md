@@ -5,7 +5,7 @@ The extraction layer in `masharikiweather/extract/apis/` provides data pipelines
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
 > 2. **Step 2: Data Extraction Pipelines** (This guide)
-> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 3. **Step 3: Dataset Ingestion & Data Interface** ([dataset_user_guide.md](dataset_user_guide.md))
 > 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
 >
 > **Why Extraction Comes First:** MasharikiWeather is an offline-first dataset engine. Before you instantiate `MasharikiWeatherDataset(root_dir=DATA_DIR, ...)` in Step 3 to query observation matrices or construct ML graphs, the raw observation files and gridded products must first be extracted into your target directory (`DATA_DIR`). This guide covers the extraction workflows for all supported providers.
@@ -48,7 +48,7 @@ The extraction layer in `masharikiweather/extract/apis/` provides data pipelines
 
 External meteorological APIs impose strict rate limits and connection caps. The extraction layer handles these transparently:
 
-* **Configurable TAHMO Concurrency (DEC-020):**
+* **Configurable TAHMO Concurrency:**
   TAHMO DataHub legacy endpoints are protected by bounded thread concurrency. The default extraction concurrency is `max_workers=4`, backed by an HTTP connection pool (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), thread-local sessions, inter-request pacing delays, and exponential backoff on HTTP 429 status codes. Concurrency can be tuned via `max_workers` in `TAHMOExtractor`, `pull_station_data()`, or `pull_weather_data()`, but is capped at 4 to prevent server saturation.
 * **Copernicus CDS Concurrency & Adaptive Chunking:**
   ECMWF CDS limits simultaneous user requests. In NetCDF4 download mode (`data_format="netcdf4"`), queries start at a maximum 5-day interval. If the server rejects the query due to size limits or request timeouts, MasharikiWeather catches the error, logs a notice, and automatically downsizes the chunk size (4 days, 3 days, down to 1 day).
@@ -57,7 +57,7 @@ External meteorological APIs impose strict rate limits and connection caps. The 
 
 ---
 
-## ERA5 Ingestion Priority Cascade (DEC-023)
+## ERA5 Ingestion Priority Cascade
 
 ECMWF ERA5 provides hourly global atmospheric reanalysis. Because data providers vary significantly in latency, server quotas, and data format, MasharikiWeather implements an automated three-tiered priority cascade:
 
@@ -112,7 +112,7 @@ Users can bypass the automated cascade at any time by supplying explicit boolean
 
 ---
 
-## CADL ARCO vs CDS GRIB Variable Name Resolution (DEC-023)
+## CADL ARCO vs CDS GRIB Variable Name Resolution
 
 In ECMWF CADL ARCO Zarr stores, variable identifiers differ from legacy CDS GRIB codes. For example, CADL stores designate 2-metre temperature as `t2m` (not GRIB `2t`), 10-metre winds as `u10`/`v10` (not GRIB `10u`/`10v`), and dewpoint as `d2m` (not GRIB `2d`).
 
@@ -162,7 +162,7 @@ When requested variables span multiple CADL streams (such as combining surface `
 
 ---
 
-## Source Parameter Validation and UserWarnings (DEC-023)
+## Source Parameter Validation and UserWarnings
 
 To prevent runtime crashes and silent failures, each extractor maintains a capability registry defining the physical parameters it provides. When an unsupported variable is requested (e.g., requesting `temperature` from `source="imerg"`), MasharikiWeather issues an informative `UserWarning`:
 

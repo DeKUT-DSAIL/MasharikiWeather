@@ -1093,13 +1093,13 @@ class TestPullEntrypoints:
 
 
 # ===========================================================================
-# 4. PEAKWEATHER OOP DATASET INTERFACE TESTS
+# 4. DATASET OOP INTERFACE TESTS
 # ===========================================================================
 
-class TestPeakWeatherOOPInterface:
-    """Rigorous verification of the PeakWeather-inspired OOP surface on MasharikiWeatherDataset."""
+class TestDatasetOOPInterface:
+    """Rigorous verification of the OOP surface on MasharikiWeatherDataset."""
 
-    def test_peakweather_attributes_and_properties(self, tmp_path):
+    def test_dataset_attributes_and_properties(self, tmp_path):
         """Verify root, root_dir, available_parameters, available_years, installation, parameters, stations."""
         # Setup local parquet files
         obs_dir = tmp_path / "obs" / "tahmo"
@@ -1268,14 +1268,14 @@ class TestPeakWeatherOOPInterface:
         assert ("S1", "relative_humidity_S001403") in obs.columns or ("S1", "rh_S001403") in obs.columns
 
 
-class TestDEC022MetadataAndTopography:
+class TestMetadataAndTopography:
     """
-    Verification of DEC-022: Source-Scoped Registries, Dynamic Station Dates/Sensor Counts,
+    Verification of Source-Scoped Registries, Dynamic Station Dates/Sensor Counts,
     TAHMO Lexicon Expansion & Instantiation Topography Persistence.
     """
 
     def test_canonical_lexicon_expansion(self) -> None:
-        """Verify all 25 new DEC-022 variables exist in CANONICAL_VARIABLE_METADATA with CF metadata."""
+        """Verify all 25 new variables exist in CANONICAL_VARIABLE_METADATA with CF metadata."""
         from masharikiweather.dataset import CANONICAL_VARIABLE_METADATA, canonicalize_variable_name
 
         expected_vars = [
@@ -1489,7 +1489,7 @@ class TestDEC022MetadataAndTopography:
         assert "Slope" in ds.stations_table.columns
         assert "TPI_2000M" in ds.stations_table.columns
 
-        # Verify physical persistence on disk across all 4 standard PeakWeather paths
+        # Verify physical persistence on disk across all 4 standard paths
         expected_paths = [
             tmp_path / "metadata" / "stations.parquet",
             tmp_path / "metadata" / "installation.parquet",
@@ -1504,9 +1504,9 @@ class TestDEC022MetadataAndTopography:
             assert "TPI_2000M" in saved_df.columns, f"'TPI_2000M' must be persisted in {p}"
 
 
-class TestDEC023AndDEC024Directives:
+class TestDirectivesValidationAndLifecycle:
     """
-    Unit tests for DEC-023 and DEC-024 directives:
+    Unit tests for system directives:
     1. Gridded source parameter capability validation and explicit UserWarnings.
     2. Default ERA5 priority cascade wiring in extract_gridded and pull_gridded_data.
     3. Descriptive physical station name resolution without NaNs or raw codes.
@@ -1659,7 +1659,7 @@ class TestDEC023AndDEC024Directives:
         rec5 = {"station_name": np.nan, "name": None, "station_code": "TA00005"}
         assert _resolve_physical_station_name(rec5, fallback_id="TA00005") == "TA00005"
 
-    def test_peakweather_two_level_multiindex_enforcement(self, tmp_path: Path) -> None:
+    def test_two_level_multiindex_enforcement(self, tmp_path: Path) -> None:
         """Verify strict two-level (station_id, parameter) MultiIndex across observations and mask."""
         obs_dir = tmp_path / "obs" / "tahmo"
         meta_dir = tmp_path / "metadata"

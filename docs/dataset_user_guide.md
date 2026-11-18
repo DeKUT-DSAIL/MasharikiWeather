@@ -1,16 +1,16 @@
-# Step 3: Dataset Ingestion, Metadata & PeakWeather Interface
+# Step 3: Dataset Ingestion, Metadata & Data Interface
 
 The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` class in `masharikiweather.dataset`. It provides an offline-first, high-performance interface for reading, slicing, resampling, interpolating, and structuring meteorological observations, satellite products, reanalysis fields, and static topographic priors across Africa.
 
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
 > 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
-> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** (This guide)
+> 3. **Step 3: Dataset Ingestion & Data Interface** (This guide)
 > 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
 >
 > **Prerequisites:** This guide assumes that you have already configured credentials (Step 1) and extracted weather station observations and/or gridded reanalyses into your local root directory (`root="./mashariki_data"`) via Step 2 (or enabled remote Hugging Face streaming via `use_hf=True`).
 
-The interface adheres to the design conventions established by MeteoSwiss's PeakWeather project, providing framework-agnostic exports for PyTorch, NumPy, and JAX.
+The interface provides framework-agnostic exports for PyTorch, NumPy, and JAX.
 
 ---
 
@@ -63,7 +63,7 @@ Authentication is resolved automatically from the `HF_TOKEN` or `HUGGINGFACE_HUB
 
 ---
 
-## 2. Dataset Properties & Scoped Metadata Registries (DEC-022)
+## 2. Dataset Properties & Scoped Metadata Registries
 
 An instantiated `MasharikiWeatherDataset` exposes properties for querying active variables, temporal ranges, and station catalogs:
 
@@ -82,7 +82,7 @@ print("Sample Stations:", dataset.stations[:5])
 
 ### Source-Scoped Metadata Registries
 
-In accordance with DEC-022, station and parameter tables are scoped strictly to the observational sources configured in `source_obs`:
+Station and parameter tables are scoped to the observational sources configured in `source_obs`:
 
 ```python
 # Inspect station installation catalog (scoped to requested source_obs)
@@ -94,16 +94,16 @@ params_df = dataset.parameters_table
 print(params_df[["canonical_name", "standard_name", "units", "resampling_method"]].head())
 ```
 
-### Dynamic Station Lifecycles & Sensor Counts (DEC-022 & DEC-023)
+### Dynamic Station Lifecycles & Sensor Counts
 
 To ensure high data quality and avoid invalid `NaN` bounds in metadata:
 * **Non-NaN Operational Bounds:** The system inspects valid non-null observation timestamps for each station to determine the actual operational window ($\min(t)$ and $\max(t)$). If observations are not yet loaded, it falls back to station installation records (`installationdate`, `created`).
 * **Dynamic Sensor Counts:** The `sensor_count` column reflects the true count of distinct active sensor channels and measurement parameters associated with each station, rather than assuming a static value of 1.
-* **Descriptive Station Naming (DEC-023):** Station name resolution prioritizes human-readable location attributes (`location.name`, `location.city`, `label`, `name`) over raw numeric identifiers, ensuring meaningful names across all metadata tables.
+* **Descriptive Station Naming:** Station name resolution prioritizes human-readable location attributes (`location.name`, `location.city`, `label`, `name`) over raw numeric identifiers, ensuring meaningful names across all metadata tables.
 
 ---
 
-## 3. Complete 33-Variable TAHMO Parameter Catalog (DEC-022)
+## 3. Complete 33-Variable TAHMO Parameter Catalog
 
 MasharikiWeather supports the complete 33-parameter catalog for the TAHMO network. All variables are mapped to CF-compliant standard names with physical units and default aggregation methods:
 
@@ -145,9 +145,9 @@ MasharikiWeather supports the complete 33-parameter catalog for the TAHMO networ
 
 ---
 
-## 4. Multi-Scale Topography Streaming & Persistence (DEC-021)
+## 4. Multi-Scale Topography Streaming & Persistence
 
-Topography strongly modulates convective precipitation, diurnal thermal cycles, and wind flow regimes across East Africa. Following MeteoSwiss PeakWeather's architecture, MasharikiWeather integrates a 17-channel continental African topography dataset:
+Topography strongly modulates convective precipitation, diurnal thermal cycles, and wind flow regimes across East Africa. MasharikiWeather integrates a 17-channel continental African topography dataset:
 
 ### 4.1 Topography Channels
 
@@ -336,7 +336,7 @@ dataset_3h = dataset.resample(freq="3h")
 
 ---
 
-## 7. Gridded Reanalysis Fusion (DEC-023)
+## 7. Gridded Reanalysis Fusion
 
 ### 7.1 Loading Gridded Fields
 

@@ -1,14 +1,14 @@
 # Step 4: System Architecture, Physical Conservation & CF Standards
 
-MasharikiWeather is designed as a modular, decoupled framework separating data ingestion and extraction from data loading, alignment, and downstream machine learning preparation.
+MasharikiWeather is designed as a modular framework separating data ingestion and extraction from data loading, alignment, and downstream machine learning preparation.
 
 > **Sequential Workflow Position:**
 > 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
 > 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
-> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 3. **Step 3: Dataset Ingestion & Data Interface** ([dataset_user_guide.md](dataset_user_guide.md))
 > 4. **Step 4: System Architecture & Physical Standards** (This reference)
 
-The architecture mirrors the foundational design principles of MeteoSwiss's PeakWeather project, adapting them to the specific observational, meteorological, and topographic characteristics of the African continent.
+The architecture is tailored to the observational, meteorological, and topographic characteristics of the African continent.
 
 ---
 
@@ -72,13 +72,13 @@ The architecture mirrors the foundational design principles of MeteoSwiss's Peak
 
 The extraction layer provides modular extractors for remote weather stations, satellites, and numerical reanalysis models:
 * **Automated Credential Discovery:** Implements a Bring Your Own Key (BYOK) model. Credentials are automatically resolved from function arguments, shell environment variables (`CDSAPI_KEY`, `TAHMO_API_KEY`, `EARTHDATA_USERNAME`, `HF_TOKEN`), standard configuration files (`~/.cdsapirc`, `~/.netrc`), or local `.env` files without hardcoded secrets.
-* **Concurrency Controls:** Ingestion rates are throttled to respect provider server limits. Per DEC-020, TAHMO ground station extraction uses configurable thread concurrency capped at a maximum of 4 workers with connection pooling (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), inter-request pacing, and exponential backoff on HTTP 429 status codes.
+* **Concurrency Controls:** Ingestion rates are throttled to respect provider server limits. TAHMO ground station extraction uses configurable thread concurrency capped at a maximum of 4 workers with connection pooling (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), inter-request pacing, and exponential backoff on HTTP 429 status codes.
 * **Adaptive Temporal Chunking:** For legacy Copernicus CDS API requests, queries start at 5-day intervals. If CDS returns a request-size-exceeded error, the chunk window automatically decreases (4 days, 3 days, down to 1 day) to prevent download failures.
 * **Standardized Formats:** Observations are written to Parquet partitioned by calendar year, and gridded fields are written to consolidated Zarr stores in WGS 84 (EPSG:4326).
 
 ---
 
-### 2. ERA5 Priority Cascade & CADL Variable Resolution (DEC-023)
+### 2. ERA5 Priority Cascade & CADL Variable Resolution
 
 Reanalysis extraction from ECMWF ERA5 features an automated three-tiered backend cascade that operates dynamically when users do not provide explicit backend preferences:
 
@@ -122,9 +122,9 @@ Each extractor registers its physical parameter capabilities. If a user requests
 
 ---
 
-### 3. African Multi-Scale Topography Zarr Streaming (DEC-021)
+### 3. African Multi-Scale Topography Zarr Streaming
 
-Topography plays a critical role in East African weather dynamics due to the complex terrain of the Great Rift Valley, Mount Kenya, Mount Kilimanjaro, and the Ethiopian Highlands. Following MeteoSwiss PeakWeather's topography architecture, MasharikiWeather incorporates a 17-channel continental African topography dataset:
+Topography plays a critical role in East African weather dynamics due to the complex terrain of the Great Rift Valley, Mount Kenya, Mount Kilimanjaro, and the Ethiopian Highlands. MasharikiWeather incorporates a 17-channel continental African topography dataset:
 
 * **Spatial Domain:** Extends across the African continent ($\text{lat} \in [-46.97^\circ, 37.34^\circ]$, $\text{lon} \in [-25.36^\circ, 63.50^\circ]$) at high resolution.
 * **17 Static Channels:**
@@ -158,13 +158,13 @@ Both the original angles and their $(\sin, \cos)$ representations are retained, 
 
 ---
 
-### 4. Source-Scoped Registries & Dynamic Station Lifecycles (DEC-022)
+### 4. Source-Scoped Registries & Dynamic Station Lifecycles
 
-To avoid cross-contamination of metadata across diverse networks, `MasharikiWeatherDataset` strictly scopes its internal registries:
+To avoid cross-contamination of metadata across diverse networks, `MasharikiWeatherDataset` scopes its internal registries:
 * **Source Scoping:** When `source_obs` is specified (e.g. `source_obs=["tahmo"]`), `stations_table` and `parameters_table` are dynamically resolved from the requested source's metadata directories (`obs/{source}/metadata/` or filtered by `network == source`).
-* **Non-NaN Operational Bounds:** In-situ station lifecycles are resolved dynamically. The system inspects non-NaN observation time stamps to compute the true operational start and end dates per station ($\min(t)$ and $\max(t)$), falling back to station installation records (`installationdate`, `created`) rather than emitting `NaN`.
+* **Non-NaN Operational Bounds:** In-situ station lifecycles are resolved dynamically. The system inspects non-NaN observation time stamps to compute the operational start and end dates per station ($\min(t)$ and $\max(t)$), falling back to station installation records (`installationdate`, `created`) rather than emitting `NaN`.
 * **Dynamic Sensor Counts:** The `sensor_count` metadata attribute is computed dynamically from the count of distinct active sensor channels and parameters associated with each station, rather than assuming a static value of 1.
-* **Descriptive Station Naming (DEC-023):** Station name resolution prioritizes human-readable location attributes (`location.name`, `location.city`, `label`, `name`) over raw numeric identifiers, guaranteeing descriptive station labels across all exported tables.
+* **Descriptive Station Naming:** Station name resolution prioritizes human-readable location attributes (`location.name`, `location.city`, `label`, `name`) over raw numeric identifiers, guaranteeing descriptive station labels across all exported tables.
 
 ---
 

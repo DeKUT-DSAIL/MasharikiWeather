@@ -1,6 +1,6 @@
 """
 Test suite for TAHMO metadata scoping, station lifecycle timestamps, dynamic sensor counts,
-33-variable catalog CF compliance, and instantiation-time topography enrichment (DEC-022).
+33-variable catalog CF compliance, and instantiation-time topography enrichment.
 
 Scientific Mandates:
 - No emojis in code or test files.
@@ -48,7 +48,7 @@ VALID_PHYSICAL_TYPES: Set[str] = {
 
 def _create_synthetic_topography_zarr(topo_path: Path) -> Path:
     """
-    Create a synthetic multi-scale topography Zarr dataset mirroring PeakWeather channels.
+    Create a synthetic multi-scale topography Zarr dataset.
 
     Mathematical docstring:
         Spatial dimensions: (lat: 10, lon: 10).
@@ -82,11 +82,11 @@ def _create_synthetic_topography_zarr(topo_path: Path) -> Path:
     return topo_path
 
 
-class TestTahmoMetadataDEC022:
+class TestTahmoMetadata:
     """
-    Comprehensive test suite for DEC-022: TAHMO metadata source scoping,
+    Comprehensive test suite for TAHMO metadata source scoping,
     non-null lifecycle timestamps, dynamic sensor count resolution, 33-variable CF catalog,
-    and PeakWeather-mirrored instantiation topography persistence.
+    and instantiation topography persistence.
     """
 
     def test_tahmo_source_scoping(self, tmp_path: Path) -> None:
@@ -170,7 +170,7 @@ class TestTahmoMetadataDEC022:
         assert (ds.stations_table["network"] == "tahmo").all()
 
         assert hasattr(ds, "parameters_table")
-        # DEC-024: Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
+        # Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
         assert len(ds.parameters_table) == 33
         assert "surface_pressure" in ds.parameters_table.index
         assert "2m_temperature" in ds.parameters_table.index
@@ -216,7 +216,7 @@ class TestTahmoMetadataDEC022:
         assert "KE000063612" not in ds.stations_table.index
         assert (ds.stations_table["network"] == "tahmo").all()
 
-        # DEC-024: Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
+        # Parameter catalogs for TAHMO are expanded to the full 33-variable catalog
         assert len(ds.parameters_table) == 33
         assert "surface_pressure" in ds.parameters_table.index
         assert "ghcn_prcp" not in ds.parameters_table.index
@@ -456,7 +456,7 @@ class TestTahmoMetadataDEC022:
     def test_stations_parquet_topography_columns(self, tmp_path: Path) -> None:
         """
         Verify that upon dataset instantiation (__init__), stations.parquet (and installation.parquet)
-        is written to disk containing all PeakWeather-mirrored terrain features
+        is written to disk containing all terrain features
         from africa_topography.zarr (dem, Slope, Aspect, TPI_2000M, TPI_10000M, etc.).
 
         Mathematical docstring:
@@ -470,7 +470,7 @@ class TestTahmoMetadataDEC022:
         topo_dir.mkdir(parents=True)
         meta_dir.mkdir(parents=True)
 
-        # 1. Create synthetic PeakWeather-mirrored Africa topography Zarr
+        # 1. Create synthetic Africa topography Zarr
         _create_synthetic_topography_zarr(topo_dir / "africa_topography.zarr")
 
         # 2. Write initial station installation file
@@ -517,7 +517,7 @@ class TestTahmoMetadataDEC022:
             assert col in ds.stations_table.columns, f"Topography column '{col}' missing from ds.stations_table"
             assert pd.notna(ds.stations_table[col]).all(), f"NaN values detected in '{col}'"
 
-        # Verify physical persistence on disk across standard PeakWeather locations
+        # Verify physical persistence on disk across standard locations
         persisted_paths = [
             tmp_path / "metadata" / "stations.parquet",
             tmp_path / "metadata" / "installation.parquet",

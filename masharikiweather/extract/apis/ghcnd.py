@@ -2976,7 +2976,7 @@ def get_african_stations(
 
 from .base import BaseExtractor, SpatialBoundingBox, AFRICA_BBOX
 
-# Standard PeakWeather parameters catalog inventory for NOAA GHCN
+# Standard parameters catalog inventory for NOAA GHCN
 DEFAULT_GHCN_PARAMETERS: List[Dict[str, Any]] = [
     {
         "parameter": "t2m_max",
@@ -3139,7 +3139,7 @@ class GHCNExtractor(BaseExtractor):
         bbox: Optional[SpatialBoundingBox] = None,
     ) -> Tuple[pathlib.Path, pathlib.Path]:
         """
-        Generate standardized PeakWeather metadata catalogs for GHCN stations:
+        Generate standardized metadata catalogs for GHCN stations:
         - installation.parquet: Station inventory (station_id, station_name, latitude, longitude, elevation, network, country)
         - parameters.parquet: Meteorological parameters registry (parameter, canonical_name, units, etc.)
 

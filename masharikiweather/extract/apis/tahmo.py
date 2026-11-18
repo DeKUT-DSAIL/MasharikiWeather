@@ -49,7 +49,7 @@ MAX_REQUEST_DAYS = 365
 DATASETS = ("controlled", "raw")
 SENSOR_COL_PATTERN = re.compile(r"^(?P<variable>[a-z]{2,3})_(?P<sensor>\w+)$")
 
-# Bidirectional Cross-Source Harmonization Registry for TAHMO (33 Variables per DEC-022)
+# Bidirectional Cross-Source Harmonization Registry for TAHMO (33 Variables)
 TAHMO_SHORT_TO_CANONICAL: Dict[str, str] = {
     # 33 primary short codes
     "ap": "surface_pressure",
@@ -168,7 +168,7 @@ TAHMO_CANONICAL_TO_SHORT: Dict[str, str] = {
     "water_velocity": "wv",
 }
 
-# Standard PeakWeather parameters catalog inventory for TAHMO (33 Variables per DEC-022)
+# Standard parameters catalog inventory for TAHMO (33 Variables)
 DEFAULT_TAHMO_PARAMETERS: List[Dict[str, Any]] = [
     {
         "parameter": "surface_pressure",
@@ -837,7 +837,7 @@ class TAHMOExtractor(BaseExtractor):
                 "start": cur.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "end": next_step.strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
-            # DEC-024 Maximum Juice: Omit "variable" param when requesting all variables to pull all 33 variables in 1 call
+            # Throughput optimization: Omit "variable" param when requesting all variables to pull all 33 variables in 1 call
             if filter_vars and len(filter_vars) == 1:
                 params["variable"] = filter_vars[0]
 
@@ -928,7 +928,7 @@ class TAHMOExtractor(BaseExtractor):
         output_dir: Optional[Union[str, Path]] = None,
     ) -> Tuple[Path, Path]:
         """
-        Generate standardized metadata catalogs per PeakWeather specification:
+        Generate standardized metadata catalogs:
         - installation.parquet: Station inventory (station_id, name, latitude, longitude, elevation, etc.)
         - parameters.parquet: Meteorological parameters inventory (parameter, units, physical type, etc.)
 
@@ -1000,7 +1000,7 @@ class TAHMOExtractor(BaseExtractor):
         install_path = meta_dir / "installation.parquet"
         install_df.to_parquet(install_path, index=False)
 
-        # Also persist stations.parquet for PeakWeather compatibility
+        # Also persist stations.parquet for compatibility
         stations_path = meta_dir / "stations.parquet"
         install_df.to_parquet(stations_path, index=False)
 

@@ -2,7 +2,7 @@
 
 Welcome to the **MasharikiWeather** documentation. MasharikiWeather is an open-source Python library and experimental dataset interface developed at the **Centre for Data Science and Artificial Intelligence (DSAIL)**, Dedan Kimathi University of Technology (DeKUT). It provides standardized tools for downloading, processing, harmonizing, and loading meteorological observations, satellite products, reanalysis fields, and static topographic priors across Africa.
 
-The framework adheres to the architectural and metadata design principles established by MeteoSwiss's **PeakWeather** project, adapting them to the observational, convective, and topographic realities of the African continent.
+The framework is tailored to the observational, convective, and topographic realities of the African continent.
 
 ---
 
@@ -22,8 +22,8 @@ MasharikiWeather follows an offline-first, pipeline-oriented lifecycle. New user
 |---|---|---|
 | **Step 1** | [**Environment Setup & Credentials**](credentials.md) | Configure authentication tokens (`.env`, `~/.cdsapirc`, `HF_TOKEN`, `CDSAPI_KEY`, TAHMO, Earthdata). |
 | **Step 2** | [**Data Extraction Pipelines**](extraction.md) | Download in-situ stations (TAHMO 33-variables), ERA5 (Google ARCO -> CDS cascade), satellites (IMERG), and topography Zarr into local storage (`DATA_DIR`). **Must be completed before Step 3.** |
-| **Step 3** | [**Dataset Ingestion & PeakWeather Interface**](dataset_user_guide.md) | Instantiate `MasharikiWeatherDataset(root_dir=DATA_DIR)`, inject topography into station metadata, query scoped station/parameter tables, and slice 2-level MultiIndex observations `(station_id, parameter)`. |
-| **Step 4** | [**System Architecture & Physical Standards**](architecture.md) | Deep-dive into physical conservation laws, CF metadata standards, coordinate systems, and the internal Decision Ledger. |
+| **Step 3** | [**Dataset Ingestion & Data Interface**](dataset_user_guide.md) | Instantiate `MasharikiWeatherDataset(root_dir=DATA_DIR)`, inject topography into station metadata, query scoped station/parameter tables, and slice 2-level MultiIndex observations `(station_id, parameter)`. |
+| **Step 4** | [**System Architecture & Physical Standards**](architecture.md) | Deep-dive into physical conservation laws, CF metadata standards, and coordinate systems. |
 
 ---
 
@@ -86,7 +86,7 @@ print(ds.parameters_table.head())
 print("Stations:", len(ds.stations_table))
 print(ds.stations_table[["station_name", "latitude", "longitude", "dem", "Slope", "Aspect"]].head())
 
-# Load observations with PeakWeather 2-level MultiIndex slicing: (station_id, parameter)
+# Load observations with two-level MultiIndex slicing: (station_id, parameter)
 obs = ds.load()
 print(obs["TA00001", "2m_temperature"])
 print(obs["TA00001"]["total_precipitation"])
@@ -115,7 +115,7 @@ docs/
 |-- conf.py               # Sphinx configuration with autodoc and myst-parser
 |-- credentials.md        # Step 1: Environment Setup & API Authentication
 |-- extraction.md         # Step 2: Data Extraction Pipelines (TAHMO, ERA5, Satellites)
-|-- dataset_user_guide.md # Step 3: Dataset Ingestion, Metadata & PeakWeather Interface
+|-- dataset_user_guide.md # Step 3: Dataset Ingestion, Metadata & Data Interface
 \-- architecture.md       # Step 4: System Architecture, Physical Conservation & CF Standards
 ```
 

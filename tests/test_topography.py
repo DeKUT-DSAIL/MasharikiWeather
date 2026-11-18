@@ -96,7 +96,7 @@ def mock_dataset_with_stations(tmp_path: Path) -> MasharikiWeatherDataset:
 
 
 class TestTopographyOOPInterface:
-    """Verification of PeakWeather-aligned topography attributes and accessors."""
+    """Verification of topography attributes and accessors."""
 
     def test_available_topography_property(self, mock_dataset_with_stations: MasharikiWeatherDataset) -> None:
         """Verify available_topography contains all 17 multi-scale terrain descriptor variables."""
