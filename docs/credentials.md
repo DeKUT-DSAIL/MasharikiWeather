@@ -1,6 +1,12 @@
-# Credentials
+# Step 1: Environment Setup & Credentials
 
-Some meteorological and satellite data providers require free user registration and API authentication. MasharikiWeather discovers credentials automatically without requiring hardcoded secrets in user scripts.
+Before downloading or querying data with MasharikiWeather, configure the required environment variables and API credentials. MasharikiWeather discovers credentials automatically without requiring hardcoded secrets in user scripts.
+
+> **Sequential Workflow Position:**
+> 1. **Step 1: Credentials & Environment Setup** (This guide)
+> 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
+> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
 
 ---
 

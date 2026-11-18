@@ -76,15 +76,37 @@ pip install -e .
 
 ---
 
+## Sequential Documentation Roadmap
+
+MasharikiWeather follows a strict pipeline-oriented lifecycle. Users and researchers should follow the documentation sequentially:
+
+```text
++-----------------------+     +-----------------------+     +-----------------------+     +-----------------------+
+|  Step 1: Setup &      |     |  Step 2: Data         |     |  Step 3: Dataset      |     |  Step 4: System       |
+|  Credentials          | --> |  Extraction           | --> |  Ingestion & OOP      | --> |  Architecture &       |
+|  (credentials.md)     |     |  (extraction.md)      |     |  (dataset_user_guide) |     |  Physical Standards   |
++-----------------------+     +-----------------------+     +-----------------------+     +-----------------------+
+```
+
+| Step | Guide | Key Objectives |
+|---|---|---|
+| **Step 1** | [**Environment Setup & Credentials**](credentials.md) | Configure API keys (`.env`, `~/.cdsapirc`, `HF_TOKEN`, `CDSAPI_KEY`, TAHMO, Earthdata). |
+| **Step 2** | [**Data Extraction Pipelines**](extraction.md) | Download in-situ stations (TAHMO 33-variables), ERA5 (Google ARCO -> CDS cascade), satellites (IMERG), and topography Zarr into local storage (`DATA_DIR`). **Must be executed before Step 3.** |
+| **Step 3** | [**Dataset Ingestion & PeakWeather Interface**](dataset_user_guide.md) | Instantiate `MasharikiWeatherDataset(root_dir=DATA_DIR)`, inject topography into station metadata, query scoped station/parameter tables, and slice 2-level MultiIndex observations `(station_id, parameter)`. |
+| **Step 4** | [**System Architecture & Physical Standards**](architecture.md) | Review physical conservation laws, CF metadata compliance, coordinate reference systems, and the Decision Ledger. |
+
+---
+
 ## Contents
 
 ```{toctree}
 :maxdepth: 2
+:numbered:
 
-architecture
-extraction
 credentials
+extraction
 dataset_user_guide
+architecture
 ```
 
 ---

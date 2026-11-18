@@ -1,6 +1,14 @@
-# Dataset User Guide
+# Step 3: Dataset Ingestion, Metadata & PeakWeather Interface
 
 The core user interface of MasharikiWeather is the `MasharikiWeatherDataset` class in `masharikiweather.dataset`. It provides an offline-first, high-performance interface for reading, slicing, resampling, interpolating, and structuring meteorological observations, satellite products, reanalysis fields, and static topographic priors across Africa.
+
+> **Sequential Workflow Position:**
+> 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
+> 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
+> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** (This guide)
+> 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
+>
+> **Prerequisites:** This guide assumes that you have already configured credentials (Step 1) and extracted weather station observations and/or gridded reanalyses into your local root directory (`root="./mashariki_data"`) via Step 2 (or enabled remote Hugging Face streaming via `use_hf=True`).
 
 The interface adheres to the design conventions established by MeteoSwiss's PeakWeather project, providing framework-agnostic exports for PyTorch, NumPy, and JAX.
 

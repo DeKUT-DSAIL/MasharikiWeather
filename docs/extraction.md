@@ -1,6 +1,14 @@
-# Extraction Layer
+# Step 2: Data Extraction Pipelines (In-Situ Stations & Gridded Products)
 
 The extraction layer in `masharikiweather/extract/apis/` provides modular, robust data pipelines for downloading, validating, and formatting meteorological data from ground weather stations, satellite remote sensing instruments, and numerical reanalysis models across Africa.
+
+> **Sequential Workflow Position:**
+> 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
+> 2. **Step 2: Data Extraction Pipelines** (This guide)
+> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 4. **Step 4: System Architecture & Physical Standards** ([architecture.md](architecture.md))
+>
+> **Why Extraction Comes First:** MasharikiWeather is an offline-first dataset engine. Before you instantiate `MasharikiWeatherDataset(root_dir=DATA_DIR, ...)` in Step 3 to query observation matrices or construct ML graphs, the raw observation files and gridded products must first be extracted into your target directory (`DATA_DIR`). This guide covers the extraction workflows for all supported providers.
 
 ---
 

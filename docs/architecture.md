@@ -1,6 +1,12 @@
-# Architecture
+# Step 4: System Architecture, Physical Conservation & CF Standards
 
 MasharikiWeather is designed as a modular, decoupled framework separating data ingestion and extraction from data loading, alignment, and downstream machine learning preparation.
+
+> **Sequential Workflow Position:**
+> 1. **Step 1: Credentials & Environment Setup** ([credentials.md](credentials.md))
+> 2. **Step 2: Data Extraction Pipelines** ([extraction.md](extraction.md))
+> 3. **Step 3: Dataset Ingestion & PeakWeather Interface** ([dataset_user_guide.md](dataset_user_guide.md))
+> 4. **Step 4: System Architecture & Physical Standards** (This reference)
 
 The architecture mirrors the foundational design principles of MeteoSwiss's PeakWeather project, adapting them to the specific observational, meteorological, and topographic characteristics of the African continent.
 
