@@ -4820,8 +4820,8 @@ def pull_weather_data(
     start_date: Union[str, datetime, pd.Timestamp],
     end_date: Union[str, datetime, pd.Timestamp],
     bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
-    station_source: Optional[Union[str, Sequence[str]]] = "tahmo",
-    gridded_source: Optional[Union[str, Sequence[str]]] = "era5",
+    station_source: Optional[Union[str, Sequence[str]]] = None,
+    gridded_source: Optional[Union[str, Sequence[str]]] = None,
     station_variables: Optional[Sequence[str]] = None,
     gridded_variables: Optional[Sequence[str]] = None,
     output_dir: Union[str, Path] = "./mashariki-data",
@@ -4875,6 +4875,8 @@ def pull_weather_data(
         else []
     )
     total_sources = len(st_sources) + len(gr_sources)
+    if total_sources == 0:
+        raise ValueError("At least one of 'station_source' or 'gridded_source' must be specified.")
 
     station_results: Dict[str, Any] = {}
     gridded_results: Dict[str, Any] = {}
