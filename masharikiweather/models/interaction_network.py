@@ -2,7 +2,7 @@
 Differentiable Physics Interaction Networks.
 
 Implements the core MessagePassing framework.
-Instead of purely relying on node embeddings, the network explicitly generates, updates, 
+Instead of purely relying on node embeddings, the network directly generates, updates, 
 and aggregates Edge Attributes (Haversine Distance, Delta-Elevation, Topology) 
 to simulate Earth System advection dynamics over heterogeneous meshes.
 """
@@ -64,7 +64,7 @@ class PhysicsInteractionBlock(MessagePassing):
             edge_index (LongTensor): [2, E] graph topology.
             edge_attr (Tensor): [E, edge_dim] static structural boundaries.
         """
-        # PyG explicitly handles bipartite (Tuple) and unipartite (Tensor) inputs automatically
+        # PyG directly handles bipartite (Tuple) and unipartite (Tensor) inputs automatically
         return self.propagate(edge_index, x=x, edge_attr=edge_attr)
 
     def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor, index: torch.Tensor, ptr: Optional[torch.Tensor], size_i: Optional[int]) -> torch.Tensor:
@@ -72,13 +72,13 @@ class PhysicsInteractionBlock(MessagePassing):
         Constructs messages along every edge natively and applies spatial attention.
         
         Terrain-Steered Wind Alignment:
-        If raw wind (u, v) and topographic gradients (slope, aspect) are explicitly provided
+        If raw wind (u, v) and topographic gradients (slope, aspect) are directly provided
         (either embedded at known indices in x_i/x_j, or appended to edge_attr dynamically 
         in the dataloader), we can compute a dot product scalar. 
         Since x_i and x_j are latent embeddings here [Channels], the physical 
         dot product is actually natively learned by the edge_mlp below. 
         
-        However, to explicitly compute the scalar as requested (assuming raw features):
+        However, to directly compute the scalar as requested (assuming raw features):
         ```python
         # Fallback check if wind components exist
         if hasattr(self, 'wind_u_idx') and hasattr(self, 'slope_idx'):

@@ -80,7 +80,7 @@ The extraction layer provides modular extractors for ground weather stations, sa
 
 ### 2. ERA5 Priority Cascade & CADL Variable Resolution
 
-Reanalysis extraction from ECMWF ERA5 features an automated three-tiered backend cascade that operates dynamically when users do not provide explicit backend preferences:
+Reanalysis extraction from ECMWF ERA5 features an automated three-tiered backend cascade that operates dynamically when users do not provide direct backend preferences:
 
 ```text
    extract_gridded(source="era5", ...)
@@ -208,7 +208,7 @@ Station observations are stored in Parquet files partitioned by year. Columns ar
 * Level 0: Station identifier (`station_id`, e.g., `TA00001`)
 * Level 1: Parameter name (`parameter`, e.g., `2m_temperature`)
 
-When a station has multiple collocated sensors measuring the same variable, sensor channels are preserved using explicit column suffixes (such as `relative_humidity_S001402`), preventing destructive spatial averaging of sensor readings.
+When a station has multiple collocated sensors measuring the same variable, sensor channels are preserved using direct column suffixes (such as `relative_humidity_S001402`), preventing destructive spatial averaging of sensor readings.
 
 ### Gridded Reanalysis & Satellites (`gridded/`)
 Gridded fields are stored as consolidated Zarr stores cropped to the continental African bounding box:

@@ -68,7 +68,7 @@ class ScalingEngine:
                     # Note: Assumes tsl_scaler operates on the feature dimension uniformly
                     # or is indexed correctly if properly fitted.
                     # As a safe fallback for variable-wise iteration, we only apply it 
-                    # if the scaler was explicitly provided.
+                    # if the scaler was directly provided.
                     
                     # Temporarily reshape to match TSL expectation if needed, or apply directly
                     # For a single feature channel, tsl_scaler typically handles it fine
@@ -156,7 +156,7 @@ def compute_terrain_wind_alignment(
     """
     Computes terrain-steered wind alignment scalar: dot product of wind vector (u, v) 
     and surface slope/aspect orientation vector.
-    Gracefully falls back to zeros if u, v variables are absent.
+    Cleanly falls back to zeros if u, v variables are absent.
     """
     n_edges = len(edge_src)
     
@@ -226,13 +226,13 @@ class EarthSystemAdapter(Dataset):
         self.n_stations = len(station_labels) if station_labels else 0
         self.n_params = len(feature_labels) if feature_labels else 0
 
-        # 1. Pre-cast Point Station Variables (Robust Shape Parsing)
+        # 1. Pre-cast Point Station Variables (Reliable Shape Parsing)
         def _format_station_tensor(arr, dtype, pad_nans=False):
             if arr is None or len(arr) == 0:
                 return None
             t = torch.as_tensor(np.ascontiguousarray(arr), dtype=dtype)
             
-            # Pad NaN gaps to strictly maintain geometric lengths before any forward pass
+            # Pad NaN gaps to only maintain geometric lengths before any forward pass
             if pad_nans and dtype == torch.float32:
                 t = torch.nan_to_num(t, nan=0.0)
                 
@@ -450,7 +450,7 @@ class EarthSystemAdapter(Dataset):
                     continue
                 
                 # Task-Aware Edge Isolation (Prevent Target Leakage)
-                # For strictly spatial retrospective tasks (Downscaling, AO), we must prevent 
+                # For only spatial retrospective tasks (Downscaling, AO), we must prevent 
                 # a station from informing a grid cell that is directly used to reconstruct it.
                 # Identity mapping leakage is the biggest cause of 'too-perfect' weather emulators.
                 target_node_name = getattr(self.windows, 'target_node', 'tahmo')
@@ -507,7 +507,7 @@ class EarthSystemAdapter(Dataset):
                     knn_src = cart_src[:, :3] * dist_weight
                     knn_dst = cart_dst[:, :3] * dist_weight
                 else:
-                    # Strictly 2D physical kilometric topology
+                    # Only 2D physical kilometric topology
                     knn_src = cart_src[:, :2]
                     knn_dst = cart_dst[:, :2]
                 
@@ -783,7 +783,7 @@ class EarthSystemAdapter(Dataset):
                 target_grid_slice = self.windows.grids_y[target_node].isel(
                     time=slice(target_start, target_end)
                 )
-                # Explicit JIT compute
+                # Direct JIT compute
                 target_numpy = target_grid_slice.compute().to_array().values
                 
             flat_target = self._safe_flatten_grid(target_numpy)
@@ -983,7 +983,7 @@ def setup_ddp():
     Initializes the DistributedDataParallel environment following Aurora standards.
     Requirements:
         1. NCCL backend for collective GPU synchronization.
-        2. Strict CUDA device binding to the local rank to prevent VRAM overflow.
+        2. Fixed CUDA device binding to the local rank to prevent VRAM overflow.
     """
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])

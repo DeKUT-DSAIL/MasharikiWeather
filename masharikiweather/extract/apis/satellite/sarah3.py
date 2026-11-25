@@ -155,7 +155,7 @@ def list_sarah3_parameters(category: Optional[str] = None) -> pd.DataFrame:
 
 def get_sarah3_metadata() -> Dict[str, Any]:
     """
-    Retrieve comprehensive scientific metadata regarding the EUMETSAT CM SAF SARAH-3 climate record.
+    Retrieve full scientific metadata regarding the EUMETSAT CM SAF SARAH-3 climate record.
     """
     return {
         "dataset_name": "Surface Solar Radiation Data Set - Heliosat (SARAH-3)",

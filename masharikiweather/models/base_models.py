@@ -175,7 +175,7 @@ class PrecipAnomalyDetector(torch.nn.Module):
                 z_dict[node_type] = F.silu(z)
 
         # B. Process (Message Passing over Physics Edges)
-        # We explicitly inject edge_attr_dict so Interaction Networks can digest Physical Topography
+        # We directly inject edge_attr_dict so Interaction Networks can digest Physical Topography
         z_dict = self.processor(
             x_dict=z_dict, 
             edge_index_dict=edge_index_dict, 

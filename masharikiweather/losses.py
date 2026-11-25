@@ -26,12 +26,12 @@ class TweedieDevianceLoss(nn.Module):
         mae_mask: torch.Tensor = None
     ) -> torch.Tensor:
         """
-        mu: The predicted mean (emitted strictly post-SoftplusLink), must be > 0.
+        mu: The predicted mean (emitted only post-SoftplusLink), must be > 0.
         y: The true raw observation, bounding at 0.0.
         valid_mask: Boolean mask indicating physical valid sensors vs hardware outages.
         mae_mask: Boolean mask indicating artificially hidden patches for MAE.
         """
-        # Clamp bounds strictly preventing exponential `NaN` logic crashes
+        # Clamp bounds only preventing exponential `NaN` logic crashes
         mu = torch.clamp(mu, min=self.eps)
         
         # Guard against unpadded NaNs bypassing dataloader
@@ -80,7 +80,7 @@ class TweedieDevianceLoss(nn.Module):
 class RMSELoss(nn.Module):
     """
     Standard Root Mean Square Error (RMSE).
-    Evaluates strictly the deterministic mean error spread across the physical domain.
+    Evaluates only the deterministic mean error spread across the physical domain.
     """
     def __init__(self, reduction: str = 'mean'):
         super().__init__()
@@ -113,7 +113,7 @@ class DifferentiableFSSLoss(nn.Module):
         preds/targets structural constraint shape: (Batch, Channels, H, W).
         """
         loss = 0.0
-        # Smoothed approximation (Sigmoid) replacing strict Boolean cutoffs making the metric perfectly differentiable
+        # Smoothed approximation (Sigmoid) replacing fixed Boolean cutoffs making the metric perfectly differentiable
         temperature = 0.1 
         
         for t in self.thresholds:
@@ -172,7 +172,7 @@ class RAPSDLoss(nn.Module):
 class CRPSLoss(nn.Module):
     """
     Continuous Ranked Probability Score (CRPS).
-    Measures strict generic probabilistic calibration natively scaling empirical observations.
+    Measures fixed generic probabilistic calibration natively scaling empirical observations.
     """
     def __init__(self):
         super().__init__()
@@ -187,7 +187,7 @@ class CRPSLoss(nn.Module):
         targets_expanded = targets.unsqueeze(1)
         mae = torch.abs(preds_ensemble - targets_expanded).mean(dim=1)
         
-        # Sort values precisely calculating mean pairwise deviations explicitly without nested looping constraints
+        # Sort values precisely calculating mean pairwise deviations directly without nested looping constraints
         preds_sorted, _ = torch.sort(preds_ensemble, dim=1)
         
         i = torch.arange(1, m + 1, device=preds_ensemble.device).float()
@@ -201,7 +201,7 @@ class CRPSLoss(nn.Module):
 class SEEPSScore(nn.Module):
     """
     Stable Equitable Error in Probability Space (SEEPS).
-    An evaluation scoring tool defining categorical states strictly mapped explicitly to
+    An evaluation scoring tool defining categorical states only mapped directly to
     dry, light, and heavy geographical conditions (equitably resolving native sampling thresholds).
     """
     def __init__(self, dry_threshold: float = 0.2, p_light: float = 0.5, p_heavy: float = 0.2):

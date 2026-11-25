@@ -14,7 +14,7 @@ Before downloading or querying data with MasharikiWeather, configure the require
 
 When an extractor or dataset loader requires authentication, it discovers credentials in the following hierarchical order:
 
-1. **Explicit Function Arguments:** Parameters passed directly to extractors or datasets (e.g., `token="..."`, `cds_key="..."`, `api_key="..."`).
+1. **Direct Function Arguments:** Parameters passed directly to extractors or datasets (e.g., `token="..."`, `cds_key="..."`, `api_key="..."`).
 2. **Environment Variables:** Variables exported in the current shell session or execution environment (e.g., `HF_TOKEN`, `CDSAPI_KEY`, `TAHMO_API_KEY`).
 3. **Configuration Files:** Standard configuration files in the user home directory (`~/.cdsapirc`, `~/.netrc`, `~/.cache/huggingface/token`).
 4. **Local `.env` File:** Environment variables defined in a `.env` file in the current working directory, parsed automatically via `python-dotenv`.
@@ -87,13 +87,13 @@ key: your-cds-api-key
 machine urs.earthdata.nasa.gov login your-earthdata-username password your-earthdata-password
 ```
 
-### 5. Explicit Constructor Parameters
+### 5. Direct Constructor Parameters
 
 ```python
 from masharikiweather.dataset import MasharikiWeatherDataset
 from masharikiweather.extract.apis.era5 import ERA5Extractor
 
-# Initialize dataset with explicit Hugging Face token
+# Initialize dataset with direct Hugging Face token
 dataset = MasharikiWeatherDataset(
     root="./mashariki_data",
     source_obs=["tahmo"],
@@ -101,6 +101,6 @@ dataset = MasharikiWeatherDataset(
     token="hf_your_personal_access_token",
 )
 
-# Initialize ERA5 extractor with explicit CDS key
+# Initialize ERA5 extractor with direct CDS key
 extractor = ERA5Extractor(cds_key="your-cds-api-key")
 ```

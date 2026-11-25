@@ -10,14 +10,14 @@ The framework is tailored to the observational, convective, and topographic real
 
 * **Multi-Source In-Situ Station Ingestion:** Connects to observational networks across Africa, including the Trans-African Hydro-Meteorological Observatory (TAHMO), Copernicus Climate Data Store (CDS) In-Situ, and NOAA Global Historical Climatology Network daily (GHCNd).
 * **Complete 33-Variable TAHMO Catalog:** Standardizes the complete catalog of 33 physical, hydrological, radiation, and diagnostic variables with Climate and Forecast (CF) compliant standard names, canonical units, and aggregation rules.
-* **ERA5 Ingestion Priority Cascade:** Implements an automated three-tiered backend cascade (Google Cloud ARCO -> CDS Legacy NetCDF4 -> CDS ARCO via obstore) with dynamic availability verification and explicit user backend overrides.
+* **ERA5 Ingestion Priority Cascade:** Implements an automated three-tiered backend cascade (Google Cloud ARCO -> CDS Legacy NetCDF4 -> CDS ARCO via obstore) with dynamic availability verification and direct user backend overrides.
 * **Bidirectional CADL ARCO Variable Resolution:** Maps between Copernicus Analysis-Ready Data Layer (CADL) ARCO identifiers (such as `t2m`, `u10`, `v10`, `d2m`), legacy CDS GRIB codes (`2t`, `10u`, `10v`, `2d`), and canonical names (`2m_temperature`, `10m_u_component_of_wind`).
 * **Source Parameter Validation:** Verifies requested variables against provider capability registries and issues clear `UserWarning` advisories when an unsupported variable is requested.
 * **Continental Multi-Scale Topography Streaming:** Lazily streams 17 African topographic channels (`dem`, `Slope`, `Aspect`, `LandCover`, `DistanceToWater`, multi-scale `TPI`, `STD`, and directional derivatives) from Hugging Face Hub or local Zarr caches.
 * **Instantiation-Time Topography Injection:** Interpolates topographic attributes onto station coordinates (bilinear for continuous fields, nearest-neighbor for categorical land cover) and saves updated metadata to `stations.parquet` and `installation.parquet`.
 * **Cyclical Aspect Angle Encoding:** Decomposes terrain aspect angles into continuous $(\sin\theta, \cos\theta)$ pairs to eliminate boundary discontinuities at $0^\circ / 360^\circ$ for machine learning models.
-* **Dynamic Station Lifecycles & Scoped Registries:** Computes non-NaN operational date bounds ($\min(t)$ to $\max(t)$) and dynamic sensor counts per station, filtering metadata tables strictly to requested observation sources.
-* **Flux-Conservative Temporal Resampling:** Resamples time series to arbitrary temporal frequencies while strictly conserving physical flux quantities (summing precipitation and solar energy, averaging state variables, taking maximum for wind gusts).
+* **Dynamic Station Lifecycles & Scoped Registries:** Computes non-NaN operational date bounds ($\min(t)$ to $\max(t)$) and dynamic sensor counts per station, filtering metadata tables only to requested observation sources.
+* **Flux-Conservative Temporal Resampling:** Resamples time series to arbitrary temporal frequencies while only conserving physical flux quantities (summing precipitation and solar energy, averaging state variables, taking maximum for wind gusts).
 * **Spatiotemporal Graph Modeling:** Exports observation and reanalysis data as PyTorch Geometric `HeteroData` graphs with distance-bounded bipartite edges and terrain-steered advection vectors.
 
 ---
@@ -78,7 +78,7 @@ pip install -e .
 
 ## Sequential Documentation Roadmap
 
-MasharikiWeather follows a strict pipeline-oriented lifecycle. Users and researchers should follow the documentation sequentially:
+MasharikiWeather follows a fixed pipeline-oriented lifecycle. Users and researchers should follow the documentation sequentially:
 
 ```text
 +-----------------------+     +-----------------------+     +-----------------------+     +-----------------------+

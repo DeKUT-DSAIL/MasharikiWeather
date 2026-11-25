@@ -1,7 +1,7 @@
 """
 Dagster Pipeline Definitions and Programmatic Materialization Runner.
 
-Exposes unified Dagster definitions and high-throughput extraction helpers:
+Exposes unified Dagster definitions and batch extraction helpers:
 1. defs: Production Dagster Definitions bundle binding assets and IO managers.
 2. materialize_extraction: Programmatic execution helper orchestrating partitioned
    ingestion with dynamic progress bars (e.g. '2017.parquet: 56.9MB [00:14, 3.93MB/s]').

@@ -36,7 +36,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         input_path (str): Path to the existing (fragmented) Zarr store.
         output_path (str): Path to the new (optimized) Zarr store.
         time_chunks (int): Number of time steps per chunk (default: 24).
-        swap (bool): If True, deletes the original input_path after successful re-chunking.
+        swap (bool): If True, deletes the original input_path after completed re-chunking.
     """
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input Zarr not found: {input_path}")

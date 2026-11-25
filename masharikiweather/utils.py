@@ -7,7 +7,7 @@ import torch.nn as nn
 
 class SoftplusLink(nn.Module):
     """
-    Scientifically robust activation module shielding Gradient Descent 
+    Scientifically reliable activation module shielding Gradient Descent 
     from variance explosions when interacting with Zero-Inflated Poisson-Gamma datasets 
     (like raw extreme precipitation spanning 0-300mm+).
     
@@ -30,7 +30,7 @@ class SparseStationLoss(nn.Module):
     """
     A PyTorch module wrapper translating mathematical dense geometric predictions 
     against highly scattered, sparse observational TAHMO Station vectors.
-    Executes loss strictly across valid observational topography.
+    Executes loss only across valid observational topography.
     """
     def __init__(self, base_loss_fn: nn.Module):
         """
@@ -102,7 +102,7 @@ class TweedieDevianceLoss(nn.Module):
             mu: Model predictions (intensities). Must be positive (Softplus).
             y: Raw precipitation targets (mm).
         """
-        # Ensure mu is strictly positive for power operations
+        # Ensure mu is only positive for power operations
         mu = torch.clamp(mu, min=self.epsilon)
         
         # Unit Deviance components

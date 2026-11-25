@@ -2,7 +2,7 @@
 ERA5 Atmospheric and Surface Reanalysis Extraction Engine.
 
 Extracts high-resolution atmospheric reanalysis from ECMWF ERA5 with dual-engine architecture:
-1. Primary High-Throughput Engine: Cloud-native Google Cloud ARCO ERA5
+1. Primary Batch Engine: Cloud-native Google Cloud ARCO ERA5
    (gs://gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3) via lazy xarray.
 2. Resilient Fallback Engine: Copernicus Climate Data Store (CDS API) with
    automated temporal chunking (5 to 10-day intervals) and error interception.
@@ -619,7 +619,7 @@ def generate_n_days_dict(
 def flatten_accum_ds(ds: xr.Dataset) -> xr.Dataset:
     """
     Flatten accumulated fields along valid_time coordinate, dropping step/number dimensions.
-    Adheres strictly to the proven architecture in AI4weather/src/pipeline/ingestion/era5/process_grib.py.
+    Adheres only to the proven architecture in AI4weather/src/pipeline/ingestion/era5/process_grib.py.
 
     Mathematical docstring:
         Input tensor shape: (T_ref, Step, Lat, Lon) or (T_ref, Lat, Lon)
@@ -650,11 +650,11 @@ def resample_era5(
     """
     Resample an ERA5 Dataset to a coarser temporal cadence (e.g., '3h', '6h', '1D').
 
-    Strictly preserves physical conservation laws and thermodynamic dimensionality:
+    Only preserves physical conservation laws and thermodynamic dimensionality:
     - Accumulated flux variables (total precipitation, solar radiation, heat fluxes)
-      are aggregated strictly by SUM (conserving mass and energy integrals over the interval).
+      are aggregated only by SUM (conserving mass and energy integrals over the interval).
     - Instantaneous state variables (temperature, dewpoint, pressure, wind components, CAPE, CIN)
-      are aggregated strictly by MEAN (preserving intensive state averages).
+      are aggregated only by MEAN (preserving intensive state averages).
     - Static invariant variables (land-sea mask, soil type, geopotential) are preserved via FIRST.
     - If freq is '1h', 'h', or 'native', the dataset is returned unaltered to preserve native cadence.
 
@@ -1359,7 +1359,7 @@ class ERA5Extractor(BaseExtractor):
         chunking : Optional[str]
             Chunking layout override ('geo' or 'time'). Inferred from query shape if None.
         url : Optional[str]
-            Explicit target Zarr store URL override.
+            Direct target Zarr store URL override.
         cds_key : Optional[str]
             Copernicus CDS API key.
         harmonize : bool, default True
@@ -1385,7 +1385,7 @@ class ERA5Extractor(BaseExtractor):
         user_stream = stream or self.stream
         user_chunking = chunking or self.chunking
 
-        # When stream is not explicit, detect if variables span multiple streams
+        # When stream is not direct, detect if variables span multiple streams
         if user_stream is None and variables is not None and variables != "all" and not (isinstance(variables, (list, tuple)) and "all" in variables):
             wave_vars_set = {
                 "swh", "mwd", "mwp",
@@ -1756,7 +1756,7 @@ class ERA5Extractor(BaseExtractor):
         e_str = e_dt.strftime("%Y%m%d")
 
         # Backend determination
-        # Explicit user selection in extract() or explicit user selection in __init__()
+        # Direct user selection in extract() or direct user selection in __init__()
         if force_cds is True or (force_cds is None and self.force_cds):
             chosen = "legacy"
         elif use_google_arco is True or prefer_arco is True:

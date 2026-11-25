@@ -783,7 +783,7 @@ class GHCNDaily(_GHCNBase):
         cache_dir: str = "./ghcn_cache",
     ) -> pd.DataFrame:
         """
-        Produce a comprehensive station table with independent activeness columns for each variable.
+        Produce a full station table with independent activeness columns for each variable.
         Evaluates rainfall, max temperature, min temperature, and average temperature independently.
         """
         if isinstance(region, (list, tuple, set)):
@@ -1110,7 +1110,7 @@ class GHCNDaily(_GHCNBase):
         return pd.DataFrame()
 
     async def _fetch_ncei_station(self, station: str) -> pd.DataFrame:
-        """Download comprehensive station history directly from NOAA NCEI access endpoint."""
+        """Download full station history directly from NOAA NCEI access endpoint."""
         cache_file = os.path.join(self.cache_dir, f"ncei_{station}.parquet")
         if _is_cache_fresh(cache_file, max_age_s=_MUTABLE_CACHE_MAX_AGE_S):
             try:
@@ -1570,7 +1570,7 @@ class GHCNDaily(_GHCNBase):
         # Remove internal helper variables
         df = df[~df["variable"].str.startswith("_helper") & ~df["variable"].str.startswith("_tmax") & ~df["variable"].str.startswith("_tmin")].copy()
 
-        # If user did not explicitly ask for helper variables, filter down to requested variables
+        # If user did not directly ask for helper variables, filter down to requested variables
         if requested_vars:
             df = df[df["variable"].isin(set(requested_vars))].copy()
 
@@ -1654,7 +1654,7 @@ class GHCNHourly(_GHCNBase):
         self.station_alias_map: Dict[str, str] = {}
         self.requested_stations = list(stations or [])
 
-        # Resolve explicit station inputs (supports ICAO codes like HKJK, WMO IDs, or GHCN_IDs)
+        # Resolve direct station inputs (supports ICAO codes like HKJK, WMO IDs, or GHCN_IDs)
         resolved_stations: List[str] = []
         if stations:
             for s in stations:
@@ -2486,7 +2486,7 @@ def query_ghcn_daily(
         Regional preset ('kenya', 'east_africa', 'west_africa', etc.). Defaults to 'kenya'
         if no stations, countries, or bounds are specified.
     stations : list of str, optional
-        Explicit station IDs.
+        Direct station IDs.
     countries : list of str, optional
         Country names to search (e.g. ['Nigeria', 'Kenya']).
     variables : list of str, optional

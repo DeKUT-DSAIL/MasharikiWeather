@@ -46,7 +46,7 @@ The extraction layer in `masharikiweather/extract/apis/` provides data pipelines
 
 ## Server Concurrency and Rate Limiting
 
-External meteorological APIs impose strict rate limits and connection caps. The extraction layer handles these transparently:
+External meteorological APIs impose fixed rate limits and connection caps. The extraction layer handles these transparently:
 
 * **Configurable TAHMO Concurrency, Retry Timing & SSL Verification:**
   TAHMO DataHub legacy endpoints are protected by bounded thread concurrency and configurable retry policies. The default extraction concurrency is `max_workers=4`, backed by an HTTP connection pool (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), thread-local sessions, and inter-request pacing delays. When HTTP or network failures occur, `TAHMOExtractor` waits `retry_delay=120.0` seconds before retrying (configurable via `retry_delay` or `TAHMO_RETRY_DELAY`, with attempt count tuned via `retries` or `TAHMO_RETRIES`). If the upstream server encounters TLS certificate expiration, certificate verification can be bypassed safely during maintenance windows via `verify_ssl=False` or `TAHMO_VERIFY_SSL=false`. Concurrency can be tuned via `max_workers` in `TAHMOExtractor`, `pull_station_data()`, or `pull_weather_data()`, but is capped at 4 to prevent server saturation.
@@ -103,9 +103,9 @@ ECMWF ERA5 provides hourly global atmospheric reanalysis. Because data providers
 3. **Tier 3: Copernicus CDS ARCO via `obstore` (`use_cds_arco=True`):**
    Streams analysis-ready cloud Zarr stores from ECMWF CADL endpoints using `obstore` with query-aware routing (`geoChunked` for localized station extraction, `timeChunked` for broad spatial maps).
 
-### Explicit User Overrides
+### Direct User Overrides
 
-Users can bypass the automated cascade at any time by supplying explicit boolean flags:
+Users can bypass the automated cascade at any time by supplying direct boolean flags:
 * `use_google_arco=True`: Forces Google Cloud ARCO extraction.
 * `use_legacy=True` (or `force_cds=True`): Forces Copernicus CDS NetCDF4 extraction.
 * `use_cds_arco=True`: Forces Copernicus CDS CADL ARCO extraction via `obstore`.
@@ -209,7 +209,7 @@ ds_era5 = extract_gridded(
 )
 ```
 
-### 2. Explicit Backend Selection
+### 2. Direct Backend Selection
 
 ```python
 # Force Google Cloud ARCO extraction

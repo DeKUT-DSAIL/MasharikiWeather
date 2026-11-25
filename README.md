@@ -53,7 +53,7 @@ pip install masharikiweather
 
 ### Authentication (Bring Your Own Key)
 
-MasharikiWeather adheres to a Bring-Your-Own-Key (BYOK) architecture. External API keys can be passed explicitly via arguments, environment variables (`TAHMO_API_KEY`, `CDSAPI_KEY`, `EARTHDATA_USERNAME`), standard configuration files (`~/.cdsapirc`, `~/.netrc`), or local `.env` files.
+MasharikiWeather adheres to a Bring-Your-Own-Key (BYOK) architecture. External API keys can be passed directly via arguments, environment variables (`TAHMO_API_KEY`, `CDSAPI_KEY`, `EARTHDATA_USERNAME`), standard configuration files (`~/.cdsapirc`, `~/.netrc`), or local `.env` files.
 
 For account creation and credential setup, consult the official documentation:
 - Copernicus Climate Data Store: [Copernicus CDS User Guide](https://cds.climate.copernicus.eu/user-guide)
@@ -264,7 +264,7 @@ The core package logic is modularized inside `masharikiweather/`:
 
 - **Reproducibility** — Version-controlled, scriptable data processing.  
 - **Transparency** — Clear documentation for transformation steps.  
-- **Scalability** — Built for high-throughput workflows (Dask, Zarr, Parquet).  
+- **Scalability** — Built for batch workflows (Dask, Zarr, Parquet).  
 - **Inclusivity** — Designed around African data realities.  
 - **Framework-agnosticism** — ML-ready for PyTorch, TensorFlow, JAX, and NumPy.
 

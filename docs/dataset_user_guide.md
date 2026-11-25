@@ -44,7 +44,7 @@ dataset = MasharikiWeatherDataset(
 )
 ```
 
-Authentication is resolved automatically from the `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` environment variables, local `.env` files, or explicit constructor tokens.
+Authentication is resolved automatically from the `HF_TOKEN` or `HUGGINGFACE_HUB_TOKEN` environment variables, local `.env` files, or direct constructor tokens.
 
 ### 1.3 Dataset Parameters
 
@@ -311,7 +311,7 @@ print("Mask Tensor Shape:", mask_tensor.shape)
 
 ## 6. Flux-Conservative Temporal Resampling
 
-When converting observation time series between temporal scales (e.g., native 5-minute sampling to 1-hour or 3-hour cadences), MasharikiWeather strictly respects physical conservation laws:
+When converting observation time series between temporal scales (e.g., native 5-minute sampling to 1-hour or 3-hour cadences), MasharikiWeather only respects physical conservation laws:
 
 ```python
 # Resample entire dataset to 3-hourly intervals

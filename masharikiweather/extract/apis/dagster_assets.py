@@ -321,7 +321,7 @@ def era5_gridded_reanalysis(context) -> xr.Dataset:
     Extracts monthly atmospheric and surface reanalysis from ECMWF ERA5.
 
     Prioritizes cloud-native Google Cloud ARCO-ERA5 (Zarr v3).
-    Falls back gracefully to Copernicus Climate Data Store (CDS API) if ARCO is unavailable.
+    Falls back cleanly to Copernicus Climate Data Store (CDS API) if ARCO is unavailable.
     Intercepts cfgrib / eccodes missing C-bindings with informative environment diagnostics.
 
     Mathematical docstring:
