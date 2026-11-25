@@ -92,18 +92,6 @@ print(obs["TA00001", "2m_temperature"])
 print(obs["TA00001"]["total_precipitation"])
 ```
 
-### Step 4: Spatiotemporal Modeling & Graph Learning
-Generate sliding windows and PyTorch Geometric `HeteroData` graphs:
-```python
-# Construct rolling windows for spatio-temporal ML models
-windows = ds.get_windows(
-    input_steps=24,   # 24 hours of history
-    output_steps=6,   # 6 hours ahead forecast
-)
-print("Input Tensor Shape:", windows.inputs.shape)    # (N_samples, T_in, N_stations, C_features)
-print("Target Tensor Shape:", windows.targets.shape)  # (N_samples, T_out, N_stations, C_targets)
-```
-
 ---
 
 ## Repository Structure
