@@ -267,25 +267,18 @@ class TestTahmoMetadata:
 
         ds = MasharikiWeatherDataset(root_dir=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
 
-        # Verify TA00001 resolved timestamps from observational data
+        # Verify TA00001 resolved start_date from observational data and dropped end_date/sensor_count/station_name
         r1 = ds.stations_table.loc["TA00001"]
         assert pd.notna(r1["start_date"]), "TA00001 start_date must not be NaN/NaT"
-        assert pd.notna(r1["end_date"]), "TA00001 end_date must not be NaN/NaT"
-        st1 = pd.to_datetime(r1["start_date"])
-        et1 = pd.to_datetime(r1["end_date"])
-        assert st1 <= et1, f"start_date ({st1}) must be <= end_date ({et1})"
-        assert st1.strftime("%Y-%m-%d %H:%M") == "2023-01-01 02:00"
-        assert et1.strftime("%Y-%m-%d %H:%M") == "2023-01-01 08:00"
+        assert pd.to_datetime(r1["start_date"]).strftime("%Y-%m-%d %H:%M") == "2023-01-01 02:00"
+        assert "end_date" not in ds.stations_table.columns
+        assert "sensor_count" not in ds.stations_table.columns
+        assert "station_name" not in ds.stations_table.columns
 
-        # Verify TA00002 retained asset metadata timestamps
+        # Verify TA00002 retained asset metadata start_date
         r2 = ds.stations_table.loc["TA00002"]
         assert pd.notna(r2["start_date"]), "TA00002 start_date must not be NaN/NaT"
-        assert pd.notna(r2["end_date"]), "TA00002 end_date must not be NaN/NaT"
-        st2 = pd.to_datetime(r2["start_date"])
-        et2 = pd.to_datetime(r2["end_date"])
-        assert st2 <= et2, f"start_date ({st2}) must be <= end_date ({et2})"
-        assert st2 == pd.Timestamp("2018-05-10 00:00:00")
-        assert et2 == pd.Timestamp("2022-12-31 23:59:59")
+        assert pd.to_datetime(r2["start_date"]) == pd.Timestamp("2018-05-10 00:00:00")
 
     def test_station_dates_asset_column_fallback(self, tmp_path: Path) -> None:
         """
@@ -316,23 +309,14 @@ class TestTahmoMetadata:
 
         r3 = ds.stations_table.loc["TA00003"]
         assert pd.notna(r3["start_date"]), "start_date should be resolved from installationdate"
-        assert pd.notna(r3["end_date"]), "end_date should be resolved from closed"
-        st = pd.to_datetime(r3["start_date"])
-        et = pd.to_datetime(r3["end_date"])
-        assert st <= et
-        assert st == pd.Timestamp("2016-04-15 08:30:00", tz="UTC")
-        assert et == pd.Timestamp("2021-10-31 18:00:00", tz="UTC")
+        assert pd.to_datetime(r3["start_date"]) == pd.Timestamp("2016-04-15 08:30:00", tz="UTC")
+        assert "end_date" not in ds.stations_table.columns
 
-    def test_sensor_count_accuracy(self, tmp_path: Path) -> None:
+    def test_deprecated_metadata_columns_removed(self, tmp_path: Path) -> None:
         """
-        Verify that sensor_count is dynamically calculated based on distinct
-        sensor streams or variables, and never hardcoded to 1 for multi-sensor stations.
-
-        Mathematical docstring:
-            Input: Station TA00001 with 3 active distinct streams (te_S1, rh_S1, pr_S1).
-                   Station TA00002 with 2 collocated streams (rh_S001, rh_S002).
-                   Station TA00003 with 1 single stream (pr_S1).
-            Output: sensor_count for TA00001 == 3, TA00002 == 2, TA00003 == 1.
+        Verify that redundant/misleading metadata columns ('station_name', 'end_date',
+        'sensor_count') are removed from stations_table/installation, and 'canonical_name'
+        is removed from parameters_table.
         """
         obs_dir = tmp_path / "obs" / "tahmo"
         meta_dir = tmp_path / "metadata"
@@ -342,46 +326,35 @@ class TestTahmoMetadata:
         idx = pd.date_range("2023-01-01 00:00", periods=4, freq="h", tz="UTC")
         cols = pd.MultiIndex.from_tuples([
             ("TA00001", "te_S1"),
-            ("TA00001", "rh_S1"),
-            ("TA00001", "pr_S1"),
             ("TA00002", "rh_S001"),
-            ("TA00002", "rh_S002"),
-            ("TA00003", "pr_S1"),
         ])
-        data = np.full((4, 6), 25.0, dtype=np.float32)
+        data = np.full((4, 2), 25.0, dtype=np.float32)
         df_obs = pd.DataFrame(data, index=idx, columns=cols)
         flat_obs = df_obs.stack(level=0, future_stack=True).reset_index().rename(columns={"level_1": "station_id"})
         flat_obs.to_parquet(obs_dir / "2023.parquet")
 
         inst_df = pd.DataFrame(
             {
-                "latitude": [-1.28, -0.10, -4.04],
-                "longitude": [36.82, 34.75, 39.66],
-                "network": ["tahmo", "tahmo", "tahmo"],
-                "elevation": [1680.0, 1131.0, 17.0],
-                "start_date": [pd.NaT, pd.NaT, pd.NaT],
-                "end_date": [pd.NaT, pd.NaT, pd.NaT],
-                "sensor_count": [1, 1, 1],  # Initially legacy 1s
+                "latitude": [-1.28, -0.10],
+                "longitude": [36.82, 34.75],
+                "network": ["tahmo", "tahmo"],
+                "elevation": [1680.0, 1131.0],
+                "station_name": ["St1", "St2"],
+                "start_date": [pd.NaT, pd.NaT],
+                "end_date": [pd.NaT, pd.NaT],
+                "sensor_count": [1, 1],
             },
-            index=pd.Index(["TA00001", "TA00002", "TA00003"], name="station_id"),
+            index=pd.Index(["TA00001", "TA00002"], name="station_id"),
         )
         inst_df.to_parquet(meta_dir / "installation.parquet")
 
         ds = MasharikiWeatherDataset(root_dir=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
 
-        # TA00001: 3 distinct channels (te_S1, rh_S1, pr_S1)
-        cnt1 = ds.stations_table.loc["TA00001", "sensor_count"]
-        assert cnt1 > 1, f"TA00001 sensor_count ({cnt1}) must be > 1"
-        assert int(cnt1) == 3, f"Expected 3 distinct sensor channels, got {cnt1}"
-
-        # TA00002: 2 collocated channels (rh_S001, rh_S002)
-        cnt2 = ds.stations_table.loc["TA00002", "sensor_count"]
-        assert cnt2 > 1, f"TA00002 sensor_count ({cnt2}) must be > 1"
-        assert int(cnt2) == 2, f"Expected 2 collocated sensor channels, got {cnt2}"
-
-        # TA00003: 1 single channel (pr_S1)
-        cnt3 = ds.stations_table.loc["TA00003", "sensor_count"]
-        assert int(cnt3) == 1, f"Expected 1 single sensor channel, got {cnt3}"
+        for col in ("station_name", "end_date", "sensor_count"):
+            assert col not in ds.stations_table.columns
+            assert col not in ds.installation.columns
+        assert "name" in ds.stations_table.columns
+        assert "canonical_name" not in ds.parameters_table.columns
 
     def test_tahmo_33_variable_parameters_table(self, tmp_path: Path) -> None:
         """

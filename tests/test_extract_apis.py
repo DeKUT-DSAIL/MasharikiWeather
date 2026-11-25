@@ -723,7 +723,7 @@ class TestTAHMOExtractor:
 
         df_param = pd.read_parquet(param_p)
         assert "parameter" in df_param.columns
-        assert "canonical_name" in df_param.columns
+        assert "canonical_name" not in df_param.columns
         assert "physical_type" in df_param.columns
 
     def test_tahmo_open_zarr_fallback(self, tmp_path: Path):
@@ -812,7 +812,8 @@ class TestTAHMOExtractor:
             assert "GH" not in df_ea["country"].tolist()
 
     def test_tahmo_concurrency_and_server_protection(self, tmp_path: Path):
-        extractor = TAHMOExtractor(output_dir=tmp_path, api_key="dummy", api_secret="dummy", request_delay=0.0)
+        tahmo_dir = tmp_path / "obs" / "tahmo"
+        extractor = TAHMOExtractor(output_dir=tahmo_dir, api_key="dummy", api_secret="dummy", request_delay=0.0)
         assert extractor.request_delay == 0.0
 
         # Mock extract_station to succeed for TA00001 and fail for TA00002
@@ -835,11 +836,157 @@ class TestTAHMOExtractor:
                 save_parquet=True,
                 max_workers=2,
             )
-            # Batch should not crash: TA00001 succeeded, TA00002 recorded in failed_stations
-            assert "TA00001" in results
-            assert "TA00002" not in results
+            # Batch should not crash: TA00001 succeeded in 2024.parquet, TA00002 recorded in failed_stations
+            assert "2024" in results
+            assert results["2024"].name == "2024.parquet"
+            loaded = pd.read_parquet(results["2024"])
+            assert set(loaded["station_id"].unique()) == {"TA00001"}
             assert "TA00002" in extractor.failed_stations
             assert "Legacy server timeout" in extractor.failed_stations["TA00002"]
+
+    def test_tahmo_yearly_parquet_default_multi_year_and_sparse_sensors(self, tmp_path: Path):
+        """Test default semi-wide yearly Parquet streaming across multiple years and ordinal-slot Zarr."""
+        import xarray as xr
+        from masharikiweather.dataset import MasharikiWeatherDataset
+
+        tahmo_dir = tmp_path / "obs" / "tahmo"
+        extractor = TAHMOExtractor(output_dir=tahmo_dir, api_key="dummy", api_secret="dummy", request_delay=0.0)
+
+        def mock_extract(station_code, start_date, end_date, variables=None):
+            idx = pd.date_range(start_date, end_date, freq="12h", tz="UTC")
+            if len(idx) == 0:
+                return pd.DataFrame()
+            if station_code == "TA00001":
+                # Multiple collocated te sensors + plain pr (no sensor id)
+                return pd.DataFrame(
+                    {
+                        "te_S1": np.arange(len(idx), dtype=np.float32) + 20.0,
+                        "te_S2": np.arange(len(idx), dtype=np.float32) + 20.5,
+                        "pr": np.zeros(len(idx), dtype=np.float32),
+                    },
+                    index=idx,
+                )
+            return pd.DataFrame({"rh_S3": np.arange(len(idx), dtype=np.float32) + 50.0}, index=idx)
+
+        with patch.object(extractor, "get_stations") as mock_get_st, \
+             patch.object(extractor, "extract_station", side_effect=mock_extract):
+            mock_get_st.return_value = pd.DataFrame([
+                {"station_code": "TA00001", "name": "St1", "lat": -1.2, "lon": 36.8, "country": "KE"},
+                {"station_code": "TA00002", "name": "St2", "lat": -1.3, "lon": 36.9, "country": "KE"},
+            ])
+            results = extractor.extract(
+                start_date="2023-12-30",
+                end_date="2024-01-03",
+                stations=["TA00001", "TA00002"],
+                save_zarr=True,
+                max_workers=2,
+            )
+
+        assert {"2023", "2024", "_zarr"}.issubset(results.keys())
+        assert results["2023"] == tahmo_dir / "2023.parquet"
+        assert results["2024"] == tahmo_dir / "2024.parquet"
+        assert not (tahmo_dir / ".station_cache").exists()
+
+        # Semi-wide schema: O(1) width with sensor_id column ('S1', 'S2', 'S3', 'primary')
+        df_2023 = pd.read_parquet(results["2023"])
+        assert set(df_2023.columns) == {"time", "station_id", "sensor_id", "pr", "rh", "te"}
+        assert set(df_2023["station_id"].unique()) == {"TA00001", "TA00002"}
+        ta1_sids = set(df_2023.loc[df_2023["station_id"] == "TA00001", "sensor_id"].unique())
+        assert ta1_sids == {"S1", "S2", "primary"}
+        assert set(df_2023.loc[df_2023["station_id"] == "TA00002", "sensor_id"].unique()) == {"S3"}
+
+        # Verify MasharikiWeatherDataset loads semi-wide yearly Parquet cleanly
+        ds_mw = MasharikiWeatherDataset(root_dir=tmp_path, source_obs=["tahmo"], years=[2023])
+        assert not ds_mw.observations.empty
+        assert ("TA00001", "2m_temperature_S1") in ds_mw.observations.columns
+        assert ("TA00001", "2m_temperature_S2") in ds_mw.observations.columns
+        assert ("TA00001", "total_precipitation") in ds_mw.observations.columns
+        assert ("TA00002", "relative_humidity_S3") in ds_mw.observations.columns
+
+        # Verify ordinal-slot Zarr structure adapted from build_dataset.py
+        ds_zarr = xr.open_zarr(str(results["_zarr"]))
+        assert "te" in ds_zarr and "te_sensor_id" in ds_zarr
+        assert ds_zarr["te"].dims == ("time", "station", "te_slot")
+        assert ds_zarr["te"].sizes["te_slot"] == 2
+        assert ds_zarr["pr"].dims == ("time", "station")
+
+        # Verify explicit station layout still works for backward compatibility
+        station_dir = tmp_path / "station_mode"
+        ext_station = TAHMOExtractor(output_dir=station_dir, api_key="dummy", api_secret="dummy", request_delay=0.0)
+        with patch.object(ext_station, "get_stations") as mock_get_st2, \
+             patch.object(ext_station, "extract_station", side_effect=mock_extract):
+            mock_get_st2.return_value = pd.DataFrame([
+                {"station_code": "TA00001", "name": "St1", "lat": -1.2, "lon": 36.8, "country": "KE"},
+            ])
+            res_st = ext_station.extract(
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                stations=["TA00001"],
+                parquet_layout="station",
+            )
+        assert "TA00001" in res_st
+        assert res_st["TA00001"].name == "TA00001_20240101_20240102.parquet"
+
+    def test_tahmo_transient_vs_rate_limit_retry_delay(self, tmp_path: Path):
+        """Test that transient network errors use short backoff while HTTP 429 uses retry_delay."""
+        extractor = TAHMOExtractor(
+            output_dir=tmp_path,
+            api_key="dummy",
+            api_secret="dummy",
+            request_delay=0.0,
+            retry_delay=120.0,
+            transient_retry_delay=2.0,
+            retries=3,
+        )
+        sleep_calls: List[float] = []
+
+        mock_429 = MagicMock()
+        mock_429.status_code = 429
+        mock_429.headers = {}
+
+        mock_200 = MagicMock()
+        mock_200.status_code = 200
+        mock_200.content = b'{"data": []}'
+        mock_200.json.return_value = {"data": []}
+
+        with patch("time.sleep", side_effect=lambda s: sleep_calls.append(s)), \
+             patch.object(
+                 extractor._get_thread_session(),
+                 "get",
+                 side_effect=[ConnectionError("dropped"), mock_429, mock_200],
+             ):
+            out = extractor._request("services/assets/v2/stations")
+            assert out == {"data": []}
+
+        assert sleep_calls == [2.0, 120.0]
+
+    def test_tahmo_yearly_parquet_station_cache_resume(self, tmp_path: Path):
+        """Test that yearly Parquet mode resumes from existing .station_cache files without re-fetching."""
+        tahmo_dir = tmp_path / "obs" / "tahmo"
+        extractor = TAHMOExtractor(output_dir=tahmo_dir, api_key="dummy", api_secret="dummy", request_delay=0.0)
+        cache_dir = tahmo_dir / ".station_cache" / "2024"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cached_df = pd.DataFrame(
+            {
+                "time": pd.date_range("2024-01-01", periods=2, freq="h", tz="UTC"),
+                "te_S1": [21.0, 22.0],
+            }
+        )
+        cached_df.to_parquet(cache_dir / "TA00001.parquet", index=False)
+
+        with patch.object(extractor, "extract_station") as mock_extract:
+            results = extractor.extract(
+                start_date="2024-01-01",
+                end_date="2024-01-02",
+                stations=["TA00001"],
+                generate_metadata=False,
+            )
+            mock_extract.assert_not_called()
+
+        assert "2024" in results
+        loaded = pd.read_parquet(results["2024"])
+        assert len(loaded) == 2
+        assert loaded["station_id"].iloc[0] == "TA00001"
 
     def test_tahmo_concurrency_configuration(self, tmp_path: Path):
         """Test default and custom concurrency worker configuration for TAHMO."""
@@ -1000,9 +1147,9 @@ class TestTAHMOExtractor:
             res_retry = extractor._request("test/endpoint")
             assert res_retry == {"status": "ok"}
             assert mock_session.get.call_count == 3
-            # Two retries sleep for 120.0 seconds each
+            # Two transient retries use exponential backoff (5.0s, 15.0s)
             assert mock_sleep.call_count == 2
-            mock_sleep.assert_called_with(120.0)
+            mock_sleep.assert_called_with(15.0)
 
         # 3. Exhausted retries raises exception
         mock_session.reset_mock()
@@ -1182,45 +1329,27 @@ class TestTAHMOExtractor:
             df_st = extractor.get_stations()
             assert len(df_st) == 6
             assert "start_date" in df_st.columns
-            assert "end_date" in df_st.columns
-            assert "sensor_count" in df_st.columns
+            assert "end_date" not in df_st.columns
+            assert "sensor_count" not in df_st.columns
+            assert "station_name" not in df_st.columns
 
-            # Station 1: installationdate, end_date, sensors list of 3
             st1 = df_st[df_st["station_code"] == "TA00001"].iloc[0]
             assert pd.to_datetime(st1["start_date"]) == pd.Timestamp("2015-06-01 00:00:00+0000", tz="UTC")
-            assert pd.to_datetime(st1["end_date"]) == pd.Timestamp("2023-12-31 00:00:00+0000", tz="UTC")
-            assert st1["sensor_count"] == 3
 
-            # Station 2: created, closed, instruments list of 2
             st2 = df_st[df_st["station_code"] == "TA00002"].iloc[0]
             assert pd.to_datetime(st2["start_date"]) == pd.Timestamp("2018-03-15")
-            assert pd.to_datetime(st2["end_date"]) == pd.Timestamp("2021-01-01")
-            assert st2["sensor_count"] == 2
 
-            # Station 3: location.installationdate, decommissiondate, elements dict of 2
             st3 = df_st[df_st["station_code"] == "TA00003"].iloc[0]
             assert pd.to_datetime(st3["start_date"]) == pd.Timestamp("2019-01-01 12:00:00+0000", tz="UTC")
-            assert pd.to_datetime(st3["end_date"]) == pd.Timestamp("2022-05-01")
-            assert st3["sensor_count"] == 2
 
-            # Station 4: since_date, variables list of 4, end_date defaults to current date
             st4 = df_st[df_st["station_code"] == "TA00004"].iloc[0]
             assert pd.to_datetime(st4["start_date"]) == pd.Timestamp("2020-01-01")
-            assert not pd.isna(st4["end_date"])
-            assert pd.to_datetime(st4["end_date"]).date() == pd.Timestamp.now().date()
-            assert st4["sensor_count"] == 4
 
-            # Station 5: start_date, sensor_count integer
             st5 = df_st[df_st["station_code"] == "TA00005"].iloc[0]
             assert pd.to_datetime(st5["start_date"]) == pd.Timestamp("2021-01-01")
-            assert st5["sensor_count"] == 5
 
-            # Station 6: defaults missing dates to network inception (2014-01-01), current date, and 12 sensors
             st6 = df_st[df_st["station_code"] == "TA00006"].iloc[0]
             assert pd.to_datetime(st6["start_date"]).strftime("%Y-%m-%d") == "2014-01-01"
-            assert not pd.isna(st6["end_date"])
-            assert pd.to_datetime(st6["end_date"]).date() == pd.Timestamp.now().date()
-            assert st6["sensor_count"] == 12
 
     def test_tahmo_generate_metadata_catalogs(self, tmp_path: Path) -> None:
         """
@@ -1277,34 +1406,25 @@ class TestTAHMOExtractor:
         df_inst = pd.read_parquet(inst_p)
         assert len(df_inst) == 3
         assert "start_date" in df_inst.columns
-        assert "end_date" in df_inst.columns
-        assert "sensor_count" in df_inst.columns
+        assert "name" in df_inst.columns
+        assert "station_name" not in df_inst.columns
+        assert "end_date" not in df_inst.columns
+        assert "sensor_count" not in df_inst.columns
 
-        # Station 1: explicit start, end, sensor_count=4
         r1 = df_inst[df_inst["station_id"] == "TA00001"].iloc[0]
-        assert r1["sensor_count"] == 4
         assert pd.to_datetime(r1["start_date"]) == pd.Timestamp("2016-01-01 00:00:00+0000", tz="UTC")
-        assert pd.to_datetime(r1["end_date"]) == pd.Timestamp("2022-12-31 00:00:00+0000", tz="UTC")
 
-        # Station 2: explicit start, end defaults to current date, string sensor_count parsed to 3
         r2 = df_inst[df_inst["station_id"] == "TA00002"].iloc[0]
-        assert r2["sensor_count"] == 3
         assert pd.to_datetime(r2["start_date"]).strftime("%Y-%m-%d") == "2018-05-10"
-        assert not pd.isna(r2["end_date"])
-        assert pd.to_datetime(r2["end_date"]).date() == pd.Timestamp.now().date()
 
-        # Station 3: missing dates -> defaults to 2014-01-01 and current date, sensor_count -> defaults to 12
         r3 = df_inst[df_inst["station_id"] == "TA00003"].iloc[0]
-        assert r3["sensor_count"] == 12
         assert pd.to_datetime(r3["start_date"]).strftime("%Y-%m-%d") == "2014-01-01"
-        assert not pd.isna(r3["end_date"])
-        assert pd.to_datetime(r3["end_date"]).date() == pd.Timestamp.now().date()
 
-        # Parameters catalog check: exactly 33 variables
+        # Parameters catalog check: exactly 33 variables, no redundant canonical_name column
         df_param = pd.read_parquet(param_p)
         assert len(df_param) == 33
         assert "short_code" in df_param.columns
-        assert "canonical_name" in df_param.columns
+        assert "canonical_name" not in df_param.columns
         assert "physical_type" in df_param.columns
         assert set(df_param["short_code"]) == {
             "ap", "cp", "dw", "ec", "ew", "ht", "lb", "ld", "le", "lp",
@@ -1390,7 +1510,7 @@ class TestTAHMOExtractor:
             # Prioritizes location.name
             st1 = df_st[df_st["station_code"] == "TA00001"].iloc[0]
             assert st1["name"] == "Benso Senior High School"
-            assert st1["station_name"] == "Benso Senior High School"
+            assert "station_name" not in df_st.columns
 
             # Prioritizes location.city when location.name is missing
             st2 = df_st[df_st["station_code"] == "TA00002"].iloc[0]
@@ -1403,9 +1523,11 @@ class TestTAHMOExtractor:
             assert stations_p.exists()
 
             df_inst = pd.read_parquet(inst_p)
-            assert df_inst[df_inst["station_id"] == "TA00001"]["station_name"].iloc[0] == "Benso Senior High School"
+            assert df_inst[df_inst["station_id"] == "TA00001"]["name"].iloc[0] == "Benso Senior High School"
+            assert "station_name" not in df_inst.columns
             df_stations = pd.read_parquet(stations_p)
-            assert df_stations[df_stations["station_id"] == "TA00001"]["station_name"].iloc[0] == "Benso Senior High School"
+            assert df_stations[df_stations["station_id"] == "TA00001"]["name"].iloc[0] == "Benso Senior High School"
+            assert "station_name" not in df_stations.columns
 
 
 # ==============================================================================
