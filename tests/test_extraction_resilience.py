@@ -992,4 +992,35 @@ class TestRamSafeStreamingAndBudget:
         assert float(opened["t2m"].isel(time=3, lat=0).values) == 2.0
 
 
+def test_pull_weather_data_extracts_only_requested_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify pull_weather_data does not pull default era5/tahmo when omitted."""
+    called: List[str] = []
+
+    def _fake_station(**kwargs: Any) -> Dict[str, Path]:
+        called.append(f"station:{kwargs['source']}")
+        return {}
+
+    def _fake_gridded(**kwargs: Any) -> Path:
+        called.append(f"gridded:{kwargs['source']}")
+        return tmp_path / "out.zarr"
+
+    monkeypatch.setattr("masharikiweather.dataset.pull_station_data", _fake_station)
+    monkeypatch.setattr("masharikiweather.dataset.pull_gridded_data", _fake_gridded)
+
+    with pytest.raises(ValueError, match="station_source"):
+        pull_weather_data("2023-01-01", "2023-01-02", output_dir=tmp_path)
+
+    res_st = pull_weather_data("2023-01-01", "2023-01-02", station_source=["ghcn"], output_dir=tmp_path)
+    assert called == ["station:ghcn"]
+    assert res_st["gridded"] == {}
+
+    called.clear()
+    res_gr = pull_weather_data("2023-01-01", "2023-01-02", gridded_source=["imerg"], output_dir=tmp_path)
+    assert called == ["gridded:imerg"]
+    assert res_gr["stations"] == {}
+
+
 
