@@ -189,7 +189,7 @@ class ZarrGriddedIOManager(dg.ConfigurableIOManager):
             for v in obj.variables:
                 obj[v].encoding.clear()
 
-            obj.to_zarr(str(dest_path), mode="w", consolidated=True)
+            obj.to_zarr(str(dest_path), mode="w", zarr_format=3)
             dims = {str(d): int(s) for d, s in obj.sizes.items()}
             vars_list = [str(k) for k in obj.data_vars.keys()]
         elif isinstance(obj, (str, Path)):
@@ -200,7 +200,7 @@ class ZarrGriddedIOManager(dg.ConfigurableIOManager):
                 shutil.copytree(src_path, dest_path)
             if dest_path.exists():
                 try:
-                    with xr.open_zarr(str(dest_path), consolidated=True) as ds:
+                    with xr.open_zarr(str(dest_path)) as ds:
                         dims = {str(d): int(s) for d, s in ds.sizes.items()}
                         vars_list = [str(k) for k in ds.data_vars.keys()]
                 except Exception as read_err:
@@ -243,4 +243,4 @@ class ZarrGriddedIOManager(dg.ConfigurableIOManager):
             raise FileNotFoundError(
                 f"Zarr store does not exist at expected location: {dest_path}"
             )
-        return xr.open_zarr(str(dest_path), consolidated=True)
+        return xr.open_zarr(str(dest_path))

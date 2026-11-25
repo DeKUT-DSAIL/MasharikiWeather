@@ -42,7 +42,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         raise FileNotFoundError(f"Input Zarr not found: {input_path}")
         
     print(f"Optimizing Mashariki I/O: {input_path} -> {output_path}")
-    ds = xr.open_zarr(input_path, decode_timedelta=False, zarr_format=2)
+    ds = xr.open_zarr(input_path, decode_timedelta=False)
     
     # Define new chunks using ONLY actual dimensions (ds.dims),
     # not ds.coords which includes scalar metadata like 'number', 'step', 'surface'.
@@ -53,8 +53,10 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         else:
             chunks[dim] = -1  # Full scale for spatial dims
             
-    # Apply re-chunking lazily
+    # Apply re-chunking lazily and clear v2-specific compressor/filter encodings
     ds_rechunked = ds.chunk(chunks)
+    for var in ds_rechunked.variables:
+        ds_rechunked[var].encoding.clear()
     
     # Configure encoding for Zarr (compression + alignment)
     encoding = get_zarr_encoding(ds, time_chunks)
@@ -69,7 +71,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
         
     try:
         with ProgressBar():
-            ds_rechunked.to_zarr(temp_path, mode='w', encoding=encoding, consolidated=True, zarr_format=2)
+            ds_rechunked.to_zarr(temp_path, mode='w', encoding=encoding, zarr_format=3)
         
         # Rename tmp to final
         if os.path.exists(output_path):

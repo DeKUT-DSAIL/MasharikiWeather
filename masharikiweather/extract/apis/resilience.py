@@ -600,7 +600,7 @@ class ExtractionCache:
             filename = f"{safe_stem}.zarr"
             target = self.cache_dir / filename
             tmp_path = self.cache_dir / f"{safe_stem}.{uuid.uuid4().hex}.zarr.tmp"
-            ds.to_zarr(tmp_path, mode="w")
+            ds.to_zarr(tmp_path, mode="w", zarr_format=3)
             with self._lock:
                 if target.exists():
                     shutil.rmtree(target)
@@ -1058,9 +1058,9 @@ def append_to_zarr(
     ds_to_write = ds.chunk(chunks) if chunks else ds
 
     if not target.exists() or not any(target.iterdir()):
-        ds_to_write.to_zarr(target, mode="w", consolidated=True)
+        ds_to_write.to_zarr(target, mode="w", zarr_format=3)
     else:
-        ds_to_write.to_zarr(target, mode="a", append_dim=append_dim, consolidated=True)
+        ds_to_write.to_zarr(target, mode="a", append_dim=append_dim)
     return target
 
 
