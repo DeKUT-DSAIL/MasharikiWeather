@@ -3188,6 +3188,8 @@ class MasharikiWeatherDataset:
         """
         g = 9.80665 # Gravitational acceleration
         R = 287.05 # Specific gas constant for dry air (J/(kg*K))
+        # Ensure Kelvin even if temperature was stored in degrees Celsius
+        temp_k_abs = xr.where(temp_k < 150.0, temp_k + 273.15, temp_k)
         # where Gamma is the lapse rate (K/m)
         elev_diff = station_elev - grid_elev
         
@@ -3195,10 +3197,10 @@ class MasharikiWeatherDataset:
         dynamic_exponent = xr.where(lapse_rate_k_per_m != 0, g / (R * lapse_rate_k_per_m), 1.0)
         
         # Standard Hydrostatic Equation (Gamma != 0)
-        standard_correction = (temp_k / (temp_k + (lapse_rate_k_per_m * elev_diff))) ** dynamic_exponent
+        standard_correction = (temp_k_abs / (temp_k_abs + (lapse_rate_k_per_m * elev_diff))) ** dynamic_exponent
         
         # Isothermal Equation (Gamma == 0)
-        isothermal_correction = np.exp((-g * elev_diff) / (R * temp_k))
+        isothermal_correction = np.exp((-g * elev_diff) / (R * temp_k_abs))
         
         # Apply the correct multiplier
         corr_factor = xr.where(lapse_rate_k_per_m != 0, standard_correction, isothermal_correction)
@@ -3327,10 +3329,8 @@ class MasharikiWeatherDataset:
                 z_850 = sampled_continuous['geopotential'].sel(level=850) / g
                 z_700 = sampled_continuous['geopotential'].sel(level=700) / g
                 eelr = (t_850 - t_700) / (z_700 - z_850)
-                # Force positive (handle rare inversions) and clamp to physical bounds:
-                # Moist adiabatic ~0.004 K/m to dry adiabatic ~0.0098 K/m
-                eelr = xr.where(eelr < 0, np.abs(eelr), eelr)
-                eelr = eelr.clip(min=0.004, max=0.0098).fillna(0.0065)
+                # Clamp to physical bounds (0.0 K/m isothermal floor for inversions up to dry adiabatic 0.0098 K/m)
+                eelr = eelr.clip(min=0.0, max=0.0098).fillna(0.0065)
             except KeyError:
                 # Fallback to standard 6.5 C/km if 850/700hPa levels aren't in the dataset
                 eelr = xr.full_like(grid_elev, 0.0065)
