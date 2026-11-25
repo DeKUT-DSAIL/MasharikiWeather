@@ -1198,6 +1198,69 @@ def append_to_zarr(
     return target
 
 
+def inspect_zarr_coverage(
+    zarr_path: Union[str, Path],
+) -> Optional[Tuple[pd.Timestamp, pd.Timestamp, Set[str], Optional[Tuple[float, float, float, float]]]]:
+    """
+    Lazily inspect a local Zarr store for temporal, variable, and spatial coverage.
+
+    Returns:
+        Tuple of (min_day, max_day, data_vars_set, (lat_min, lon_min, lat_max, lon_max))
+        or None if the store is missing, empty, or lacks a valid time coordinate.
+    """
+    zp = Path(zarr_path)
+    if not zp.exists() or not any(zp.iterdir()):
+        return None
+    try:
+        with xr.open_zarr(str(zp)) as ds:
+            if "time" not in ds.coords or ds.sizes.get("time", 0) == 0:
+                return None
+            t_vals = pd.to_datetime(ds["time"].values, utc=True).tz_localize(None)
+            min_day = pd.Timestamp(t_vals.min()).floor("D")
+            max_day = pd.Timestamp(t_vals.max()).floor("D")
+            data_vars = {str(v) for v in ds.data_vars}
+            lat_name = "lat" if "lat" in ds.coords else ("latitude" if "latitude" in ds.coords else None)
+            lon_name = "lon" if "lon" in ds.coords else ("longitude" if "longitude" in ds.coords else None)
+            bbox_tuple: Optional[Tuple[float, float, float, float]] = None
+            if lat_name and lon_name and ds.sizes.get(lat_name, 0) > 0 and ds.sizes.get(lon_name, 0) > 0:
+                lats = ds[lat_name].values
+                lons = ds[lon_name].values
+                bbox_tuple = (float(lats.min()), float(lons.min()), float(lats.max()), float(lons.max()))
+            return min_day, max_day, data_vars, bbox_tuple
+    except Exception:
+        return None
+
+
+def compute_missing_zarr_windows(
+    req_start: Any,
+    req_end: Any,
+    existing_min_day: pd.Timestamp,
+    existing_max_day: pd.Timestamp,
+) -> Tuple[List[Tuple[pd.Timestamp, pd.Timestamp]], bool]:
+    """
+    Compute uncovered date intervals for an existing Zarr store.
+
+    Returns:
+        (delta_windows, needs_rebuild):
+        - If fully covered: ([], False)
+        - If only tail extension (req_start >= existing_min_day, req_end > existing_max_day):
+          ([(existing_max_day + 1 day, req_end)], False) -> safe to append via append_to_zarr.
+        - If req_start < existing_min_day: ([(req_start, req_end)], True) -> Zarr append_dim cannot prepend.
+    """
+    s_ts = pd.Timestamp(req_start)
+    e_ts = pd.Timestamp(req_end)
+    s_day = (s_ts.tz_localize(None) if s_ts.tzinfo is None else s_ts.tz_convert("UTC").tz_localize(None)).floor("D")
+    e_day = (e_ts.tz_localize(None) if e_ts.tzinfo is None else e_ts.tz_convert("UTC").tz_localize(None)).floor("D")
+
+    if s_day < existing_min_day:
+        return [(s_ts, e_ts)], True
+    if e_day > existing_max_day:
+        tail_start = max(s_ts, existing_max_day + pd.Timedelta(days=1))
+        if tail_start <= e_ts:
+            return [(tail_start, e_ts)], False
+    return [], False
+
+
 __all__ = [
     "TAHMO_MAX_WORKERS_CAP",
     "GHCN_MAX_WORKERS_CAP",
@@ -1208,6 +1271,8 @@ __all__ = [
     "allocate_worker_budget",
     "stream_merge_parquet",
     "append_to_zarr",
+    "inspect_zarr_coverage",
+    "compute_missing_zarr_windows",
     "SOURCE_PROGRESS_PROFILES",
     "make_progress_bar",
     "RateLimiter",

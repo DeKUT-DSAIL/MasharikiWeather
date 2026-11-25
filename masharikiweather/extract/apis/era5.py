@@ -33,7 +33,13 @@ from .base import (
     TemporalRange,
 )
 from .credentials import CredentialsError, CredentialsManager, get_cds_api_key, parse_date, parse_date_range
-from .resilience import ExtractionEstimate, append_to_zarr, make_progress_bar
+from .resilience import (
+    ExtractionEstimate,
+    append_to_zarr,
+    compute_missing_zarr_windows,
+    inspect_zarr_coverage,
+    make_progress_bar,
+)
 
 logger = logging.getLogger("MasharikiWeather.ERA5")
 
@@ -1814,6 +1820,78 @@ class ERA5Extractor(BaseExtractor):
                 use_arco=use_arco_flag,
             )
 
+        if save_zarr and zarr_name is None and s_dt.year != e_dt.year:
+            last_zarr: Optional[Path] = None
+            for yr in range(s_dt.year, e_dt.year + 1):
+                y_start = max(s_dt, pd.Timestamp(f"{yr}-01-01"))
+                y_end = min(e_dt, pd.Timestamp(f"{yr}-12-31 23:59:59"))
+                last_zarr = self.extract(
+                    start_date=y_start,
+                    end_date=y_end,
+                    bbox=box,
+                    variables=variables,
+                    levels=levels,
+                    save_zarr=True,
+                    zarr_name=f"era5_{yr}.zarr",
+                    use_legacy=use_legacy,
+                    use_cds_arco=use_cds_arco,
+                    use_google_arco=use_google_arco,
+                    data_format=data_format,
+                    force_cds=force_cds,
+                    prefer_arco=prefer_arco,
+                    chunk_days=chunk_days,
+                    chunking=chunking,
+                    stream=stream,
+                    cds_key=cds_key,
+                    cds_url=cds_url,
+                    cds_arco_url=cds_arco_url,
+                    show_progress=show_progress,
+                    resume=resume,
+                    overwrite=overwrite,
+                    keep_cache=keep_cache,
+                    dry_run=False,
+                )
+            return last_zarr if last_zarr is not None else self.output_dir / f"era5_{s_dt.year}.zarr"
+
+        effective_zarr_name = zarr_name or f"era5_{s_dt.year}.zarr"
+        append_existing_zarr = False
+        if save_zarr and resume and not overwrite:
+            existing_zarr_path = self.output_dir / effective_zarr_name
+            cov = inspect_zarr_coverage(existing_zarr_path)
+            if cov is not None:
+                ex_min, ex_max, ex_vars, ex_bbox = cov
+                vars_ok = True
+                if variables is not None and variables != "all" and not (isinstance(variables, (list, tuple)) and "all" in variables):
+                    for req_v in variables:
+                        cands = get_era5_variable_candidates(req_v)
+                        if not any(c in ex_vars for c in cands):
+                            vars_ok = False
+                            break
+                if hasattr(box, "lat_min"):
+                    b_lat_min, b_lon_min, b_lat_max, b_lon_max = box.lat_min, box.lon_min, box.lat_max, box.lon_max
+                else:
+                    b_lat_min, b_lon_min, b_lat_max, b_lon_max = float(box[0]), float(box[1]), float(box[2]), float(box[3])
+                bbox_ok = (
+                    ex_bbox is None
+                    or (
+                        ex_bbox[0] <= b_lat_min + 0.3
+                        and ex_bbox[1] <= b_lon_min + 0.3
+                        and ex_bbox[2] >= b_lat_max - 0.3
+                        and ex_bbox[3] >= b_lon_max - 0.3
+                    )
+                )
+                if vars_ok and bbox_ok:
+                    deltas, needs_rebuild = compute_missing_zarr_windows(s_dt, e_dt, ex_min, ex_max)
+                    if not needs_rebuild and not deltas:
+                        logger.info("Yearly ERA5 Zarr already covers requested period: %s", existing_zarr_path)
+                        return existing_zarr_path
+                    if not needs_rebuild and deltas:
+                        start_date, end_date = deltas[0]
+                        s_dt, e_dt = parse_date_range(start_date, end_date)
+                        s_str = s_dt.strftime("%Y%m%d")
+                        e_str = e_dt.strftime("%Y%m%d")
+                        append_existing_zarr = True
+
         n_days_total = max(1, (e_dt - s_dt).days + 1)
         is_multi_chunk = n_days_total > max(1, int(chunk_days))
         use_cache = bool(save_zarr or is_multi_chunk)
@@ -1861,7 +1939,7 @@ class ERA5Extractor(BaseExtractor):
 
         def _finalize_zarr(ds_slice: xr.Dataset, default_name: str, pbar: Any) -> Path:
             pbar.set_postfix(phase="writing Zarr")
-            name = zarr_name or default_name
+            name = effective_zarr_name
             zarr_path = self.output_dir / name
             target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
             if "level" in ds_slice.dims:
@@ -1869,7 +1947,10 @@ class ERA5Extractor(BaseExtractor):
             chunked = ds_slice.chunk(target_chunks)
             for var in chunked.variables:
                 chunked[var].encoding.clear()
-            chunked.to_zarr(zarr_path, mode="w", zarr_format=3)
+            if append_existing_zarr and zarr_path.exists():
+                append_to_zarr(chunked, zarr_path, append_dim="time", chunks=target_chunks)
+            else:
+                chunked.to_zarr(zarr_path, mode="w", zarr_format=3)
             ds_slice.close()
             chunked.close()
             del ds_slice, chunked
@@ -1888,13 +1969,13 @@ class ERA5Extractor(BaseExtractor):
             pbar: Any,
         ) -> Path:
             pbar.set_postfix(phase="writing Zarr")
-            name = zarr_name or default_name
+            name = effective_zarr_name
             zarr_path = self.output_dir / name
             is_nc_files = bool(downloaded_files) and all(str(p).lower().endswith((".nc", ".nc4")) for p in downloaded_files)
             opener = open_era5_netcdf if (fmt_name in ("netcdf4", "netcdf", "nc") or is_nc_files) else open_era5_grib
 
-            if len(downloaded_files) > 1:
-                if zarr_path.exists():
+            if len(downloaded_files) > 1 or (append_existing_zarr and zarr_path.exists()):
+                if not append_existing_zarr and zarr_path.exists():
                     shutil.rmtree(zarr_path, ignore_errors=True)
                 for chunk_file in downloaded_files:
                     ds_chunk = opener([chunk_file], harmonize=True)
