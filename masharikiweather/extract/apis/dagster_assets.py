@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -36,10 +37,37 @@ from .base import (
 )
 from .credentials import CredentialsError, CredentialsManager
 from .era5 import ARCO_ERA5_ZARR_URL, ERA5Extractor, open_era5_grib
+from .ghcnd import GHCNExtractor
 from .imerg import IMERGExtractor, _read_hdf5_granule
+from .resilience import clamp_max_workers
 from .tahmo import TAHMOExtractor
 
 logger = logging.getLogger("MasharikiWeather.DagsterAssets")
+
+
+EXTRACTION_CONFIG_SCHEMA: Dict[str, Any] = {
+    "max_workers": dg.Field(dg.Noneable(int), default_value=None, is_required=False),
+    "resume": dg.Field(bool, default_value=True, is_required=False),
+    "keep_cache": dg.Field(bool, default_value=False, is_required=False),
+    "show_progress": dg.Field(bool, default_value=False, is_required=False),
+}
+
+
+def _read_extraction_config(context: AssetExecutionContext) -> Tuple[Optional[int], bool, bool, bool]:
+    """Extract runtime resilience and worker settings from Dagster op_config."""
+    op_exec_ctx = getattr(context, "op_execution_context", None)
+    cfg = (
+        getattr(op_exec_ctx, "op_config", None)
+        if op_exec_ctx is not None
+        else getattr(context, "op_config", None)
+    ) or {}
+    return (
+        cfg.get("max_workers"),
+        bool(cfg.get("resume", True)),
+        bool(cfg.get("keep_cache", False)),
+        bool(cfg.get("show_progress", False)),
+    )
+
 
 # Retry policies and partition definitions
 STANDARD_RETRY_POLICY = dg.RetryPolicy(
@@ -50,6 +78,7 @@ STANDARD_RETRY_POLICY = dg.RetryPolicy(
 )
 
 tahmo_partitions = dg.MonthlyPartitionsDefinition(start_date="2014-01-01")
+ghcn_partitions = dg.MonthlyPartitionsDefinition(start_date="2010-01-01")
 era5_partitions = dg.MonthlyPartitionsDefinition(start_date="2018-01-01")
 imerg_partitions = dg.MonthlyPartitionsDefinition(start_date="2000-06-01")
 cds_insitu_partitions = dg.MonthlyPartitionsDefinition(start_date="2010-01-01")
@@ -235,6 +264,7 @@ def decode_cds_insitu_dataframe(df_raw: pd.DataFrame) -> pd.DataFrame:
     partitions_def=tahmo_partitions,
     retry_policy=STANDARD_RETRY_POLICY,
     op_tags={"dagster/concurrency_key": "tahmo_datahub_api", "max_concurrency": "2"},
+    config_schema=EXTRACTION_CONFIG_SCHEMA,
     io_manager_key="parquet_io",
 )
 def tahmo_station_observations(context) -> pd.DataFrame:
@@ -251,14 +281,23 @@ def tahmo_station_observations(context) -> pd.DataFrame:
     time_window = context.partition_time_window
     start_dt = time_window.start
     end_dt = time_window.end
+    req_workers, resume, keep_cache, show_progress = _read_extraction_config(context)
+    effective_workers = clamp_max_workers(req_workers, default=4, source="tahmo")
 
     root_dir = getattr(getattr(context.resources, "parquet_io", None), "root_dir", "./mashariki-data")
     context.log.info(
-        f"Processing TAHMO partition {context.partition_key}: {start_dt.isoformat()} to {end_dt.isoformat()}"
+        f"Processing TAHMO partition {context.partition_key}: {start_dt.isoformat()} to {end_dt.isoformat()} "
+        f"(max_workers={effective_workers})"
     )
 
     try:
-        extractor = TAHMOExtractor(output_dir=Path(root_dir) / "obs" / "tahmo_station_observations")
+        extractor = TAHMOExtractor(
+            output_dir=Path(root_dir) / "obs" / "tahmo_station_observations",
+            max_workers=effective_workers,
+            show_progress=show_progress,
+            resume=resume,
+            keep_cache=keep_cache,
+        )
         stations_df = extractor.get_stations(bbox=AFRICA_BBOX)
     except Exception as init_err:
         context.log.warning(
@@ -280,9 +319,15 @@ def tahmo_station_observations(context) -> pd.DataFrame:
     target_stations = stations_df["station_code"].tolist() if not stations_df.empty else []
 
     try:
-        extractor = TAHMOExtractor(output_dir=Path(root_dir) / "obs" / "tahmo_station_observations")
-        for code in target_stations:
-            try:
+        extractor = TAHMOExtractor(
+            output_dir=Path(root_dir) / "obs" / "tahmo_station_observations",
+            max_workers=effective_workers,
+            show_progress=show_progress,
+            resume=resume,
+            keep_cache=keep_cache,
+        )
+        if effective_workers > 1 and len(target_stations) > 1:
+            def _fetch_one(code: str) -> Optional[pd.DataFrame]:
                 st_df = extractor.extract_station(
                     station_code=code,
                     start_date=start_dt,
@@ -291,9 +336,33 @@ def tahmo_station_observations(context) -> pd.DataFrame:
                 if not st_df.empty:
                     st_df = st_df.copy()
                     st_df["station_code"] = code
-                    collected_frames.append(st_df.reset_index())
-            except Exception as st_err:
-                context.log.warning(f"Could not extract station {code}: {st_err}")
+                    return st_df.reset_index()
+                return None
+
+            with ThreadPoolExecutor(max_workers=effective_workers) as pool:
+                futures = {pool.submit(_fetch_one, code): code for code in target_stations}
+                for fut in as_completed(futures):
+                    code = futures[fut]
+                    try:
+                        frame = fut.result()
+                        if frame is not None:
+                            collected_frames.append(frame)
+                    except Exception as st_err:
+                        context.log.warning(f"Could not extract station {code}: {st_err}")
+        else:
+            for code in target_stations:
+                try:
+                    st_df = extractor.extract_station(
+                        station_code=code,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                    )
+                    if not st_df.empty:
+                        st_df = st_df.copy()
+                        st_df["station_code"] = code
+                        collected_frames.append(st_df.reset_index())
+                except Exception as st_err:
+                    context.log.warning(f"Could not extract station {code}: {st_err}")
     except Exception as ext_err:
         context.log.warning(f"Batch extraction failed ({ext_err}). Creating partition representation.")
 
@@ -311,9 +380,61 @@ def tahmo_station_observations(context) -> pd.DataFrame:
 
 
 @dg.asset(
+    partitions_def=ghcn_partitions,
+    retry_policy=STANDARD_RETRY_POLICY,
+    op_tags={"dagster/concurrency_key": "noaa_ghcn_api", "max_concurrency": "2"},
+    config_schema=EXTRACTION_CONFIG_SCHEMA,
+    io_manager_key="parquet_io",
+)
+def ghcn_station_observations(context) -> pd.DataFrame:
+    """
+    Extracts monthly ground station observations from NOAA GHCN.
+
+    Applies the GHCN worker cap (24) via clamp_max_workers.
+
+    Mathematical docstring:
+    Output table schema: (N_measurements, C_variables)
+    indexed by timestamp and station identifier.
+    """
+    time_window = context.partition_time_window
+    start_dt = time_window.start
+    end_dt = time_window.end - timedelta(seconds=1)
+    req_workers, resume, keep_cache, show_progress = _read_extraction_config(context)
+    effective_workers = clamp_max_workers(req_workers, default=4, source="ghcnd")
+
+    root_dir = getattr(getattr(context.resources, "parquet_io", None), "root_dir", "./mashariki-data")
+    out_dir = Path(root_dir) / "obs" / "ghcn_station_observations"
+    context.log.info(
+        f"Processing GHCN partition {context.partition_key}: {start_dt.isoformat()} to {end_dt.isoformat()} "
+        f"(max_workers={effective_workers})"
+    )
+
+    try:
+        extractor = GHCNExtractor(output_dir=out_dir, max_workers=effective_workers)
+        res = extractor.extract(
+            start_date=start_dt,
+            end_date=end_dt,
+            bbox=AFRICA_BBOX,
+            save_parquet=False,
+            show_progress=show_progress,
+            resume=resume,
+            keep_cache=keep_cache,
+        )
+        if isinstance(res, pd.DataFrame) and not res.empty:
+            return res
+    except Exception as ghcn_err:
+        context.log.warning(
+            f"GHCN extraction encountered issue ({ghcn_err}). Generating placeholder dataframe."
+        )
+
+    return pd.DataFrame(columns=["time", "station_id", "TMAX", "TMIN", "PRCP"])
+
+
+@dg.asset(
     partitions_def=era5_partitions,
     retry_policy=STANDARD_RETRY_POLICY,
     op_tags={"dagster/concurrency_key": "copernicus_cds_api", "max_concurrency": "1"},
+    config_schema=EXTRACTION_CONFIG_SCHEMA,
     io_manager_key="zarr_io",
 )
 def era5_gridded_reanalysis(context) -> xr.Dataset:
@@ -332,15 +453,23 @@ def era5_gridded_reanalysis(context) -> xr.Dataset:
     start_dt = time_window.start
     # End of partition (exclusive end minus one second)
     end_dt = time_window.end - timedelta(seconds=1)
+    req_workers, resume, keep_cache, show_progress = _read_extraction_config(context)
+    effective_workers = clamp_max_workers(req_workers, default=4, max_cap=None, source="era5")
 
     context.log.info(
-        f"Extracting ERA5 reanalysis for partition {context.partition_key}: {start_dt} to {end_dt}"
+        f"Extracting ERA5 reanalysis for partition {context.partition_key}: {start_dt} to {end_dt} "
+        f"(max_workers={effective_workers})"
     )
 
     # 1. Attempt Google Cloud ARCO-ERA5
     try:
         context.log.info(f"Querying Google Cloud ARCO-ERA5 data store: {ARCO_ERA5_ZARR_URL}")
-        extractor = ERA5Extractor(prefer_arco=True)
+        extractor = ERA5Extractor(
+            prefer_arco=True,
+            show_progress=show_progress,
+            resume=resume,
+            keep_cache=keep_cache,
+        )
         ds_slice = extractor.extract_arco_slice(
             bbox=AFRICA_BBOX,
             start_date=start_dt,
@@ -403,6 +532,7 @@ def era5_gridded_reanalysis(context) -> xr.Dataset:
     partitions_def=imerg_partitions,
     retry_policy=STANDARD_RETRY_POLICY,
     op_tags={"dagster/concurrency_key": "nasa_earthaccess_api", "max_concurrency": "4"},
+    config_schema=EXTRACTION_CONFIG_SCHEMA,
     io_manager_key="zarr_io",
 )
 def imerg_satellite_precipitation(context) -> xr.Dataset:
@@ -420,6 +550,8 @@ def imerg_satellite_precipitation(context) -> xr.Dataset:
     time_window = context.partition_time_window
     start_dt = time_window.start
     end_dt = time_window.end
+    req_workers, resume, keep_cache, show_progress = _read_extraction_config(context)
+    effective_workers = clamp_max_workers(req_workers, default=4, max_cap=None, source="imerg")
 
     start_ts = pd.to_datetime(start_dt).tz_localize("UTC") if pd.to_datetime(start_dt).tzinfo is None else pd.to_datetime(start_dt)
 
@@ -437,13 +569,20 @@ def imerg_satellite_precipitation(context) -> xr.Dataset:
     out_dir = Path(root_dir) / "raw" / "imerg"
 
     try:
-        extractor = IMERGExtractor(output_dir=out_dir, dataset_name=dataset_name)
+        extractor = IMERGExtractor(
+            output_dir=out_dir,
+            dataset_name=dataset_name,
+            max_workers=effective_workers,
+        )
         result = extractor.extract(
             start_date=start_dt,
             end_date=end_dt,
             bbox=AFRICA_BBOX,
             variables=["precipitationCal", "probabilityLiquidPrecipitation"],
             convert_to_zarr=False,
+            show_progress=show_progress,
+            resume=resume,
+            keep_cache=keep_cache,
         )
 
         h5_files = [f for f in result.files if f.endswith(".HDF5")]
@@ -457,7 +596,7 @@ def imerg_satellite_precipitation(context) -> xr.Dataset:
         )
 
     # Synthetic fallback for offline test environments
-    times = pd.date_range(start_dt, end_dt - timedelta(seconds=1), freq="30min")
+    times = pd.date_range(start_dt, end_dt - timedelta(seconds=1), freq="30min").tz_localize(None)
     lats = np.arange(AFRICA_BBOX.lat_min, AFRICA_BBOX.lat_max + 0.01, 0.1)
     lons = np.arange(AFRICA_BBOX.lon_min, AFRICA_BBOX.lon_max + 0.01, 0.1)
     t_shape = (len(times), len(lats), len(lons))
@@ -478,6 +617,7 @@ def imerg_satellite_precipitation(context) -> xr.Dataset:
     partitions_def=cds_insitu_partitions,
     retry_policy=STANDARD_RETRY_POLICY,
     op_tags={"dagster/concurrency_key": "copernicus_cds_api", "max_concurrency": "1"},
+    config_schema=EXTRACTION_CONFIG_SCHEMA,
     io_manager_key="parquet_io",
 )
 def cds_insitu_observations(context) -> pd.DataFrame:

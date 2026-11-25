@@ -271,3 +271,70 @@ def test_format_duration_and_storage_size(tmp_path: Path) -> None:
 def test_imerg_transition_date_boundary() -> None:
     """Verify that IMERG transition boundary is set to 2025-11-01 UTC."""
     assert IMERG_TRANSITION_DATE == pd.Timestamp("2025-11-01", tz="UTC")
+
+
+def test_dagster_worker_caps_and_materialize_by_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify Dagster assets enforce 16 (TAHMO), 24 (GHCN), uncapped (IMERG) and source-based materialize_extraction."""
+    from masharikiweather.extract.apis import dagster_assets
+
+    recorded: dict[str, int] = {}
+
+    class _StubTAHMO:
+        def __init__(self, output_dir: Any, max_workers: int = 4, **kwargs: Any) -> None:
+            recorded["tahmo"] = max_workers
+
+        def get_stations(self, bbox: Any = None) -> pd.DataFrame:
+            return pd.DataFrame(columns=["station_code", "name", "lat", "lon", "elevation", "country", "status"])
+
+    class _StubGHCN:
+        def __init__(self, output_dir: Any, max_workers: int = 4, **kwargs: Any) -> None:
+            recorded["ghcn"] = max_workers
+
+        def extract(self, **kwargs: Any) -> pd.DataFrame:
+            return pd.DataFrame({"time": [pd.Timestamp("2023-01-01")], "station_id": ["GH01"], "PRCP": [0.0]})
+
+    class _StubIMERG:
+        def __init__(self, output_dir: Any, dataset_name: str = "GPM_3IMERGHH", max_workers: int = 4, **kwargs: Any) -> None:
+            recorded["imerg"] = max_workers
+
+        def extract(self, **kwargs: Any) -> Any:
+            raise RuntimeError("offline stub")
+
+    monkeypatch.setattr(dagster_assets, "TAHMOExtractor", _StubTAHMO)
+    monkeypatch.setattr(dagster_assets, "GHCNExtractor", _StubGHCN)
+    monkeypatch.setattr(dagster_assets, "IMERGExtractor", _StubIMERG)
+
+    with pytest.warns(UserWarning, match="exceeds maximum allowed"):
+        res_tahmo = materialize_extraction(
+            sources=["tahmo"],
+            partition_keys=["2023-01-01"],
+            root_dir=tmp_path,
+            max_workers=64,
+            show_progress=False,
+        )
+    assert res_tahmo[0].success
+    assert recorded["tahmo"] == 16
+
+    with pytest.warns(UserWarning, match="exceeds maximum allowed"):
+        res_ghcn = materialize_extraction(
+            sources=["ghcn"],
+            partition_keys=["2023-01-01"],
+            root_dir=tmp_path,
+            max_workers=64,
+            show_progress=False,
+        )
+    assert res_ghcn[0].success
+    assert recorded["ghcn"] == 24
+
+    res_imerg = materialize_extraction(
+        sources=["imerg"],
+        partition_keys=["2023-01-01"],
+        root_dir=tmp_path,
+        max_workers=32,
+        show_progress=False,
+    )
+    assert res_imerg[0].success
+    assert recorded["imerg"] == 32
