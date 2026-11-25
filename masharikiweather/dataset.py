@@ -1,5 +1,6 @@
 import concurrent.futures
 import difflib
+import gc
 import inspect
 import logging
 import os
@@ -4824,7 +4825,7 @@ def pull_weather_data(
     station_variables: Optional[Sequence[str]] = None,
     gridded_variables: Optional[Sequence[str]] = None,
     output_dir: Union[str, Path] = "./mashariki-data",
-    concurrent_sources: bool = True,
+    concurrent_sources: bool = False,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
@@ -4954,6 +4955,8 @@ def pull_weather_data(
             except Exception as e:
                 logger.error("Failed pulling station data from %s: %s", st_src, e)
                 station_results[st_src] = None
+            finally:
+                gc.collect()
 
         for gr_src in gr_sources:
             gr_out = gridded_root / gr_src
@@ -4972,6 +4975,8 @@ def pull_weather_data(
             except Exception as e:
                 logger.error("Failed pulling gridded data from %s: %s", gr_src, e)
                 gridded_results[gr_src] = None
+            finally:
+                gc.collect()
 
     # Instantiate MasharikiWeatherDataset locally
     ds_inst: Optional[MasharikiWeatherDataset] = None
