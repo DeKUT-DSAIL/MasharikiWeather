@@ -2462,3 +2462,142 @@ class TestPre020CoreBugFixes:
         ok = rechunk_dataset(str(in_zarr), "out.zarr", time_chunks=2)
         assert ok is True
         assert (tmp_path / "out.zarr").exists()
+
+
+def test_tahmo_yearly_incremental_date_delta_and_new_station(tmp_path: Path, monkeypatch: Any) -> None:
+    """Verify yearly TAHMO Parquet skips covered dates and only fetches uncovered date deltas / new stations."""
+    ext = TAHMOExtractor(output_dir=tmp_path, api_key="k", api_secret="s", request_delay=0.0)
+
+    calls: List[Tuple[str, str, str]] = []
+
+    def _fake_extract_station(
+        station_code: str,
+        start_date: Any,
+        end_date: Any,
+        variables: Any = None,
+    ) -> pd.DataFrame:
+        s_str = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+        e_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
+        calls.append((station_code, s_str, e_str))
+        dates = pd.date_range(s_str, e_str, freq="D")
+        return pd.DataFrame({"te_S001": np.full(len(dates), 21.0)}, index=pd.DatetimeIndex(dates, name="time"))
+
+    monkeypatch.setattr(ext, "extract_station", _fake_extract_station)
+    monkeypatch.setattr(ext, "generate_metadata_catalogs", lambda **kw: None)
+
+    # 1. Initial pull: TA00001 for Jan 1 - Jan 10
+    res1 = ext.extract(
+        start_date="2023-01-01",
+        end_date="2023-01-10",
+        stations=["TA00001"],
+        variables=["te"],
+        save_parquet=True,
+        parquet_layout="yearly",
+        show_progress=False,
+    )
+    assert len(calls) == 1
+    assert calls[0] == ("TA00001", "2023-01-01", "2023-01-10")
+    assert Path(res1["2023"]).exists()
+
+    # 2. Re-request subset (Jan 3 - Jan 8) -> 0 API calls
+    calls.clear()
+    ext.extract(
+        start_date="2023-01-03",
+        end_date="2023-01-08",
+        stations=["TA00001"],
+        variables=["te"],
+        save_parquet=True,
+        parquet_layout="yearly",
+        show_progress=False,
+    )
+    assert calls == []
+
+    # 3. Extend end date to Jan 15 AND add TA00002 -> TA00001 only fetches Jan 11 - Jan 15, TA00002 fetches full Jan 1 - Jan 15
+    calls.clear()
+    ext.extract(
+        start_date="2023-01-01",
+        end_date="2023-01-15",
+        stations=["TA00001", "TA00002"],
+        variables=["te"],
+        save_parquet=True,
+        parquet_layout="yearly",
+        show_progress=False,
+    )
+    assert ("TA00001", "2023-01-11", "2023-01-15") in calls
+    assert ("TA00002", "2023-01-01", "2023-01-15") in calls
+
+    df_final = pd.read_parquet(tmp_path / "2023.parquet")
+    assert set(df_final["station_id"].unique()) == {"TA00001", "TA00002"}
+    assert len(df_final[df_final["station_id"] == "TA00001"]) == 15
+    assert len(df_final[df_final["station_id"] == "TA00002"]) == 15
+
+
+def test_era5_yearly_zarr_incremental_date_delta(tmp_path: Path, monkeypatch: Any) -> None:
+    """Verify ERA5 writes yearly Zarr (era5_2023.zarr), skips covered dates, and appends tail deltas."""
+    import xarray as xr
+
+    ext = ERA5Extractor(output_dir=tmp_path, use_google_arco=True, use_legacy=False)
+    calls: List[Tuple[str, str]] = []
+
+    def _fake_google_arco(bbox: Any, start_date: Any, end_date: Any, variables: Any = None, levels: Any = None) -> xr.Dataset:
+        s_str = pd.Timestamp(start_date).strftime("%Y-%m-%d")
+        e_str = pd.Timestamp(end_date).strftime("%Y-%m-%d")
+        calls.append((s_str, e_str))
+        times = pd.date_range(s_str, e_str, freq="D")
+        return xr.Dataset(
+            {"2m_temperature": (("time", "lat", "lon"), np.ones((len(times), 2, 2), dtype=np.float32) * 295.0)},
+            coords={"time": times, "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+
+    monkeypatch.setattr(ext, "check_google_arco_availability", lambda **kw: True)
+    monkeypatch.setattr(ext, "extract_google_arco_slice", _fake_google_arco)
+
+    # 1. Initial pull: Jan 1 - Jan 5 -> writes era5_2023.zarr
+    zp = ext.extract("2023-01-01", "2023-01-05", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
+    assert Path(zp) == tmp_path / "era5_2023.zarr"
+    assert calls == [("2023-01-01", "2023-01-05")]
+
+    # 2. Subset pull: Jan 2 - Jan 4 -> 0 downloads
+    calls.clear()
+    zp2 = ext.extract("2023-01-02", "2023-01-04", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
+    assert Path(zp2) == tmp_path / "era5_2023.zarr"
+    assert calls == []
+
+    # 3. Extend to Jan 8 -> only fetches Jan 6 - Jan 8 and appends
+    calls.clear()
+    ext.extract("2023-01-01", "2023-01-08", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
+    assert calls == [("2023-01-06", "2023-01-08")]
+
+    ds = xr.open_zarr(str(tmp_path / "era5_2023.zarr"))
+    assert ds.sizes["time"] == 8
+    ds.close()
+
+
+def test_imerg_yearly_zarr_and_open_imerg_zarr(tmp_path: Path) -> None:
+    """Verify open_imerg_zarr reads yearly IMERG_YYYY.zarr stores and inspect_zarr_coverage detects date bounds."""
+    import xarray as xr
+    from masharikiweather.extract.apis.imerg import open_imerg_zarr
+    from masharikiweather.extract.apis.resilience import append_to_zarr, compute_missing_zarr_windows, inspect_zarr_coverage
+
+    zdir = tmp_path / "zarr"
+    zdir.mkdir(parents=True, exist_ok=True)
+    store = zdir / "IMERG_2023.zarr"
+    t1 = pd.date_range("2023-01-01", periods=3, freq="D")
+    ds1 = xr.Dataset(
+        {"precipitation": (("time", "lat", "lon"), np.ones((3, 2, 2), dtype=np.float32))},
+        coords={"time": t1, "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+    )
+    append_to_zarr(ds1, store, append_dim="time")
+
+    cov = inspect_zarr_coverage(store)
+    assert cov is not None
+    ex_min, ex_max, ex_vars, _ = cov
+    assert "precipitation" in ex_vars
+    deltas, rebuild = compute_missing_zarr_windows("2023-01-01", "2023-01-05", ex_min, ex_max)
+    assert rebuild is False
+    assert len(deltas) == 1
+    assert deltas[0][0].strftime("%Y-%m-%d") == "2023-01-04"
+
+    opened = open_imerg_zarr(zdir, "2023-01-01", "2023-01-03")
+    assert opened.sizes["time"] == 3
+    opened.close()

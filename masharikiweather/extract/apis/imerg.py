@@ -35,7 +35,9 @@ from .resilience import (
     ExtractionEstimate,
     append_to_zarr,
     clamp_max_workers,
+    compute_missing_zarr_windows,
     get_available_memory_mb,
+    inspect_zarr_coverage,
     retry_with_backoff,
 )
 
@@ -354,27 +356,40 @@ def open_imerg_zarr(
     variables: Optional[List[str]] = None,
 ) -> xr.Dataset:
     """
-    Lazily open and concatenate monthly IMERG Zarr stores.
-    Accurately handles month-start/end, year-start/end, and leap years (Feb 28 vs Feb 29).
+    Lazily open and concatenate yearly (or legacy monthly) IMERG Zarr stores.
     """
     s_dt, e_dt = parse_date_range(start_date, end_date)
 
     root = Path(zarr_dir)
-    stores = sorted(root.glob("*/IMERG_*_*.zarr"))
+    yearly_stores = sorted(root.glob("IMERG_*.zarr"))
+    monthly_stores = sorted(root.glob("*/IMERG_*_*.zarr"))
     valid_stores: List[Path] = []
 
-    for st in stores:
+    for st in yearly_stores:
         try:
-            parts = st.stem.replace("IMERG_", "").split("_")
-            y, m = int(parts[0]), int(parts[1])
-            num_days = calendar.monthrange(y, m)[1]
-            m_start = datetime(y, m, 1, 0, 0, 0)
-            m_end = datetime(y, m, num_days, 23, 59, 59)
-            if not (m_start <= e_dt and m_end >= s_dt):
+            stem = st.stem.replace("IMERG_", "")
+            if "_" in stem:
                 continue
-            valid_stores.append(st)
+            y = int(stem)
+            y_start = datetime(y, 1, 1, 0, 0, 0)
+            y_end = datetime(y, 12, 31, 23, 59, 59)
+            if y_start <= e_dt and y_end >= s_dt:
+                valid_stores.append(st)
         except Exception:
             continue
+
+    if not valid_stores:
+        for st in monthly_stores:
+            try:
+                parts = st.stem.replace("IMERG_", "").split("_")
+                y, m = int(parts[0]), int(parts[1])
+                num_days = calendar.monthrange(y, m)[1]
+                m_start = datetime(y, m, 1, 0, 0, 0)
+                m_end = datetime(y, m, num_days, 23, 59, 59)
+                if m_start <= e_dt and m_end >= s_dt:
+                    valid_stores.append(st)
+            except Exception:
+                continue
 
     if not valid_stores:
         raise FileNotFoundError(f"No IMERG Zarr stores matching period {s_dt}..{e_dt} in {root}")
@@ -501,6 +516,44 @@ class IMERGExtractor(BaseExtractor):
         rate_limiter = self.create_rate_limiter(requests_per_second=4.0, burst=4)
 
         monthly_windows = t_range.split_by_month()
+        years_in_range = sorted({w_s.year for w_s, _ in monthly_windows})
+        year_append_after: Dict[int, Optional[pd.Timestamp]] = {}
+        year_skip_download: Set[int] = set()
+        year_rebuild: Set[int] = set()
+
+        if convert_to_zarr and resume and not overwrite:
+            for yr in years_in_range:
+                store_path = zarr_root / f"IMERG_{yr}.zarr"
+                cov = inspect_zarr_coverage(store_path)
+                if cov is None:
+                    continue
+                ex_min, ex_max, ex_vars, ex_bbox = cov
+                vars_ok = True
+                if variables is not None:
+                    vars_ok = bool(resolve_imerg_variables(variables, ex_vars))
+                bbox_ok = (
+                    ex_bbox is None
+                    or (
+                        ex_bbox[0] <= box.lat_min + 0.15
+                        and ex_bbox[1] <= box.lon_min + 0.15
+                        and ex_bbox[2] >= box.lat_max - 0.15
+                        and ex_bbox[3] >= box.lon_max - 0.15
+                    )
+                )
+                if not (vars_ok and bbox_ok):
+                    year_rebuild.add(yr)
+                    continue
+                yr_start = max(s_dt, datetime(yr, 1, 1, 0, 0, 0))
+                yr_end = min(e_dt, datetime(yr, 12, 31, 23, 59, 59))
+                deltas, needs_rebuild = compute_missing_zarr_windows(yr_start, yr_end, ex_min, ex_max)
+                if needs_rebuild:
+                    year_rebuild.add(yr)
+                elif not deltas:
+                    logger.info("Yearly IMERG Zarr already covers requested period: %s", store_path)
+                    year_skip_download.add(yr)
+                else:
+                    year_append_after[yr] = ex_max
+
         logger.info(
             "Searching IMERG granules for %s (%d monthly window(s))...",
             self.dataset_name,
@@ -518,6 +571,14 @@ class IMERGExtractor(BaseExtractor):
             show_progress=show_progress,
         ) as pbar:
             for win_start, win_end in monthly_windows:
+                if win_start.year in year_skip_download:
+                    continue
+                append_after = year_append_after.get(win_start.year)
+                if append_after is not None:
+                    if pd.Timestamp(win_end).floor("D") <= append_after:
+                        continue
+                    win_start = max(win_start, (append_after + pd.Timedelta(days=1)).to_pydatetime())
+
                 w_start_str = win_start.strftime("%Y-%m-%d %H:%M:%S")
                 w_end_str = win_end.strftime("%Y-%m-%d %H:%M:%S")
                 month_key = f"{win_start.year}_{win_start.month:02d}"
@@ -599,41 +660,60 @@ class IMERGExtractor(BaseExtractor):
             zarr_root.mkdir(parents=True, exist_ok=True)
             chunks = zarr_chunks or DEFAULT_ZARR_CHUNKS
 
+            windows_by_year: Dict[int, List[datetime]] = {}
             for win_start, _ in monthly_windows:
-                y, m = win_start.year, win_start.month
-                active_dataset = IMERG_LATE_RUN_NAME if win_start >= IMERG_TRANSITION_DATE else self.dataset_name
-                run_type = "Late" if win_start >= IMERG_TRANSITION_DATE else "Final"
+                windows_by_year.setdefault(win_start.year, []).append(win_start)
 
-                m_dir = raw_root / active_dataset / str(y) / f"{m:02d}"
-                if not m_dir.exists():
-                    # Fallback to legacy single dataset directory
-                    m_dir = self.output_dir / self.dataset_name / str(y) / f"{m:02d}"
+            for y, month_starts in sorted(windows_by_year.items()):
+                store_path = zarr_root / f"IMERG_{y}.zarr"
+                zarr_key = f"zarr_{y}"
 
-                h5_files = sorted(str(p) for p in m_dir.glob("*.HDF5")) if m_dir.exists() else []
-                if not h5_files:
-                    continue
-
-                store_path = zarr_root / str(y) / f"IMERG_{y}_{m:02d}.zarr"
-                store_path.parent.mkdir(parents=True, exist_ok=True)
-                zarr_key = f"zarr_{y}_{m:02d}"
-
-                if cache.is_done(zarr_key) and store_path.exists():
-                    cache.record_hit(zarr_key)
+                if y in year_skip_download and store_path.exists():
                     result.zarr_stores.append(str(store_path))
                     continue
 
-                logger.info("Compiling %d HDF5 granules into Zarr store: %s", len(h5_files), store_path)
-                try:
+                h5_files_for_year: List[Tuple[str, str]] = []
+                for win_start in month_starts:
+                    m = win_start.month
+                    active_dataset = IMERG_LATE_RUN_NAME if win_start >= IMERG_TRANSITION_DATE else self.dataset_name
+                    run_type = "Late" if win_start >= IMERG_TRANSITION_DATE else "Final"
+                    m_dir = raw_root / active_dataset / str(y) / f"{m:02d}"
+                    if not m_dir.exists():
+                        m_dir = self.output_dir / self.dataset_name / str(y) / f"{m:02d}"
+                    if m_dir.exists():
+                        for p in sorted(m_dir.glob("*.HDF5")):
+                            h5_files_for_year.append((str(p), run_type))
+
+                if not h5_files_for_year:
                     if store_path.exists():
+                        result.zarr_stores.append(str(store_path))
+                    continue
+
+                append_after = year_append_after.get(y)
+                is_appending = append_after is not None and store_path.exists() and y not in year_rebuild
+                logger.info(
+                    "%s %d HDF5 granules into yearly Zarr store: %s",
+                    "Appending" if is_appending else "Compiling",
+                    len(h5_files_for_year),
+                    store_path,
+                )
+                try:
+                    if not is_appending and store_path.exists():
                         shutil.rmtree(store_path, ignore_errors=True)
 
                     wrote_any = False
-                    for batch_start in range(0, len(h5_files), granule_batch_size):
-                        batch_files = h5_files[batch_start : batch_start + granule_batch_size]
+                    for batch_start in range(0, len(h5_files_for_year), granule_batch_size):
+                        batch_items = h5_files_for_year[batch_start : batch_start + granule_batch_size]
                         dsets: List[xr.Dataset] = []
-                        for h5_p in batch_files:
+                        batch_run_type = batch_items[-1][1]
+                        for h5_p, _ in batch_items:
                             try:
                                 ds_one = _read_hdf5_granule(h5_p, bbox=box, variables=variables, harmonize=harmonize)
+                                if append_after is not None and is_appending:
+                                    t_val = pd.Timestamp(ds_one.time.values[0]).floor("D")
+                                    if t_val <= append_after:
+                                        ds_one.close()
+                                        continue
                                 dsets.append(ds_one)
                             except Exception as rd_err:
                                 logger.warning("Skipping unreadable file %s: %s", h5_p, rd_err)
@@ -647,7 +727,7 @@ class IMERGExtractor(BaseExtractor):
                             combined = combined.isel(time=np.sort(uniq_idx))
                         combined = combined.sortby("time")
 
-                        combined.attrs["source_run"] = run_type
+                        combined.attrs["source_run"] = batch_run_type
                         combined.attrs["transition_boundary"] = "2025-11-01"
 
                         for var in combined.variables:
@@ -662,15 +742,15 @@ class IMERGExtractor(BaseExtractor):
                         del dsets, combined
                         gc.collect()
 
-                    if not wrote_any:
+                    if not wrote_any and not is_appending:
                         continue
 
                     result.zarr_stores.append(str(store_path))
                     cache.save_bytes(zarr_key, str(store_path).encode("utf-8"), suffix=".txt")
-                    logger.info("Created Zarr store: %s", store_path)
+                    logger.info("Created/updated yearly Zarr store: %s", store_path)
 
                 except Exception as z_err:
-                    err_msg = f"{y}_{m:02d}: {z_err}"
+                    err_msg = f"{y}: {z_err}"
                     logger.error("Zarr compilation failure: %s", err_msg)
                     result.zarr_errors.append(err_msg)
                     cache.mark_failed(zarr_key, z_err)

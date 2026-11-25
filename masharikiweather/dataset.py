@@ -33,6 +33,11 @@ from .extract.apis.base import (
     is_eastern_africa_country,
     parse_spatial_bbox,
 )
+from .extract.apis.resilience import (
+    append_to_zarr,
+    compute_missing_zarr_windows,
+    inspect_zarr_coverage,
+)
 from .rechunker import DEFAULT_TIME_CHUNKS, get_zarr_encoding, rechunk_dataset
 
 logger = logging.getLogger(__name__)
@@ -4685,79 +4690,76 @@ def extract_gridded(
         else:
             return res.open()
 
-    elif src in ("cams", "copernicus_cams", "merra2", "nasa_merra2", "open_meteo", "openmeteo"):
-        from .extract.apis.reanalysis import ReanalysisExtractor
-        init_resilience = _filter_supported_kwargs(ReanalysisExtractor.__init__, resilience_kwargs)
-        init_kwargs = _filter_supported_kwargs(
-            ReanalysisExtractor.__init__,
-            kwargs,
-            exclude={"output_dir", "source"},
-        )
-        extractor = ReanalysisExtractor(output_dir=out_dir, source=src, **init_resilience, **init_kwargs)
-        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
-        extract_kwargs = _filter_supported_kwargs(
-            extractor.extract,
-            kwargs,
-            exclude={"start_date", "end_date", "bbox", "variables", "save_parquet"},
-        )
-        df_or_path = extractor.extract(
-            start_date=start_date,
-            end_date=end_date,
-            bbox=s_box,
-            variables=variables,
-            save_parquet=False,
-            **extract_resilience,
-            **extract_kwargs,
-        )
-        if isinstance(df_or_path, pd.DataFrame):
-            ds = df_or_path.to_xarray()
-        else:
-            df = pd.read_parquet(df_or_path)
-            ds = df.to_xarray()
-        if save_zarr:
-            s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
-            e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
-            zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
-            ds.to_zarr(zarr_path, mode="w", zarr_format=3)
-            return zarr_path
-        return ds
-
     else:
-        from .extract.apis.satellite import SatelliteExtractor
-        init_resilience = _filter_supported_kwargs(SatelliteExtractor.__init__, resilience_kwargs)
+        if src in ("cams", "copernicus_cams", "merra2", "nasa_merra2", "open_meteo", "openmeteo"):
+            from .extract.apis.reanalysis import ReanalysisExtractor
+            extractor_cls = ReanalysisExtractor
+        else:
+            from .extract.apis.satellite import SatelliteExtractor
+            extractor_cls = SatelliteExtractor
+
+        init_resilience = _filter_supported_kwargs(extractor_cls.__init__, resilience_kwargs)
         init_kwargs = _filter_supported_kwargs(
-            SatelliteExtractor.__init__,
+            extractor_cls.__init__,
             kwargs,
             exclude={"output_dir", "source"},
         )
-        extractor = SatelliteExtractor(output_dir=out_dir, source=src, **init_resilience, **init_kwargs)
+        extractor = extractor_cls(output_dir=out_dir, source=src, **init_resilience, **init_kwargs)
         extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
         extract_kwargs = _filter_supported_kwargs(
             extractor.extract,
             kwargs,
             exclude={"start_date", "end_date", "bbox", "variables", "save_parquet"},
         )
-        df_or_path = extractor.extract(
-            start_date=start_date,
-            end_date=end_date,
-            bbox=s_box,
-            variables=variables,
-            save_parquet=False,
-            **extract_resilience,
-            **extract_kwargs,
-        )
-        if isinstance(df_or_path, pd.DataFrame):
-            ds = df_or_path.to_xarray()
-        else:
-            df = pd.read_parquet(df_or_path)
-            ds = df.to_xarray()
-        if save_zarr:
-            s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
-            e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
-            zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
-            ds.to_zarr(zarr_path, mode="w", zarr_format=3)
-            return zarr_path
-        return ds
+
+        def _fetch_ds(s_arg: Any, e_arg: Any) -> xr.Dataset:
+            df_or_path = extractor.extract(
+                start_date=s_arg,
+                end_date=e_arg,
+                bbox=s_box,
+                variables=variables,
+                save_parquet=False,
+                **extract_resilience,
+                **extract_kwargs,
+            )
+            if isinstance(df_or_path, pd.DataFrame):
+                return df_or_path.to_xarray()
+            return pd.read_parquet(df_or_path).to_xarray()
+
+        if not save_zarr:
+            return _fetch_ds(start_date, end_date)
+
+        s_ts = pd.Timestamp(start_date)
+        e_ts = pd.Timestamp(end_date)
+        last_zarr_path: Optional[Path] = None
+        for yr in range(s_ts.year, e_ts.year + 1):
+            y_start = max(s_ts, pd.Timestamp(f"{yr}-01-01"))
+            y_end = min(e_ts, pd.Timestamp(f"{yr}-12-31 23:59:59"))
+            zarr_path = out_dir / f"{src}_{yr}.zarr"
+            append_existing = False
+
+            if resume and not overwrite:
+                cov = inspect_zarr_coverage(zarr_path)
+                if cov is not None:
+                    ex_min, ex_max, ex_vars, _ = cov
+                    vars_ok = variables is None or all(str(v) in ex_vars for v in variables)
+                    if vars_ok:
+                        deltas, needs_rebuild = compute_missing_zarr_windows(y_start, y_end, ex_min, ex_max)
+                        if not needs_rebuild and not deltas:
+                            last_zarr_path = zarr_path
+                            continue
+                        if not needs_rebuild and deltas:
+                            y_start, y_end = deltas[0]
+                            append_existing = True
+
+            ds_yr = _fetch_ds(y_start, y_end)
+            if append_existing and zarr_path.exists():
+                append_to_zarr(ds_yr, zarr_path, append_dim="time")
+            else:
+                ds_yr.to_zarr(zarr_path, mode="w", zarr_format=3)
+            last_zarr_path = zarr_path
+
+        return last_zarr_path if last_zarr_path is not None else out_dir / f"{src}_{s_ts.year}.zarr"
 
 
 def pull_gridded_data(

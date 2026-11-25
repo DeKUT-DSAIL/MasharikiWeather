@@ -23,6 +23,7 @@ import re
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
@@ -48,7 +49,7 @@ from .base import (
     TemporalRange,
 )
 from .credentials import CredentialsError, CredentialsManager, parse_date, parse_date_range
-from .resilience import ExtractionEstimate, retry_with_backoff
+from .resilience import ExtractionEstimate, retry_with_backoff, stream_merge_parquet
 
 logger = logging.getLogger("MasharikiWeather.TAHMO")
 
@@ -1191,6 +1192,55 @@ class TAHMOExtractor(BaseExtractor):
         combined = combined.sort_values(by=["time", "sensor_id"]).reset_index(drop=True)
         return combined
 
+    @staticmethod
+    def _inspect_existing_yearly_parquet(
+        yearly_path: Path,
+    ) -> Optional[Tuple[pd.Timestamp, pd.Timestamp, Set[str], Set[str]]]:
+        """Inspect an existing yearly TAHMO Parquet for (min_day, max_day, stations, columns)."""
+        try:
+            import pyarrow.parquet as pq
+
+            schema_cols = set(pq.read_schema(yearly_path).names)
+            read_cols = [c for c in ("time", "station_id") if c in schema_cols]
+            if "time" not in read_cols:
+                return None
+            meta_df = pd.read_parquet(yearly_path, columns=read_cols)
+            if meta_df.empty:
+                return None
+            t_series = pd.to_datetime(meta_df["time"], utc=True).dt.tz_localize(None)
+            min_day = t_series.min().floor("D")
+            max_day = t_series.max().floor("D")
+            stations_set = (
+                set(meta_df["station_id"].dropna().astype(str).unique())
+                if "station_id" in meta_df.columns
+                else set()
+            )
+            return min_day, max_day, stations_set, schema_cols
+        except Exception:
+            return None
+
+    @staticmethod
+    def _compute_missing_date_windows(
+        req_start: pd.Timestamp,
+        req_end: pd.Timestamp,
+        existing_min_day: pd.Timestamp,
+        existing_max_day: pd.Timestamp,
+    ) -> List[Tuple[pd.Timestamp, pd.Timestamp]]:
+        """Return uncovered (start, end) date intervals outside [existing_min_day, existing_max_day]."""
+        s_day = pd.Timestamp(req_start).tz_localize(None).floor("D") if pd.Timestamp(req_start).tzinfo is None else pd.Timestamp(req_start).tz_convert("UTC").tz_localize(None).floor("D")
+        e_day = pd.Timestamp(req_end).tz_localize(None).floor("D") if pd.Timestamp(req_end).tzinfo is None else pd.Timestamp(req_end).tz_convert("UTC").tz_localize(None).floor("D")
+
+        deltas: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+        if s_day < existing_min_day:
+            left_end = min(pd.Timestamp(req_end), existing_min_day - pd.Timedelta(days=1))
+            if pd.Timestamp(req_start) <= left_end:
+                deltas.append((pd.Timestamp(req_start), left_end))
+        if e_day > existing_max_day:
+            right_start = max(pd.Timestamp(req_start), existing_max_day + pd.Timedelta(days=1))
+            if right_start <= pd.Timestamp(req_end):
+                deltas.append((right_start, pd.Timestamp(req_end)))
+        return deltas
+
     @classmethod
     def _write_yearly_parquet_streaming(
         cls,
@@ -1603,10 +1653,45 @@ class TAHMOExtractor(BaseExtractor):
             year_slices = self._split_date_range_by_year(s_dt, e_dt)
             for year, y_start, y_end in year_slices:
                 yearly_path = self.output_dir / f"{year}.parquet"
+                year_windows: Optional[List[Tuple[pd.Timestamp, pd.Timestamp]]] = None
+                existing_prev_path: Optional[Path] = None
+                effective_codes_for_year = list(target_codes)
+
                 if resume and not overwrite and yearly_path.exists() and parquet_layout == "yearly" and not save_zarr:
-                    logger.info("Yearly TAHMO Parquet already exists: %s", yearly_path)
-                    results[str(year)] = yearly_path
-                    continue
+                    inspected = self._inspect_existing_yearly_parquet(yearly_path)
+                    if inspected is not None:
+                        ex_min, ex_max, ex_stations, ex_cols = inspected
+                        vars_ok = True
+                        if variables is not None:
+                            for v in variables:
+                                v_str = str(v)
+                                if not any(c == v_str or c.startswith(f"{v_str}_") for c in ex_cols):
+                                    vars_ok = False
+                                    break
+                        if vars_ok:
+                            deltas = self._compute_missing_date_windows(y_start, y_end, ex_min, ex_max)
+                            missing_stations = [c for c in target_codes if c not in ex_stations]
+                            if not deltas and not missing_stations:
+                                logger.info(
+                                    "Yearly TAHMO Parquet already covers requested dates and stations: %s",
+                                    yearly_path,
+                                )
+                                results[str(year)] = yearly_path
+                                continue
+                            # Fetch only uncovered date deltas for existing stations and full year for new stations
+                            existing_prev_path = yearly_path.with_suffix(".parquet.prev")
+                            shutil.copy2(yearly_path, existing_prev_path)
+                            year_windows = deltas
+                            # Keep track of which stations need full range vs delta windows
+                            existing_target_set = set(target_codes) - set(missing_stations)
+                        else:
+                            existing_target_set = set()
+                    else:
+                        logger.info("Yearly TAHMO Parquet already exists: %s", yearly_path)
+                        results[str(year)] = yearly_path
+                        continue
+                else:
+                    existing_target_set = set()
 
                 legacy_cache_dir = self.output_dir / ".station_cache" / str(year)
                 ys_str = y_start.strftime("%Y%m%d")
@@ -1651,27 +1736,49 @@ class TAHMOExtractor(BaseExtractor):
                 def _fetch_station_for_year(code: str) -> Tuple[str, Optional[Path]]:
                     part_key = f"{year}/{code}"
                     try:
-                        df = retry_with_backoff(
-                            lambda: self.extract_station(
-                                station_code=code,
-                                start_date=y_start,
-                                end_date=y_end,
-                                variables=variables,
-                            ),
-                            max_retries=2,
-                            base_delay=0.0 if self.request_delay == 0.0 else 1.0,
-                            retry_on=(requests.RequestException, TimeoutError, ConnectionError, OSError),
-                            rate_limiter=rate_limiter,
-                        )
-                        if df.empty:
+                        if year_windows is not None and code in existing_target_set:
+                            windows_to_fetch = year_windows
+                        else:
+                            windows_to_fetch = [(y_start, y_end)]
+
+                        delta_frames: List[pd.DataFrame] = []
+                        for w_s, w_e in windows_to_fetch:
+                            df_win = retry_with_backoff(
+                                lambda ws=w_s, we=w_e: self.extract_station(
+                                    station_code=code,
+                                    start_date=ws,
+                                    end_date=we,
+                                    variables=variables,
+                                ),
+                                max_retries=2,
+                                base_delay=0.0 if self.request_delay == 0.0 else 1.0,
+                                retry_on=(requests.RequestException, TimeoutError, ConnectionError, OSError),
+                                rate_limiter=rate_limiter,
+                            )
+                            if not df_win.empty:
+                                delta_frames.append(df_win)
+
+                        if not delta_frames:
                             logger.info("No data returned for station %s (%d).", code, year)
-                            cache.mark_empty(part_key)
+                            if year_windows is None:
+                                cache.mark_empty(part_key)
                             return code, None
+
+                        df = pd.concat(delta_frames, axis=0) if len(delta_frames) > 1 else delta_frames[0]
+                        del delta_frames
                         semi_df = self._station_df_to_semi_wide(df, code)
                         del df
                         if semi_df.empty:
-                            cache.mark_empty(part_key)
+                            if year_windows is None:
+                                cache.mark_empty(part_key)
                             return code, None
+                        if year_windows is not None:
+                            delta_stem = f"{code}_{year}_delta_{uuid.uuid4().hex[:8]}.parquet"
+                            delta_p = cache.cache_dir / delta_stem
+                            semi_df.to_parquet(delta_p, index=False)
+                            del semi_df
+                            gc.collect()
+                            return code, delta_p
                         cached_p = cache.save_parquet(part_key, semi_df)
                         if parquet_layout == "both":
                             st_path = self.output_dir / f"{code}_{ys_str}_{ye_str}.parquet"
@@ -1720,7 +1827,17 @@ class TAHMOExtractor(BaseExtractor):
 
                 station_files.sort(key=lambda item: item[0])
                 all_station_files.extend(station_files)
-                written_year = self._write_yearly_parquet_streaming(station_files, yearly_path)
+                if existing_prev_path is not None and existing_prev_path.exists():
+                    if station_files:
+                        new_tmp_path = yearly_path.with_suffix(".parquet.new")
+                        written_new = self._write_yearly_parquet_streaming(station_files, new_tmp_path)
+                        merge_inputs = [existing_prev_path] + ([written_new] if written_new is not None else [])
+                        written_year = stream_merge_parquet(merge_inputs, yearly_path, delete_inputs=True)
+                    else:
+                        shutil.move(str(existing_prev_path), str(yearly_path))
+                        written_year = yearly_path
+                else:
+                    written_year = self._write_yearly_parquet_streaming(station_files, yearly_path)
                 if written_year is not None:
                     results[str(year)] = written_year
                     logger.info("Compiled yearly TAHMO Parquet (%d stations): %s", len(station_files), written_year)
