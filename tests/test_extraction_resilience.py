@@ -1023,4 +1023,81 @@ def test_pull_weather_data_extracts_only_requested_sources(
     assert res_gr["stations"] == {}
 
 
+def test_extraction_cache_cross_hash_reuse_and_ttl_lifecycle(tmp_path: Path) -> None:
+    """Verify compatible peer hashes are reused and expired sibling caches are pruned by TTL."""
+    import time
+
+    c1 = ExtractionCache(
+        tmp_path,
+        source="tahmo",
+        request_params={
+            "start_date": "20230101",
+            "end_date": "20230630",
+            "bbox": [-5.0, 29.0, 5.0, 42.0],
+            "variables": None,
+            "stations": ["TA00001", "TA00002"],
+        },
+    )
+    df_st = pd.DataFrame({"time": [pd.Timestamp("2023-01-01")], "te": [22.5]})
+    c1.save_parquet("TA00001_20230101_20230630", df_st)
+
+    # Different bbox and station list, subset of variables -> should reuse TA00001 from c1
+    c2 = ExtractionCache(
+        tmp_path,
+        source="tahmo",
+        request_params={
+            "start_date": "20230101",
+            "end_date": "20230630",
+            "bbox": [-2.0, 34.0, 2.0, 38.0],
+            "variables": ["te"],
+            "stations": ["TA00001"],
+        },
+    )
+    assert c2.request_hash != c1.request_hash
+    assert c2.is_done("TA00001_20230101_20230630") is True
+    loaded = c2.load_parquet("TA00001_20230101_20230630")
+    assert float(loaded["te"].iloc[0]) == 22.5
+
+    # Incompatible variables (peer only had ["te"], new request asks for ["te", "pr"]) -> no reuse
+    c3 = ExtractionCache(
+        tmp_path,
+        source="tahmo",
+        request_params={
+            "start_date": "20230101",
+            "end_date": "20230630",
+            "bbox": [-1.0, 35.0, 1.0, 37.0],
+            "variables": ["te"],
+        },
+    )
+    c3.save_parquet("TA00003_20230101_20230630", df_st)
+
+    c4 = ExtractionCache(
+        tmp_path,
+        source="tahmo",
+        request_params={
+            "start_date": "20230101",
+            "end_date": "20230630",
+            "bbox": [-1.0, 35.0, 1.0, 37.0],
+            "variables": ["te", "pr"],
+        },
+    )
+    assert c4.is_done("TA00003_20230101_20230630") is False
+
+    # TTL lifecycle: backdate c1 manifest updated_at by 10 days -> pruned when c5 initializes with 7-day TTL
+    with open(c1.manifest_path, "r", encoding="utf-8") as fh:
+        m1 = json.load(fh)
+    m1["updated_at"] = time.time() - (10.0 * 86400.0)
+    with open(c1.manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(m1, fh)
+
+    c5 = ExtractionCache(
+        tmp_path,
+        source="tahmo",
+        request_params={"start_date": "20240101", "end_date": "20240102"},
+        cache_ttl_days=7.0,
+    )
+    assert not c1.cache_dir.exists()
+    assert c5.cache_dir.exists()
+
+
 
