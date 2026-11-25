@@ -185,13 +185,11 @@ MasharikiWeather addresses these challenges through:
 
 | Source | Type | Coverage | Variables | Role |
 |--------|------|-----------|------------|------|
-| **TAHMO** | In-situ (stations) | Sub-Saharan Africa | Precipitation, Temperature, Solar Radiation, Relative Humidity | Ground truth |
+| **TAHMO** | In-situ (stations) | Sub-Saharan Africa | Precipitation, Temperature, Solar Radiation, Relative Humidity | TAHMO ground observations |
 | **CDS In-Situ** | In-situ (stations) | Global / Africa | Surface temperature, pressure, wind, humidity | WMO ground observations |
 | **GHCN (NOAA)** | In-situ (stations) | Global / Africa | Daily and hourly precipitation, max/min temperature | Climatological reference |
 | **ERA5** | Reanalysis | Global | Full atmospheric suite (surface & pressure levels) | Baseline physics |
 | **IMERG** | Satellite | Global | Precipitation (half-hourly, V07 Final & V08 Late) | High-resolution rainfall |
-| **CHIRPS** | Satellite + Gauge | 1981–Present | Precipitation | Long-term rainfall |
-| **TAMSAT** | Satellite | Africa | Precipitation | Bias-corrected rainfall |
 | **CAMS** | Reanalysis | Global | Aerosols, PM2.5, PM10, reactive gases | Atmospheric composition |
 | **MERRA-2** | Reanalysis | Global | Meteorology, aerosol optical depth | NASA atmospheric baseline |
 | **Open-Meteo** | Reanalysis / NWP | Global | Multimodel weather parameters | Low-latency queries |
