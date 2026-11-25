@@ -1443,15 +1443,13 @@ class TestMetadataAndTopography:
 
         ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
 
-        # start_date and end_date must reflect the actual non-NaN observational span
+        # start_date must reflect the actual non-NaN observational span, and deprecated columns must be absent
         st_row = ds.stations_table.loc["TA00001"]
         assert pd.notna(st_row["start_date"]), "start_date must not be NaN/NaT"
-        assert pd.notna(st_row["end_date"]), "end_date must not be NaN/NaT"
         assert pd.to_datetime(st_row["start_date"]).tz_localize(None) == pd.Timestamp("2023-01-01 02:00:00")
-        assert pd.to_datetime(st_row["end_date"]).tz_localize(None) == pd.Timestamp("2023-01-01 07:00:00")
-
-        # sensor_count must equal 3 (distinct channels), strictly > 1 and not hardcoded to 1
-        assert int(st_row["sensor_count"]) == 3
+        assert "end_date" not in ds.stations_table.columns
+        assert "sensor_count" not in ds.stations_table.columns
+        assert "station_name" not in ds.stations_table.columns
 
     def test_topography_persistence_on_disk(self, tmp_path: Path) -> None:
         """Verify instantiation topography interpolation persists updated stations.parquet to disk."""
@@ -1759,14 +1757,12 @@ class TestDirectivesValidationAndLifecycle:
         ds = MasharikiWeatherDataset(root=tmp_path, years=[2023], source_obs=["tahmo"], use_hf=False)
 
         st = ds.stations_table.loc["TA00001"]
-        # Must have zero NaNs in start_date and end_date
+        # Must have zero NaNs in start_date and omit deprecated columns
         assert pd.notna(st["start_date"])
-        assert pd.notna(st["end_date"])
         assert st["start_date"] == pd.Timestamp("2014-01-01")
-        assert st["end_date"] == pd.Timestamp.now().floor("D")
-
-        # Must reflect the 12-sensor payload default for TAHMO (never 1)
-        assert int(st["sensor_count"]) == 12
+        assert "end_date" not in ds.stations_table.columns
+        assert "sensor_count" not in ds.stations_table.columns
+        assert "station_name" not in ds.stations_table.columns
 
 
 # Run via python -m pytest tests/test_dataset.py -v

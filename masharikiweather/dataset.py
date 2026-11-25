@@ -484,6 +484,54 @@ def _tag_source(df: pd.DataFrame, source: str) -> pd.DataFrame:
 
 
 
+def _pivot_observations_to_multiindex(
+    full_df: pd.DataFrame,
+    param_cols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    Pivot wide or semi-wide (sensor_id-indexed) observation DataFrames into a
+    2-level MultiIndex DataFrame with columns (station_id, parameter).
+
+    Mathematical docstring:
+        Input:
+            Wide: (N_records, 2 + C_params) with ['time', 'station_id', ...params]
+            Semi-wide: (N_records, 3 + C_vars) with ['time', 'station_id', 'sensor_id', ...vars]
+        Output:
+            (T_timestamps, N_stations * C_station_params) with column MultiIndex ['station_id', 'parameter'].
+    """
+    has_sensor_id = "sensor_id" in full_df.columns
+    if param_cols is None:
+        excluded = {"time", "station_id", "sensor_id"}
+        param_cols = [c for c in full_df.columns if c not in excluded]
+
+    if not param_cols:
+        return pd.DataFrame(
+            index=pd.DatetimeIndex([], name="time"),
+            columns=pd.MultiIndex.from_arrays([[], []], names=["station_id", "parameter"]),
+        )
+
+    if not has_sensor_id:
+        obs_df = full_df.pivot(index="time", columns="station_id", values=param_cols)
+        obs_df = obs_df.reorder_levels([1, 0], axis=1).sort_index(axis=1)
+        obs_df.columns.names = ["station_id", "parameter"]
+        return obs_df
+
+    # Semi-wide path: preserve collocated sensors as <param>_<sensor_id>, plain 'primary' as <param>
+    work = full_df.copy()
+    work["sensor_id"] = work["sensor_id"].fillna("primary").astype(str).replace({"": "primary"})
+    obs_df = work.pivot(index="time", columns=["station_id", "sensor_id"], values=param_cols)
+    obs_df = obs_df.dropna(axis=1, how="all")
+
+    new_tuples: List[Tuple[str, str]] = []
+    for param, st_id, sid in obs_df.columns:
+        col_param = str(param) if sid == "primary" else f"{param}_{sid}"
+        new_tuples.append((str(st_id), col_param))
+
+    obs_df.columns = pd.MultiIndex.from_tuples(new_tuples, names=["station_id", "parameter"])
+    obs_df = obs_df.sort_index(axis=1)
+    return obs_df
+
+
 def _normalize_time_column(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalize time/timestamp column name in flat observation DataFrames and ensure datetime dtype.
@@ -571,7 +619,7 @@ def _get_canonical_source_parameters(source: str) -> Optional[pd.DataFrame]:
     if norm == "tahmo":
         try:
             from .extract.apis.tahmo import DEFAULT_TAHMO_PARAMETERS
-            df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS)
+            df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS).drop(columns=["canonical_name"], errors="ignore")
             if "parameter" in df.columns:
                 df = df.set_index("parameter")
             return df
@@ -1613,10 +1661,10 @@ class MasharikiWeatherDataset:
                 self.root_dir,
             )
             self.stations_table = pd.DataFrame(
-                columns=["latitude", "longitude", "elevation", "station_name", "network", "country", "start_date", "end_date", "sensor_count"]
+                columns=["latitude", "longitude", "elevation", "name", "network", "country", "start_date"]
             ).set_index(pd.Index([], name="station_id"))
             self.parameters_table = pd.DataFrame(
-                columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
+                columns=["standard_name", "units", "physical_type", "resampling_method", "description"]
             ).set_index(pd.Index([], name="parameter"))
             self.observations = ObservationDataFrame(
                 index=pd.DatetimeIndex([], name="time"),
@@ -1698,10 +1746,10 @@ class MasharikiWeatherDataset:
             self._load_local_registries()
         else:
             self.stations_table = pd.DataFrame(
-                columns=["latitude", "longitude", "elevation", "station_name", "network", "country", "start_date", "end_date", "sensor_count"]
+                columns=["latitude", "longitude", "elevation", "name", "network", "country", "start_date"]
             ).set_index(pd.Index([], name="station_id"))
             self.parameters_table = pd.DataFrame(
-                columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
+                columns=["standard_name", "units", "physical_type", "resampling_method", "description"]
             ).set_index(pd.Index([], name="parameter"))
             self._prepare_observations()
             if hasattr(self, "observations") and not self.observations.empty:
@@ -1709,25 +1757,19 @@ class MasharikiWeatherDataset:
                 params = self.observations.columns.get_level_values(1).unique()
 
                 st_rows = []
-                now_d = pd.Timestamp.now().floor("D")
                 for st in stations:
                     sub_st = self.observations[st]
                     valid_idx = sub_st.dropna(how="all").index
                     st_start = valid_idx.min() if len(valid_idx) > 0 else (self.observations.index[0] if len(self.observations) > 0 else pd.Timestamp("2014-01-01"))
-                    st_end = valid_idx.max() if len(valid_idx) > 0 else (self.observations.index[-1] if len(self.observations) > 0 else now_d)
-                    active_cols = [c for c in sub_st.columns if sub_st[c].notna().any()]
-                    sensor_count = len(active_cols) if active_cols else max(12 if (self.source_obs and "tahmo" in _normalize_source_name(self.source_obs[0])) else 1, len(sub_st.columns))
                     st_rows.append({
                         "station_id": st,
                         "latitude": np.nan,
                         "longitude": np.nan,
                         "elevation": np.nan,
-                        "station_name": _resolve_physical_station_name(sub_st, fallback_id=str(st)),
+                        "name": _resolve_physical_station_name(sub_st, fallback_id=str(st)),
                         "network": self.source_obs[0] if self.source_obs else "tahmo",
                         "country": "KE",
                         "start_date": st_start,
-                        "end_date": st_end,
-                        "sensor_count": sensor_count,
                     })
                 self.stations_table = pd.DataFrame(st_rows).set_index("station_id")
 
@@ -1748,7 +1790,6 @@ class MasharikiWeatherDataset:
                         meta = CANONICAL_VARIABLE_METADATA.get(p, CANONICAL_VARIABLE_METADATA.get(base_name, {}))
                         pr_rows.append({
                             "parameter": p,
-                            "canonical_name": meta.get("canonical_name", p),
                             "standard_name": meta.get("standard_name", p),
                             "units": meta.get("units", "unknown"),
                             "physical_type": meta.get("physical_type", "PHYSICAL"),
@@ -2054,10 +2095,7 @@ class MasharikiWeatherDataset:
             full_df = full_df.rename(columns={"station": "station_id"})
         full_df = full_df.drop(columns=["__source__"], errors="ignore")
 
-        param_cols = [c for c in full_df.columns if c not in ["time", "station_id"]]
-        obs_df = full_df.pivot(index="time", columns="station_id", values=param_cols)
-        obs_df = obs_df.reorder_levels([1, 0], axis=1).sort_index(axis=1)
-        obs_df.columns.names = ["station_id", "parameter"]
+        obs_df = _pivot_observations_to_multiindex(full_df)
         return ObservationDataFrame(obs_df)
 
     def resample(
@@ -2466,7 +2504,7 @@ class MasharikiWeatherDataset:
                         logger.debug("Failed reading global station catalog %s: %s", st_p, err)
             if not loaded_st:
                 self.stations_table = pd.DataFrame(
-                    columns=["latitude", "longitude", "elevation", "station_name", "network", "country", "start_date", "end_date", "sensor_count"]
+                    columns=["latitude", "longitude", "elevation", "name", "network", "country", "start_date"]
                 ).set_index(pd.Index([], name="station_id"))
 
             # Filter by network if network column exists and self.source_obs is provided
@@ -2491,15 +2529,19 @@ class MasharikiWeatherDataset:
 
             if "start_date" in self.stations_table.columns:
                 self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
-            if "end_date" in self.stations_table.columns:
-                self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
-            if "station_name" not in self.stations_table.columns:
-                self.stations_table["station_name"] = self.stations_table.index.astype(str)
+            if "name" not in self.stations_table.columns:
+                if "station_name" in self.stations_table.columns:
+                    self.stations_table["name"] = self.stations_table["station_name"]
+                else:
+                    self.stations_table["name"] = self.stations_table.index.astype(str)
             for s in self.stations_table.index:
-                s_name = self.stations_table.loc[s, "station_name"]
+                s_name = self.stations_table.loc[s, "name"]
                 if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
                     resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
-                    self.stations_table.loc[s, "station_name"] = resolved
+                    self.stations_table.loc[s, "name"] = resolved
+            self.stations_table = self.stations_table.drop(
+                columns=["station_name", "end_date", "sensor_count"], errors="ignore"
+            )
 
         # --- 2. Load Parameters Catalog ---
         source_pr_dfs: List[pd.DataFrame] = []
@@ -2564,7 +2606,7 @@ class MasharikiWeatherDataset:
                         logger.debug("Failed reading global parameter catalog %s: %s", pr_p, err)
             if not loaded_pr:
                 self.parameters_table = pd.DataFrame(
-                    columns=["canonical_name", "standard_name", "units", "physical_type", "resampling_method", "description"]
+                    columns=["standard_name", "units", "physical_type", "resampling_method", "description"]
                 ).set_index(pd.Index([], name="parameter"))
 
             # If canonical source catalog exists and self.parameters_table has fewer parameters, override with canonical
@@ -2595,6 +2637,7 @@ class MasharikiWeatherDataset:
 
         # Persist updated parameters table to prevent stale file propagation
         if hasattr(self, "parameters_table") and not self.parameters_table.empty:
+            self.parameters_table = self.parameters_table.drop(columns=["canonical_name"], errors="ignore")
             try:
                 meta_dir = Path(self.root_dir) / "metadata"
                 meta_dir.mkdir(parents=True, exist_ok=True)
@@ -2670,28 +2713,16 @@ class MasharikiWeatherDataset:
             Formulation:
                 For each station s in stations_table:
                     start_date_s = min({t in T_obs | exists c in Sensors_s such that obs(s, c, t) is not NaN})
-                    end_date_s = max({t in T_obs | exists c in Sensors_s such that obs(s, c, t) is not NaN})
-                    sensor_count_s = card(Sensors_s) = len(observations[s].columns)
             Output:
-                stations_table with updated start_date, end_date, and accurate sensor_count >= 1.
+                stations_table with updated start_date, name, and elevation.
         """
         if not hasattr(self, "stations_table") or self.stations_table is None or self.stations_table.empty:
             return
-
-        if "sensor_count" not in self.stations_table.columns:
-            self.stations_table["sensor_count"] = 1
 
         if "start_date" not in self.stations_table.columns:
             self.stations_table["start_date"] = pd.NaT
         else:
             self.stations_table["start_date"] = pd.to_datetime(self.stations_table["start_date"], errors="coerce")
-
-        if "end_date" not in self.stations_table.columns:
-            self.stations_table["end_date"] = pd.NaT
-        else:
-            self.stations_table["end_date"] = pd.to_datetime(self.stations_table["end_date"], errors="coerce")
-
-        observed_stations: Set[str] = set()
 
         # 1. Update from loaded observations in memory
         if hasattr(self, "observations") and self.observations is not None and not self.observations.empty:
@@ -2701,46 +2732,28 @@ class MasharikiWeatherDataset:
                 if is_multi:
                     if s in obs.columns.levels[0] or s in obs.columns.get_level_values(0):
                         s_df = obs[s]
-                        active_cols = [c for c in s_df.columns if s_df[c].notna().any()]
-                        n_sensors = len(active_cols) if active_cols else s_df.shape[1]
-                        if n_sensors > 0:
-                            self.stations_table.loc[s, "sensor_count"] = max(1, n_sensors)
-                            observed_stations.add(s)
-
                         valid_idx = s_df.dropna(how="all").index
                         if len(valid_idx) > 0:
                             obs_start = valid_idx.min()
-                            obs_end = valid_idx.max()
                             if hasattr(obs_start, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(obs_start, "tzinfo", None) is not None:
                                 obs_start = obs_start.tz_localize(None)
-                            if hasattr(obs_end, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(obs_end, "tzinfo", None) is not None:
-                                obs_end = obs_end.tz_localize(None)
                             cur_st = self.stations_table.loc[s, "start_date"]
                             if pd.isna(cur_st) or cur_st is pd.NaT:
                                 self.stations_table.loc[s, "start_date"] = obs_start
-                            cur_et = self.stations_table.loc[s, "end_date"]
-                            if pd.isna(cur_et) or cur_et is pd.NaT:
-                                self.stations_table.loc[s, "end_date"] = obs_end
                 else:
                     if s in obs.columns:
                         s_series = obs[s].dropna()
                         if len(s_series) > 0:
                             obs_start = s_series.index.min()
-                            obs_end = s_series.index.max()
                             if hasattr(obs_start, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(obs_start, "tzinfo", None) is not None:
                                 obs_start = obs_start.tz_localize(None)
-                            if hasattr(obs_end, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(obs_end, "tzinfo", None) is not None:
-                                obs_end = obs_end.tz_localize(None)
                             cur_st = self.stations_table.loc[s, "start_date"]
                             if pd.isna(cur_st) or cur_st is pd.NaT:
                                 self.stations_table.loc[s, "start_date"] = obs_start
-                            cur_et = self.stations_table.loc[s, "end_date"]
-                            if pd.isna(cur_et) or cur_et is pd.NaT:
-                                self.stations_table.loc[s, "end_date"] = obs_end
 
         # 2. Inspect local observation parquet files if observations table was not yet loaded
         elif self.source_obs:
-            meta_cols = {"time", "timestamp", "datetime", "level_0", "station_id", "station", "__source__"}
+            meta_cols = {"time", "timestamp", "datetime", "level_0", "station_id", "station", "sensor_id", "__source__"}
             for src in self.source_obs:
                 src_dir = self._resolve_obs_source_dir(src)
                 if not src_dir.exists():
@@ -2760,65 +2773,37 @@ class MasharikiWeatherDataset:
                                     sub = df_p[df_p["station_id"] == s]
                                     if val_cols:
                                         sub_valid = sub[val_cols].dropna(how="all")
-                                        active_cols = [c for c in val_cols if sub[c].notna().any()]
-                                        sensor_cnt = len(active_cols) if active_cols else len(val_cols)
                                         if len(sub_valid) > 0 and t_col:
                                             times = pd.to_datetime(sub.loc[sub_valid.index, t_col])
                                             min_t = times.min()
-                                            max_t = times.max()
                                             if hasattr(min_t, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(min_t, "tzinfo", None) is not None:
                                                 min_t = min_t.tz_localize(None)
-                                            if hasattr(max_t, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(max_t, "tzinfo", None) is not None:
-                                                max_t = max_t.tz_localize(None)
                                             cur_st = self.stations_table.loc[s, "start_date"]
                                             if pd.isna(cur_st) or cur_st is pd.NaT:
                                                 self.stations_table.loc[s, "start_date"] = min_t
-                                            cur_et = self.stations_table.loc[s, "end_date"]
-                                            if pd.isna(cur_et) or cur_et is pd.NaT:
-                                                self.stations_table.loc[s, "end_date"] = max_t
-                                        curr = self.stations_table.loc[s, "sensor_count"]
-                                        curr_count = int(curr) if pd.notna(curr) else 1
-                                        self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
-                                        observed_stations.add(s)
                         elif isinstance(df_p.columns, pd.MultiIndex):
                             for s in df_p.columns.get_level_values(0).unique():
                                 if s in self.stations_table.index:
                                     sub_st = df_p[s].dropna(how="all")
-                                    active_cols = [c for c in df_p[s].columns if df_p[s][c].notna().any()]
-                                    sensor_cnt = len(active_cols) if active_cols else len(df_p[s].columns)
                                     if len(sub_st) > 0:
                                         min_t = sub_st.index.min()
-                                        max_t = sub_st.index.max()
                                         if hasattr(min_t, "tz_localize") and getattr(self.stations_table["start_date"].dtype, "tz", None) is None and getattr(min_t, "tzinfo", None) is not None:
                                             min_t = min_t.tz_localize(None)
-                                        if hasattr(max_t, "tz_localize") and getattr(self.stations_table["end_date"].dtype, "tz", None) is None and getattr(max_t, "tzinfo", None) is not None:
-                                            max_t = max_t.tz_localize(None)
                                         cur_st = self.stations_table.loc[s, "start_date"]
                                         if pd.isna(cur_st) or cur_st is pd.NaT:
                                             self.stations_table.loc[s, "start_date"] = min_t
-                                        cur_et = self.stations_table.loc[s, "end_date"]
-                                        if pd.isna(cur_et) or cur_et is pd.NaT:
-                                            self.stations_table.loc[s, "end_date"] = max_t
-                                    curr = self.stations_table.loc[s, "sensor_count"]
-                                    curr_count = int(curr) if pd.notna(curr) else 1
-                                    self.stations_table.loc[s, "sensor_count"] = max(sensor_cnt, curr_count)
-                                    observed_stations.add(s)
                     except Exception as err:
-                        logger.debug("Failed reading %s for date/sensor resolution: %s", pf, err)
+                        logger.debug("Failed reading %s for date resolution: %s", pf, err)
 
-        # 3. Fallback to asset metadata columns if start_date or end_date is still null
+        # 3. Fallback to asset metadata columns if start_date is still null
         for alt_col in ["installationdate", "created", "since_date", "start_time"]:
             if alt_col in self.stations_table.columns:
                 parsed = pd.to_datetime(self.stations_table[alt_col], errors="coerce")
                 self.stations_table["start_date"] = self.stations_table["start_date"].fillna(parsed)
 
-        for alt_end in ["closed", "decommissiondate", "end_time", "last_measurement", "last_measurement_date"]:
-            if alt_end in self.stations_table.columns:
-                parsed_end = pd.to_datetime(self.stations_table[alt_end], errors="coerce")
-                self.stations_table["end_date"] = self.stations_table["end_date"].fillna(parsed_end)
-
-        # 4. Guarantee realistic sensor_count, physical station_name, non-NaN elevation, and genuine dates
-        now_d = pd.Timestamp.now().floor("D")
+        # 4. Guarantee physical name, non-NaN elevation, and genuine start_date
+        if "name" not in self.stations_table.columns:
+            self.stations_table["name"] = self.stations_table.index.astype(str)
         for s in self.stations_table.index:
             net = str(self.stations_table.loc[s, "network"]).lower() if "network" in self.stations_table.columns and pd.notna(self.stations_table.loc[s, "network"]) else "tahmo"
             if "start_date" in self.stations_table.columns:
@@ -2831,28 +2816,10 @@ class MasharikiWeatherDataset:
                     else:
                         self.stations_table.loc[s, "start_date"] = pd.Timestamp("2000-01-01")
 
-            if "end_date" in self.stations_table.columns:
-                et_date = self.stations_table.loc[s, "end_date"]
-                if pd.isna(et_date) or et_date is pd.NaT:
-                    if "ghcn" in net or "cds" in net:
-                        pass  # Do not invent synthetic dates for GHCN or CDS In-Situ
-                    else:
-                        self.stations_table.loc[s, "end_date"] = now_d
-
-            if s not in observed_stations:
-                cnt = self.stations_table.loc[s, "sensor_count"]
-                if pd.isna(cnt) or (isinstance(cnt, (int, float, np.integer, np.floating)) and cnt <= 1):
-                    if "tahmo" in net:
-                        self.stations_table.loc[s, "sensor_count"] = 12
-                    else:
-                        self.stations_table.loc[s, "sensor_count"] = 1
-
-            # Physical station naming
-            if "station_name" in self.stations_table.columns:
-                s_name = self.stations_table.loc[s, "station_name"]
-                if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
-                    resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
-                    self.stations_table.loc[s, "station_name"] = resolved
+            s_name = self.stations_table.loc[s, "name"]
+            if pd.isna(s_name) or str(s_name).strip().lower() in ("nan", "none", "") or str(s_name) == str(s):
+                resolved = _resolve_physical_station_name(self.stations_table.loc[s], fallback_id=str(s))
+                self.stations_table.loc[s, "name"] = resolved
 
         # Ensure station elevation is never NaN
         if "elevation" in self.stations_table.columns:
@@ -2860,13 +2827,13 @@ class MasharikiWeatherDataset:
                 self.stations_table["elevation"] = self.stations_table["elevation"].fillna(self.stations_table["dem"])
             self.stations_table["elevation"] = pd.to_numeric(self.stations_table["elevation"], errors="coerce").fillna(0.0)
 
-        # Omit start_date and end_date columns if not stored by the network (e.g. GHCN or CDS In-Situ)
-        # and no observations were loaded to calculate them
-        for d_col in ["start_date", "end_date"]:
-            if d_col in self.stations_table.columns and self.stations_table[d_col].isna().all():
-                self.stations_table = self.stations_table.drop(columns=[d_col])
+        # Omit start_date if not stored by the network (e.g. GHCN or CDS In-Situ)
+        if "start_date" in self.stations_table.columns and self.stations_table["start_date"].isna().all():
+            self.stations_table = self.stations_table.drop(columns=["start_date"])
 
-        self.stations_table["sensor_count"] = self.stations_table["sensor_count"].fillna(12).astype(int)
+        self.stations_table = self.stations_table.drop(
+            columns=["station_name", "end_date", "sensor_count"], errors="ignore"
+        )
 
     def _filter_requested_parameters(self) -> None:
         if self.requested_parameters is not None:
@@ -2988,7 +2955,7 @@ class MasharikiWeatherDataset:
             full_df = full_df.rename(columns={"station": "station_id"})
         full_df = self._extract_column_sources(full_df)
 
-        param_cols = [c for c in full_df.columns if c not in ["time", "station_id"]]
+        param_cols = [c for c in full_df.columns if c not in ["time", "station_id", "sensor_id"]]
 
         # Automatic variable harmonization to canonical nomenclature
         rename_map = {}
@@ -3000,9 +2967,7 @@ class MasharikiWeatherDataset:
             full_df = full_df.rename(columns=rename_map)
             param_cols = [rename_map.get(c, c) for c in param_cols]
 
-        obs_df = full_df.pivot(index="time", columns="station_id", values=param_cols)
-        obs_df = obs_df.reorder_levels([1, 0], axis=1).sort_index(axis=1)
-        obs_df.columns.names = ["station_id", "parameter"]
+        obs_df = _pivot_observations_to_multiindex(full_df, param_cols=param_cols)
 
         # Filter parameters if requested
         if self.requested_parameters is not None:
@@ -3021,10 +2986,12 @@ class MasharikiWeatherDataset:
             if valid_cols:
                 obs_df = obs_df.loc[:, valid_cols]
         elif hasattr(self, "parameters_table") and not self.parameters_table.empty:
-            valid_cols = obs_df.columns.intersection(
-                pd.MultiIndex.from_product([obs_df.columns.levels[0], self.parameters])
-            )
-            if not valid_cols.empty:
+            param_set = set(self.parameters)
+            valid_cols = [
+                col for col in obs_df.columns
+                if col[1] in param_set or any(col[1].startswith(f"{base}_") for base in param_set)
+            ]
+            if valid_cols:
                 obs_df = obs_df.loc[:, valid_cols]
 
         if self.freq:
@@ -4026,15 +3993,24 @@ class MasharikiWeatherDataset:
         """
         if "__source__" not in full_df.columns:
             return full_df
-        meta = {"time", "station_id", "__source__"}
+        meta = {"time", "station_id", "sensor_id", "__source__"}
         values = [c for c in full_df.columns if c not in meta]
         sources: Dict[Tuple[str, str], str] = {}
         if values and "station_id" in full_df.columns:
             canon = {c: canonicalize_variable_name(c) for c in values}
-            present = full_df.groupby(["station_id", "__source__"])[values].count() > 0
-            for (station, src), row in present.iterrows():
-                for col in row.index[row.to_numpy()]:
-                    sources.setdefault((station, canon[col]), src)
+            if "sensor_id" in full_df.columns:
+                work = full_df.copy()
+                work["_sid_norm"] = work["sensor_id"].fillna("").astype(str)
+                present = work.groupby(["station_id", "_sid_norm", "__source__"])[values].count() > 0
+                for (station, sid, src), row in present.iterrows():
+                    for col in row.index[row.to_numpy()]:
+                        pname = canon[col] if sid in ("", "primary") else f"{canon[col]}_{sid}"
+                        sources.setdefault((station, pname), src)
+            else:
+                present = full_df.groupby(["station_id", "__source__"])[values].count() > 0
+                for (station, src), row in present.iterrows():
+                    for col in row.index[row.to_numpy()]:
+                        sources.setdefault((station, canon[col]), src)
         self._column_sources = sources
         return full_df.drop(columns=["__source__"])
 

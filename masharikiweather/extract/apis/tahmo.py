@@ -20,18 +20,23 @@ import logging
 import os
 import random
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from requests.auth import HTTPBasicAuth
-from urllib3.util import Retry
+
+try:
+    import orjson
+except ImportError:
+    orjson = None
 
 from .base import (
     AFRICA_BBOX,
@@ -531,6 +536,7 @@ class TAHMOExtractor(BaseExtractor):
         dataset: str = "controlled",
         request_delay: float = 0.1,
         retry_delay: float = 120.0,
+        transient_retry_delay: float = 5.0,
         retries: int = 3,
         verify_ssl: bool = True,
         max_workers: Optional[int] = 4,
@@ -590,6 +596,15 @@ class TAHMOExtractor(BaseExtractor):
                 self.retry_delay = max(0.0, float(retry_delay))
         else:
             self.retry_delay = max(0.0, float(retry_delay))
+
+        env_transient_delay = os.getenv("TAHMO_TRANSIENT_RETRY_DELAY", "").strip()
+        if env_transient_delay:
+            try:
+                self.transient_retry_delay = max(0.0, float(env_transient_delay))
+            except ValueError:
+                self.transient_retry_delay = max(0.0, float(transient_retry_delay))
+        else:
+            self.transient_retry_delay = max(0.0, float(transient_retry_delay))
 
         env_retries = os.getenv("TAHMO_RETRIES", "").strip()
         if env_retries:
@@ -652,6 +667,8 @@ class TAHMOExtractor(BaseExtractor):
                     time.sleep(self.request_delay)
                 resp = session.get(url, params=params, timeout=60, verify=self.verify_ssl)
                 if resp.status_code == 200:
+                    if orjson is not None and isinstance(resp.content, (bytes, bytearray, str)):
+                        return orjson.loads(resp.content)
                     return resp.json()
                 elif resp.status_code in (401, 403):
                     raise CredentialsError("TAHMO DataHub", f"Authentication failed (HTTP {resp.status_code})")
@@ -693,14 +710,18 @@ class TAHMOExtractor(BaseExtractor):
                 )
 
             if attempt < max_attempts:
-                logger.info(
-                    "Waiting %.1f s before retry attempt %d/%d on %s",
+                transient_sleep = min(
                     self.retry_delay,
+                    self.transient_retry_delay * (3 ** (attempt - 1)),
+                )
+                logger.info(
+                    "Waiting %.1f s before transient retry attempt %d/%d on %s",
+                    transient_sleep,
                     attempt + 1,
                     max_attempts,
                     url,
                 )
-                time.sleep(self.retry_delay)
+                time.sleep(transient_sleep)
         raise RuntimeError(f"Failed to fetch {url} after {max_attempts} attempts.")
 
     def get_stations(
@@ -714,7 +735,7 @@ class TAHMOExtractor(BaseExtractor):
         Output table shape: (N_stations, C_metadata)
         where columns include [
             'station_code', 'name', 'lat', 'lon', 'elevation', 'country',
-            'status', 'start_date', 'end_date', 'sensor_count'
+            'status', 'start_date'
         ].
         """
         raw = self._request("services/assets/v2/stations", params={"sort": "code"})
@@ -747,12 +768,6 @@ class TAHMOExtractor(BaseExtractor):
                 or s.get("start_date")
                 or loc.get("installationdate")
             )
-            end_raw = (
-                s.get("end_date")
-                or s.get("closed")
-                or s.get("decommissiondate")
-            )
-
             name_val = loc.get("name") or s.get("name") or loc.get("city") or s.get("label") or s.get("code")
 
             if start_raw:
@@ -760,42 +775,15 @@ class TAHMOExtractor(BaseExtractor):
             else:
                 start_dt = pd.Timestamp("2014-01-01")
 
-            tz_start = getattr(start_dt, "tz", None)
-            if end_raw:
-                end_dt = pd.to_datetime(end_raw)
-            else:
-                end_dt = pd.Timestamp.now(tz=tz_start).floor("D") if tz_start else pd.Timestamp.now().floor("D")
-
-            sensors_val = (
-                s.get("sensors")
-                or s.get("instruments")
-                or s.get("elements")
-                or s.get("variables")
-            )
-            sensor_count: int = 12
-            if isinstance(sensors_val, (list, tuple, dict, set)) and len(sensors_val) > 0:
-                sensor_count = len(sensors_val)
-            elif s.get("sensor_count") is not None and not pd.isna(s.get("sensor_count")):
-                try:
-                    sc = int(s.get("sensor_count"))
-                    sensor_count = sc if sc > 0 else 12
-                except (ValueError, TypeError):
-                    sensor_count = 12
-            else:
-                sensor_count = 12
-
             rows.append({
                 "station_code": s.get("code"),
                 "name": name_val,
-                "station_name": name_val,
                 "lat": lat_f,
                 "lon": lon_f,
                 "elevation": float(elev) if elev is not None else 0.0,
                 "country": str(country_code).upper() if country_code else "KE",
                 "status": s.get("status"),
                 "start_date": start_dt,
-                "end_date": end_dt,
-                "sensor_count": sensor_count,
             })
 
         df = pd.DataFrame(
@@ -803,15 +791,12 @@ class TAHMOExtractor(BaseExtractor):
             columns=[
                 "station_code",
                 "name",
-                "station_name",
                 "lat",
                 "lon",
                 "elevation",
                 "country",
                 "status",
                 "start_date",
-                "end_date",
-                "sensor_count",
             ],
         )
         return df.sort_values(by="station_code").reset_index(drop=True)
@@ -1038,29 +1023,11 @@ class TAHMOExtractor(BaseExtractor):
         install_rows: List[Dict[str, Any]] = []
         for _, row in df_st.iterrows():
             st_id = str(row.get("station_code") or row.get("station_id") or row.get("id") or "")
-            raw_sc = row.get("sensor_count")
-            if raw_sc is not None and not pd.isna(raw_sc):
-                try:
-                    sensor_cnt = int(raw_sc)
-                    if sensor_cnt <= 0:
-                        sensor_cnt = 12
-                except (ValueError, TypeError):
-                    sensor_cnt = 12
-            else:
-                sensor_cnt = 12
-
             start_val = row.get("start_date")
-            end_val = row.get("end_date")
             if start_val is None or pd.isna(start_val):
                 start_dt = pd.Timestamp("2014-01-01")
             else:
                 start_dt = pd.to_datetime(start_val)
-
-            tz_start = getattr(start_dt, "tz", None)
-            if end_val is None or pd.isna(end_val):
-                end_dt = pd.Timestamp.now(tz=tz_start).floor("D") if tz_start else pd.Timestamp.now().floor("D")
-            else:
-                end_dt = pd.to_datetime(end_val)
 
             st_name = str(row.get("name") or row.get("station_name") or st_id)
 
@@ -1077,7 +1044,6 @@ class TAHMOExtractor(BaseExtractor):
 
             install_rows.append({
                 "station_id": st_id,
-                "station_name": st_name,
                 "name": st_name,
                 "latitude": float(row.get("lat") or row.get("latitude") or 0.0),
                 "longitude": float(row.get("lon") or row.get("longitude") or 0.0),
@@ -1085,8 +1051,6 @@ class TAHMOExtractor(BaseExtractor):
                 "network": "tahmo",
                 "country": str(row.get("country")) if row.get("country") else "KE",
                 "start_date": start_dt,
-                "end_date": end_dt,
-                "sensor_count": sensor_cnt,
             })
         install_df = pd.DataFrame(install_rows).drop_duplicates(subset=["station_id"])
         install_path = meta_dir / "installation.parquet"
@@ -1097,7 +1061,7 @@ class TAHMOExtractor(BaseExtractor):
         install_df.to_parquet(stations_path, index=False)
 
         # 2. Build parameters catalog
-        param_df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS)
+        param_df = pd.DataFrame(DEFAULT_TAHMO_PARAMETERS).drop(columns=["canonical_name"], errors="ignore")
         if "network" not in param_df.columns:
             param_df["network"] = "tahmo"
         if "source" not in param_df.columns:
@@ -1132,6 +1096,355 @@ class TAHMOExtractor(BaseExtractor):
         import xarray as xr
         return xr.open_zarr(str(zarr_path), **kwargs)
 
+    @staticmethod
+    def _split_date_range_by_year(
+        start_dt: pd.Timestamp,
+        end_dt: pd.Timestamp,
+    ) -> List[Tuple[int, pd.Timestamp, pd.Timestamp]]:
+        """
+        Partition a temporal range [start_dt, end_dt] into calendar-year slices.
+
+        Mathematical docstring:
+        Input: [t_start, t_end]
+        Output: List of (year, t_y_start, t_y_end) where t_y_start < t_y_end.
+        """
+        tz = getattr(start_dt, "tz", None) or getattr(end_dt, "tz", None)
+        s_cmp = start_dt.tz_localize(None) if getattr(start_dt, "tz", None) is not None else start_dt
+        e_cmp = end_dt.tz_localize(None) if getattr(end_dt, "tz", None) is not None else end_dt
+        slices: List[Tuple[int, pd.Timestamp, pd.Timestamp]] = []
+        for year in range(s_cmp.year, e_cmp.year + 1):
+            y_start = max(s_cmp, pd.Timestamp(year=year, month=1, day=1))
+            y_end = min(e_cmp, pd.Timestamp(year=year, month=12, day=31, hour=23, minute=59, second=59))
+            if tz is not None:
+                y_start = y_start.tz_localize(tz)
+                y_end = y_end.tz_localize(tz)
+            if y_start < y_end:
+                slices.append((year, y_start, y_end))
+        return slices
+
+    @staticmethod
+    def _station_df_to_semi_wide(df: pd.DataFrame, station_code: str) -> pd.DataFrame:
+        """
+        Convert a single station DataFrame into O(1)-width semi-wide format.
+
+        Mathematical docstring:
+        Input: DataFrame indexed by time with sensor-qualified columns (e.g. 'te_S001402')
+               or plain variable columns (e.g. 'te').
+        Output: Semi-wide DataFrame with columns ['time', 'station_id', 'sensor_id', ...vars...]
+                where plain columns without a sensor suffix receive sensor_id='primary'.
+        """
+        if df.empty:
+            return pd.DataFrame(columns=["time", "station_id", "sensor_id"])
+
+        work = df.copy()
+        if "time" not in work.columns:
+            if "index" in work.columns:
+                work = work.rename(columns={"index": "time"})
+            else:
+                work = work.rename_axis("time").reset_index()
+        work["time"] = pd.to_datetime(work["time"], utc=True)
+
+        if "sensor_id" in work.columns:
+            if "station_id" not in work.columns:
+                work["station_id"] = station_code
+            return work
+
+        # Group columns by sensor_id
+        sensor_groups: Dict[str, Dict[str, str]] = {}
+        for col in work.columns:
+            if col in ("time", "station_id", "station"):
+                continue
+            m = SENSOR_COL_PATTERN.match(str(col))
+            if m:
+                var_name = m.group("variable")
+                sid = m.group("sensor")
+            else:
+                var_name = str(col)
+                sid = "primary"
+            sensor_groups.setdefault(sid, {})[col] = var_name
+
+        if not sensor_groups:
+            return pd.DataFrame(columns=["time", "station_id", "sensor_id"])
+
+        parts: List[pd.DataFrame] = []
+        for sid in sorted(sensor_groups.keys()):
+            col_map = sensor_groups[sid]
+            sub_cols = list(col_map.keys())
+            sub = work[["time"] + sub_cols].rename(columns=col_map)
+            var_cols = list(col_map.values())
+            # Drop timestamps where this sensor has no measurements at all
+            sub = sub.dropna(subset=var_cols, how="all")
+            if sub.empty:
+                continue
+            sub["station_id"] = station_code
+            sub["sensor_id"] = sid
+            for vc in var_cols:
+                sub[vc] = pd.to_numeric(sub[vc], errors="coerce").astype(np.float32)
+            parts.append(sub)
+
+        if not parts:
+            return pd.DataFrame(columns=["time", "station_id", "sensor_id"])
+
+        combined = pd.concat(parts, axis=0, ignore_index=True, sort=False)
+        combined = combined.sort_values(by=["time", "sensor_id"]).reset_index(drop=True)
+        return combined
+
+    @classmethod
+    def _write_yearly_parquet_streaming(
+        cls,
+        station_files: Sequence[Tuple[str, Path]],
+        dest_path: Path,
+        compression: str = "snappy",
+    ) -> Optional[Path]:
+        """
+        Stream semi-wide per-station Parquet files into a single yearly Parquet file in O(1 station) RAM.
+
+        Mathematical docstring:
+        Input: Sequence of (station_id, Path) in semi-wide format.
+        Output: Single Parquet at dest_path with O(1) schema width:
+                ['time', 'station_id', 'sensor_id', ...sorted variable shortcodes...].
+        """
+        if not station_files:
+            return None
+
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        # Pass 1: inspect schemas only (zero data rows loaded) to build O(1)-width variable set
+        param_cols_set: Set[str] = set()
+        valid_files: List[Tuple[str, Path]] = []
+        for code, pf in station_files:
+            if not pf.exists():
+                continue
+            try:
+                sc = pq.read_schema(pf)
+            except Exception as err:
+                logger.warning("Skipping unreadable station cache %s: %s", pf, err)
+                continue
+            for name in sc.names:
+                if name in ("time", "index", "station_id", "station", "sensor_id"):
+                    continue
+                m = SENSOR_COL_PATTERN.match(name)
+                param_cols_set.add(m.group("variable") if m else name)
+            valid_files.append((code, pf))
+
+        if not valid_files:
+            return None
+
+        param_cols = sorted(param_cols_set)
+        time_type = pa.timestamp("us", tz="UTC")
+        fields: List[pa.Field] = [
+            pa.field("time", time_type),
+            pa.field("station_id", pa.string()),
+            pa.field("sensor_id", pa.string()),
+        ] + [pa.field(col, pa.float32()) for col in param_cols]
+        unified_schema = pa.schema(fields)
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(".parquet.tmp")
+
+        # Pass 2: stream one station at a time into ParquetWriter (O(1 station) memory)
+        writer: Optional[pq.ParquetWriter] = None
+        try:
+            writer = pq.ParquetWriter(str(tmp_path), unified_schema, compression=compression)
+            for code, pf in valid_files:
+                df = pd.read_parquet(pf)
+                if df.empty:
+                    continue
+                if "sensor_id" not in df.columns:
+                    df = cls._station_df_to_semi_wide(df, code)
+                    if df.empty:
+                        continue
+                else:
+                    if "time" not in df.columns:
+                        df = df.reset_index()
+                    df["time"] = pd.to_datetime(df["time"], utc=True)
+
+                n_rows = len(df)
+                arrays: List[pa.Array] = [
+                    pa.array(df["time"], type=time_type),
+                    pa.array([code] * n_rows, type=pa.string()),
+                    pa.array(df["sensor_id"].astype(str).tolist(), type=pa.string()),
+                ]
+                for col in param_cols:
+                    if col in df.columns:
+                        arrays.append(pa.array(df[col].to_numpy(dtype=np.float32, copy=False), type=pa.float32()))
+                    else:
+                        arrays.append(pa.nulls(n_rows, type=pa.float32()))
+
+                table = pa.Table.from_arrays(arrays, schema=unified_schema)
+                writer.write_table(table)
+                del df, table, arrays
+                pa.default_memory_pool().release_unused()
+        finally:
+            if writer is not None:
+                writer.close()
+            gc.collect()
+
+        tmp_path.replace(dest_path)
+        return dest_path
+
+    @staticmethod
+    def _write_zarr_ordinal_slots(
+        zarr_path: Path,
+        station_files: Optional[Sequence[Tuple[str, Path]]] = None,
+        dataframes: Optional[Dict[str, pd.DataFrame]] = None,
+    ) -> Optional[Path]:
+        """
+        Write a multi-station Zarr store using ordinal sensor slots and incremental per-variable writes.
+
+        Adapted from AI4Weather build_dataset.py:
+        - Single-sensor variables without sensor IDs: (time, station)
+        - Multi-sensor / sensor-qualified variables: (time, station, {var}_slot) + {var}_sensor_id(station, {var}_slot)
+        """
+        import xarray as xr
+
+        # Gather per-station time indices and sensor inventories
+        frames_by_station: Dict[str, pd.DataFrame] = {}
+        if station_files:
+            for code, pf in station_files:
+                if pf.exists():
+                    df_st = pd.read_parquet(pf)
+                    if not df_st.empty:
+                        if code in frames_by_station:
+                            frames_by_station[code] = pd.concat(
+                                [frames_by_station[code], df_st], ignore_index=True, sort=False
+                            )
+                        else:
+                            frames_by_station[code] = df_st
+        elif dataframes:
+            for code, df_st in dataframes.items():
+                if df_st is not None and not df_st.empty:
+                    frames_by_station[code] = df_st
+
+        if not frames_by_station:
+            return None
+
+        station_codes = sorted(frames_by_station.keys())
+        master_time = pd.DatetimeIndex([], tz="UTC")
+        sensor_table: Dict[str, Dict[str, List[str]]] = {}
+
+        # Normalize each frame to time-indexed and build sensor_table
+        norm_frames: Dict[str, pd.DataFrame] = {}
+        for code in station_codes:
+            df_st = frames_by_station[code].copy()
+            if "time" in df_st.columns:
+                df_st["time"] = pd.to_datetime(df_st["time"], utc=True)
+            else:
+                df_st = df_st.rename_axis("time").reset_index()
+                df_st["time"] = pd.to_datetime(df_st["time"], utc=True)
+
+            if "sensor_id" in df_st.columns:
+                # Semi-wide format: pivot per variable and sensor_id
+                master_time = master_time.union(pd.DatetimeIndex(df_st["time"].unique()))
+                var_cols = [c for c in df_st.columns if c not in ("time", "station_id", "station", "sensor_id")]
+                sids = sorted(df_st["sensor_id"].astype(str).unique().tolist())
+                for v in var_cols:
+                    for sid in sids:
+                        if df_st.loc[df_st["sensor_id"].astype(str) == sid, v].notna().any():
+                            norm_sid = "" if sid == "primary" else sid
+                            sensor_table.setdefault(v, {}).setdefault(code, [])
+                            if norm_sid not in sensor_table[v][code]:
+                                sensor_table[v][code].append(norm_sid)
+                norm_frames[code] = df_st
+            else:
+                df_st = df_st.set_index("time").sort_index()
+                df_st = df_st.loc[~df_st.index.duplicated(keep="last")]
+                master_time = master_time.union(df_st.index)
+                for col in df_st.columns:
+                    m = SENSOR_COL_PATTERN.match(str(col))
+                    var_name = m.group("variable") if m else str(col)
+                    sid = m.group("sensor") if m else ""
+                    sensor_table.setdefault(var_name, {}).setdefault(code, [])
+                    if sid not in sensor_table[var_name][code]:
+                        sensor_table[var_name][code].append(sid)
+                norm_frames[code] = df_st
+
+        master_time = master_time.sort_values()
+        master_time_naive = master_time.tz_localize(None) if master_time.tz is not None else master_time
+        for v in sensor_table:
+            for code in sensor_table[v]:
+                sensor_table[v][code].sort()
+
+        if not sensor_table or len(master_time) == 0:
+            return None
+
+        if zarr_path.exists():
+            shutil.rmtree(zarr_path, ignore_errors=True)
+
+        # Write one variable at a time to Zarr (O(1 variable) memory)
+        first_write = True
+        for var in sorted(sensor_table.keys()):
+            var_table = sensor_table[var]
+            max_slots = max(len(sids) for sids in var_table.values())
+            only_plain = all(sids == [""] for sids in var_table.values())
+            is_2d = only_plain and (max_slots == 1)
+
+            n_t = len(master_time)
+            n_s = len(station_codes)
+
+            if is_2d:
+                matrix = np.full((n_t, n_s), np.nan, dtype=np.float32)
+                for s_idx, code in enumerate(station_codes):
+                    f_st = norm_frames[code]
+                    if "sensor_id" in f_st.columns:
+                        if var in f_st.columns:
+                            sub = f_st[f_st[var].notna()].drop_duplicates(subset=["time"], keep="last")
+                            if not sub.empty:
+                                locs = master_time.get_indexer(pd.DatetimeIndex(sub["time"]))
+                                valid = locs >= 0
+                                matrix[locs[valid], s_idx] = sub[var].to_numpy(dtype=np.float32)[valid]
+                    elif var in f_st.columns:
+                        locs = master_time.get_indexer(f_st.index)
+                        valid = locs >= 0
+                        matrix[locs[valid], s_idx] = f_st[var].to_numpy(dtype=np.float32)[valid]
+                ds_var = xr.Dataset(
+                    data_vars={var: (("time", "station"), matrix)},
+                    coords={"time": master_time_naive, "station": station_codes},
+                )
+            else:
+                slot_dim = f"{var}_slot"
+                matrix = np.full((n_t, n_s, max_slots), np.nan, dtype=np.float32)
+                sensor_ids = np.full((n_s, max_slots), "", dtype="<U32")
+                for s_idx, code in enumerate(station_codes):
+                    f_st = norm_frames[code]
+                    for slot_idx, sid in enumerate(var_table.get(code, [])):
+                        sensor_ids[s_idx, slot_idx] = sid if sid else "primary"
+                        if "sensor_id" in f_st.columns:
+                            target_sid = sid if sid else "primary"
+                            sub = f_st[f_st["sensor_id"].astype(str) == target_sid].drop_duplicates(subset=["time"], keep="last")
+                            if not sub.empty and var in sub.columns:
+                                locs = master_time.get_indexer(pd.DatetimeIndex(sub["time"]))
+                                valid = locs >= 0
+                                matrix[locs[valid], s_idx, slot_idx] = sub[var].to_numpy(dtype=np.float32)[valid]
+                        else:
+                            col = f"{var}_{sid}" if sid else var
+                            if col in f_st.columns:
+                                locs = master_time.get_indexer(f_st.index)
+                                valid = locs >= 0
+                                matrix[locs[valid], s_idx, slot_idx] = f_st[col].to_numpy(dtype=np.float32)[valid]
+
+                ds_var = xr.Dataset(
+                    data_vars={
+                        var: (("time", "station", slot_dim), matrix),
+                        f"{var}_sensor_id": (("station", slot_dim), sensor_ids),
+                    },
+                    coords={"time": master_time_naive, "station": station_codes, slot_dim: list(range(max_slots))},
+                )
+
+            ds_var.to_zarr(str(zarr_path), mode="w" if first_write else "a", consolidated=False)
+            first_write = False
+            del ds_var, matrix
+            gc.collect()
+
+        try:
+            import zarr
+            zarr.consolidate_metadata(str(zarr_path))
+        except Exception:
+            pass
+
+        return zarr_path
+
     def extract(
         self,
         start_date: Union[str, datetime, pd.Timestamp],
@@ -1144,6 +1457,8 @@ class TAHMOExtractor(BaseExtractor):
         zarr_name: Optional[str] = None,
         generate_metadata: bool = True,
         max_workers: Optional[int] = None,
+        parquet_layout: Literal["yearly", "station", "both"] = "yearly",
+        keep_station_cache: bool = False,
     ) -> Dict[str, Union[pd.DataFrame, Path]]:
         """
         Execute batch station extraction with legacy-server-respecting concurrency.
@@ -1153,7 +1468,8 @@ class TAHMOExtractor(BaseExtractor):
             start_date, end_date: Temporal boundaries
             stations: Sequence of N_target station codes or None
         Output:
-            results: Dict[str, Union[pd.DataFrame, Path]] mapping station_code -> Path or DataFrame
+            results: Dict[str, Union[pd.DataFrame, Path]] mapping year (when parquet_layout='yearly')
+                     or station_code (when parquet_layout='station' or save_parquet=False) -> Path or DataFrame
 
         Parameters
         ----------
@@ -1168,7 +1484,7 @@ class TAHMOExtractor(BaseExtractor):
         variables : Optional[Sequence[str]]
             List of variable codes to extract.
         save_parquet : bool, default True
-            Whether to write each station's observations to a local Parquet file.
+            Whether to write extracted observations to local Parquet files.
         save_zarr : bool, default False
             Whether to compile extracted stations into a unified multi-station Zarr store.
         zarr_name : Optional[str]
@@ -1179,11 +1495,19 @@ class TAHMOExtractor(BaseExtractor):
             Maximum number of concurrent worker threads. If None, defaults to `self.max_workers`
             (default 4). Kept at a maximum of 4 to respect legacy TAHMO server infrastructure
             and avoid rate limits. Pass 1 for serial execution.
+        parquet_layout : Literal["yearly", "station", "both"], default "yearly"
+            Output Parquet layout when `save_parquet=True`:
+            - "yearly": Stream stations into consolidated `{year}.parquet` files in O(1 station) RAM.
+            - "station": Write individual `{station_code}_{start}_{end}.parquet` files.
+            - "both": Write both individual station files and consolidated `{year}.parquet` files.
+        keep_station_cache : bool, default False
+            When `parquet_layout="yearly"`, whether to retain temporary per-station cache files
+            under `.station_cache/` after the yearly Parquet file is compiled.
 
         Returns
         -------
         Dict[str, Union[pd.DataFrame, Path]]
-            Dictionary mapping station code to DataFrame or Parquet Path.
+            Dictionary mapping year (or station code) to DataFrame or Parquet Path.
         """
         t_range = self.validate_temporal_range(start_date, end_date)
         if stations is not None:
@@ -1191,6 +1515,9 @@ class TAHMOExtractor(BaseExtractor):
         if variables is not None:
             self.validate_variables(variables, strict=True)
         self.validate_temporal_bounds(t_range, strict=False)
+
+        if parquet_layout not in ("yearly", "station", "both"):
+            raise ValueError(f"parquet_layout must be 'yearly', 'station', or 'both', received: {parquet_layout}")
 
         stations_df = self.get_stations(bbox=bbox or AFRICA_BBOX) if stations is None else None
         if stations is None:
@@ -1210,90 +1537,154 @@ class TAHMOExtractor(BaseExtractor):
         e_str = e_dt.strftime("%Y%m%d")
 
         dataframes: Dict[str, pd.DataFrame] = {}
+        all_station_files: List[Tuple[str, Path]] = []
 
-        def _fetch_single_station(code: str) -> Tuple[str, Optional[pd.DataFrame], Optional[Path]]:
-            parquet_path = self.output_dir / f"{code}_{s_str}_{e_str}.parquet"
-            if save_parquet and parquet_path.exists() and not save_zarr:
-                logger.info("Station %s already extracted: %s", code, parquet_path)
-                return code, None, parquet_path
+        if save_parquet and parquet_layout in ("yearly", "both"):
+            year_slices = self._split_date_range_by_year(s_dt, e_dt)
+            cleanup_dirs: List[Path] = []
+            for year, y_start, y_end in year_slices:
+                yearly_path = self.output_dir / f"{year}.parquet"
+                if yearly_path.exists() and parquet_layout == "yearly" and not save_zarr:
+                    logger.info("Yearly TAHMO Parquet already exists: %s", yearly_path)
+                    results[str(year)] = yearly_path
+                    continue
 
-            try:
-                df = self.extract_station(
-                    station_code=code,
-                    start_date=start_date,
-                    end_date=end_date,
-                    variables=variables,
-                )
-                if df.empty:
-                    logger.info("No data returned for station %s.", code)
+                cache_dir = self.output_dir if parquet_layout == "both" else (self.output_dir / ".station_cache" / str(year))
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                ys_str = y_start.strftime("%Y%m%d")
+                ye_str = y_end.strftime("%Y%m%d")
+
+                def _fetch_station_for_year(code: str) -> Tuple[str, Optional[Path]]:
+                    st_path = (
+                        cache_dir / f"{code}_{ys_str}_{ye_str}.parquet"
+                        if parquet_layout == "both"
+                        else cache_dir / f"{code}.parquet"
+                    )
+                    if st_path.exists():
+                        return code, st_path
+                    try:
+                        df = self.extract_station(
+                            station_code=code,
+                            start_date=y_start,
+                            end_date=y_end,
+                            variables=variables,
+                        )
+                        if df.empty:
+                            logger.info("No data returned for station %s (%d).", code, year)
+                            return code, None
+                        semi_df = self._station_df_to_semi_wide(df, code)
+                        del df
+                        if semi_df.empty:
+                            return code, None
+                        semi_df.to_parquet(st_path, index=False)
+                        del semi_df
+                        return code, st_path
+                    except Exception as e:
+                        logger.error("Failed to extract station %s (%d): %s", code, year, e)
+                        self.failed_stations[code] = str(e)
+                        return code, None
+
+                station_files: List[Tuple[str, Path]] = []
+                if effective_workers and effective_workers > 1 and len(target_codes) > 1:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                        futures = {executor.submit(_fetch_station_for_year, c): c for c in target_codes}
+                        for fut in concurrent.futures.as_completed(futures):
+                            code, p = fut.result()
+                            if p is not None:
+                                station_files.append((code, p))
+                                if parquet_layout == "both":
+                                    results[f"{code}_{year}"] = p
+                else:
+                    for code in target_codes:
+                        code, p = _fetch_station_for_year(code)
+                        if p is not None:
+                            station_files.append((code, p))
+                            if parquet_layout == "both":
+                                results[f"{code}_{year}"] = p
+
+                station_files.sort(key=lambda item: item[0])
+                all_station_files.extend(station_files)
+                written_year = self._write_yearly_parquet_streaming(station_files, yearly_path)
+                if written_year is not None:
+                    results[str(year)] = written_year
+                    logger.info("Compiled yearly TAHMO Parquet (%d stations): %s", len(station_files), written_year)
+
+                if parquet_layout == "yearly" and not keep_station_cache and cache_dir.exists():
+                    if save_zarr:
+                        cleanup_dirs.append(cache_dir)
+                    else:
+                        shutil.rmtree(cache_dir, ignore_errors=True)
+
+            if save_zarr and all_station_files:
+                name = zarr_name or f"tahmo_stations_{s_str}_{e_str}.zarr"
+                zarr_path = self.output_dir / name
+                written_zarr = self._write_zarr_ordinal_slots(zarr_path, station_files=all_station_files)
+                if written_zarr is not None:
+                    results["_zarr"] = written_zarr
+                    logger.info("Compiled multi-station TAHMO Zarr store (ordinal slots): %s", written_zarr)
+
+            for cdir in cleanup_dirs:
+                shutil.rmtree(cdir, ignore_errors=True)
+
+            if parquet_layout == "yearly" and not keep_station_cache:
+                cache_root = self.output_dir / ".station_cache"
+                if cache_root.exists() and not any(cache_root.iterdir()):
+                    cache_root.rmdir()
+        else:
+            def _fetch_single_station(code: str) -> Tuple[str, Optional[pd.DataFrame], Optional[Path]]:
+                parquet_path = self.output_dir / f"{code}_{s_str}_{e_str}.parquet"
+                if save_parquet and parquet_path.exists() and not save_zarr:
+                    logger.info("Station %s already extracted: %s", code, parquet_path)
+                    return code, None, parquet_path
+
+                try:
+                    df = self.extract_station(
+                        station_code=code,
+                        start_date=start_date,
+                        end_date=end_date,
+                        variables=variables,
+                    )
+                    if df.empty:
+                        logger.info("No data returned for station %s.", code)
+                        return code, None, None
+
+                    saved_p = None
+                    if save_parquet:
+                        df.reset_index().to_parquet(parquet_path, index=False)
+                        saved_p = parquet_path
+                    return code, df, saved_p
+                except Exception as e:
+                    logger.error("Failed to extract station %s: %s", code, e)
+                    self.failed_stations[code] = str(e)
                     return code, None, None
 
-                saved_p = None
-                if save_parquet:
-                    df.reset_index().to_parquet(parquet_path, index=False)
-                    saved_p = parquet_path
-                return code, df, saved_p
-            except Exception as e:
-                logger.error("Failed to extract station %s: %s", code, e)
-                self.failed_stations[code] = str(e)
-                return code, None, None
-
-        if effective_workers and effective_workers > 1 and len(target_codes) > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                futures = {executor.submit(_fetch_single_station, c): c for c in target_codes}
-                for fut in concurrent.futures.as_completed(futures):
-                    code, df, p = fut.result()
+            if effective_workers and effective_workers > 1 and len(target_codes) > 1:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                    futures = {executor.submit(_fetch_single_station, c): c for c in target_codes}
+                    for fut in concurrent.futures.as_completed(futures):
+                        code, df, p = fut.result()
+                        if save_zarr and df is not None:
+                            dataframes[code] = df
+                        if p is not None:
+                            results[code] = p
+                        elif df is not None and not save_parquet:
+                            results[code] = df
+            else:
+                for code in target_codes:
+                    code, df, p = _fetch_single_station(code)
                     if save_zarr and df is not None:
                         dataframes[code] = df
                     if p is not None:
                         results[code] = p
                     elif df is not None and not save_parquet:
                         results[code] = df
-        else:
-            for code in target_codes:
-                code, df, p = _fetch_single_station(code)
-                if save_zarr and df is not None:
-                    dataframes[code] = df
-                if p is not None:
-                    results[code] = p
-                elif df is not None and not save_parquet:
-                    results[code] = df
 
         if save_zarr and dataframes:
-            import xarray as xr
-            # Convert collection of station dataframes to station xarray dataset
             name = zarr_name or f"tahmo_stations_{s_str}_{e_str}.zarr"
             zarr_path = self.output_dir / name
-
-            # Align on master time index
-            all_times = pd.DatetimeIndex([])
-            for df_st in dataframes.values():
-                all_times = all_times.union(df_st.index)
-            all_times = all_times.sort_values()
-
-            st_codes = sorted(dataframes.keys())
-            var_set: Set[str] = set()
-            for df_st in dataframes.values():
-                var_set.update(df_st.columns)
-
-            data_vars: Dict[str, Tuple[Tuple[str, str], np.ndarray]] = {}
-            for v in sorted(var_set):
-                matrix = np.full((len(all_times), len(st_codes)), np.nan, dtype=np.float32)
-                for s_idx, code in enumerate(st_codes):
-                    df_st = dataframes[code]
-                    if v in df_st.columns:
-                        s_series = df_st[v]
-                        locs = all_times.get_indexer(s_series.index)
-                        valid_locs = locs[locs >= 0]
-                        matrix[valid_locs, s_idx] = s_series.values[:len(valid_locs)].astype(np.float32)
-                data_vars[v] = (("time", "station"), matrix)
-
-            ds_zarr = xr.Dataset(
-                data_vars=data_vars,
-                coords={"time": all_times, "station": st_codes},
-            )
-            ds_zarr.to_zarr(str(zarr_path), mode="w", consolidated=True)
-            results["_zarr"] = zarr_path
-            logger.info("Compiled multi-station TAHMO Zarr store: %s", zarr_path)
+            written_zarr = self._write_zarr_ordinal_slots(zarr_path, dataframes=dataframes)
+            if written_zarr is not None:
+                results["_zarr"] = written_zarr
+                logger.info("Compiled multi-station TAHMO Zarr store (ordinal slots): %s", written_zarr)
 
         return results
