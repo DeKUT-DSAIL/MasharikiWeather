@@ -24,8 +24,7 @@ Developed at the **Centre for Data Science and Artificial Intelligence (DSAIL)**
 
 ## Documentation
 
-Full API references, data models, architecture, and user guides are available at:
-- **Read the Docs:** [https://masharikiweather.readthedocs.io/](https://masharikiweather.readthedocs.io/)
+Full API references, data models, architecture, and user guides are available in [docs/](docs/).
 
 To build and view documentation locally:
 ```bash
