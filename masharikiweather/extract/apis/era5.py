@@ -983,7 +983,7 @@ class ERA5Extractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/era5",
+        output_dir: Union[str, Path] = "./mashariki-data/gridded/era5",
         single_fields: Optional[Sequence[str]] = None,
         pressure_fields: Optional[Sequence[str]] = None,
         wave_fields: Optional[Sequence[str]] = None,

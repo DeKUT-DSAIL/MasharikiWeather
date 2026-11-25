@@ -28,7 +28,7 @@ class ReanalysisExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/reanalysis",
+        output_dir: Union[str, Path] = "./mashariki-data/gridded/reanalysis",
         source: str = "open_meteo",
     ) -> None:
         self.output_dir = Path(output_dir)

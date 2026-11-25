@@ -252,7 +252,7 @@ def tahmo_station_observations(context) -> pd.DataFrame:
     start_dt = time_window.start
     end_dt = time_window.end
 
-    root_dir = getattr(getattr(context.resources, "parquet_io", None), "root_dir", "./mashariki_data")
+    root_dir = getattr(getattr(context.resources, "parquet_io", None), "root_dir", "./mashariki-data")
     context.log.info(
         f"Processing TAHMO partition {context.partition_key}: {start_dt.isoformat()} to {end_dt.isoformat()}"
     )
@@ -433,7 +433,7 @@ def imerg_satellite_precipitation(context) -> xr.Dataset:
     else:
         dataset_name = "GPM_3IMERGHH"
 
-    root_dir = getattr(getattr(context.resources, "zarr_io", None), "root_dir", "./mashariki_data")
+    root_dir = getattr(getattr(context.resources, "zarr_io", None), "root_dir", "./mashariki-data")
     out_dir = Path(root_dir) / "raw" / "imerg"
 
     try:

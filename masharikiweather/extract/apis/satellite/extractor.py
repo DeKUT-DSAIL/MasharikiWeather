@@ -37,7 +37,7 @@ class SatelliteExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/satellite",
+        output_dir: Union[str, Path] = "./mashariki-data/gridded/satellite",
         source: str = "nasa_power",
     ) -> None:
         self.output_dir = Path(output_dir)

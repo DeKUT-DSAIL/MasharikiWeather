@@ -1216,7 +1216,7 @@ class MasharikiWeatherDataset:
                 to include.
             **kwargs (Any): Additional configuration parameters.
         """
-        actual_root = root if root is not None else (root_dir if root_dir is not None else "./mashariki_data")
+        actual_root = root if root is not None else (root_dir if root_dir is not None else "./mashariki-data")
         self.root_dir = Path(actual_root)
         self.repo_id = repo_id
 
@@ -1416,7 +1416,7 @@ class MasharikiWeatherDataset:
         if norm == "ghcn":
             candidates.extend(["ghcnd", "ghcn_daily", "ghcn_hourly"])
         elif norm == "cds_insitu":
-            candidates.extend(["cds", "insitu", "cds-insitu"])
+            candidates = ["cds-insitu", "cds_insitu", "cds", "insitu"]
         elif norm == "tahmo":
             candidates.extend(["tahmo_station", "tahmo_stations"])
         if source not in candidates:
@@ -4165,7 +4165,7 @@ def extract_stations(
     end_date: Union[str, datetime, date, pd.Timestamp] = "2023-01-05",
     bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
     variables: Optional[Sequence[str]] = None,
-    output_dir: Union[str, Path] = "./mashariki_data/obs",
+    output_dir: Union[str, Path] = "./mashariki-data/obs",
     save_parquet: bool = True,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
@@ -4263,7 +4263,7 @@ def extract_stations(
         else:
             return res if isinstance(res, pd.DataFrame) else pd.read_parquet(res)
 
-    elif src in ("cds_insitu", "cds", "insitu"):
+    elif src in ("cds_insitu", "cds-insitu", "cds", "insitu"):
         from .extract.apis.cds_insitu import CDSInSituExtractor
         extractor = CDSInSituExtractor(output_dir=out_dir, **kwargs)
         paths = extractor.extract(
@@ -4292,7 +4292,7 @@ def pull_station_data(
     end_date: Union[str, datetime, date, pd.Timestamp] = "2023-01-05",
     bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
     variables: Optional[Sequence[str]] = None,
-    output_dir: Union[str, Path] = "./mashariki_data/obs",
+    output_dir: Union[str, Path] = "./mashariki-data/obs",
     save_parquet: bool = True,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
@@ -4323,7 +4323,7 @@ def extract_gridded(
     bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
     variables: Optional[Sequence[str]] = None,
     levels: Optional[Sequence[int]] = None,
-    output_dir: Union[str, Path] = "./mashariki_data/gridded",
+    output_dir: Union[str, Path] = "./mashariki-data/gridded",
     save_zarr: bool = True,
     use_legacy: Optional[bool] = None,
     use_cds_arco: Optional[bool] = None,
@@ -4516,7 +4516,7 @@ def pull_gridded_data(
     bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
     variables: Optional[Sequence[str]] = None,
     levels: Optional[Sequence[int]] = None,
-    output_dir: Union[str, Path] = "./mashariki_data/gridded",
+    output_dir: Union[str, Path] = "./mashariki-data/gridded",
     save_zarr: bool = True,
     use_legacy: Optional[bool] = None,
     use_cds_arco: Optional[bool] = None,
@@ -4573,7 +4573,7 @@ def pull_weather_data(
     gridded_source: Optional[Union[str, Sequence[str]]] = "era5",
     station_variables: Optional[Sequence[str]] = None,
     gridded_variables: Optional[Sequence[str]] = None,
-    output_dir: Union[str, Path] = "./mashariki_data",
+    output_dir: Union[str, Path] = "./mashariki-data",
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """

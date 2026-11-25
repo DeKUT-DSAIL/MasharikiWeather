@@ -33,7 +33,7 @@ class ParquetStationIOManager(dg.ConfigurableIOManager):
     Output disk structure: '{root_dir}/obs/{asset_name}/{partition}.parquet'
     """
 
-    root_dir: str = "./mashariki_data"
+    root_dir: str = "./mashariki-data"
 
     def _get_path(self, context: Union[dg.OutputContext, dg.InputContext]) -> Path:
         """
@@ -143,7 +143,7 @@ class ZarrGriddedIOManager(dg.ConfigurableIOManager):
     Output disk structure: '{root_dir}/gridded/{asset_name}/{partition}.zarr'
     """
 
-    root_dir: str = "./mashariki_data"
+    root_dir: str = "./mashariki-data"
 
     def _get_path(self, context: Union[dg.OutputContext, dg.InputContext]) -> Path:
         """

@@ -34,7 +34,7 @@ from .dagster_io import ParquetStationIOManager, ZarrGriddedIOManager
 
 logger = logging.getLogger("MasharikiWeather.DagsterPipeline")
 
-DEFAULT_ROOT_DIR = "./mashariki_data"
+DEFAULT_ROOT_DIR = "./mashariki-data"
 
 # Standard definitions bundling all software-defined assets and IO managers
 defs = dg.Definitions(
