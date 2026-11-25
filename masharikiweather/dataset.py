@@ -3101,8 +3101,8 @@ class MasharikiWeatherDataset:
 
         Example:
             split = ds.get_spatial_split(test_fraction=0.2, n_clusters=5)
-            train_windows = ds.get_windows(stations=split["train"], ...)
-            test_windows  = ds.get_windows(stations=split["test"], ...)
+            train_obs = ds.get_observations(stations=split["train"])
+            test_obs  = ds.get_observations(stations=split["test"])
         """
         from sklearn.cluster import KMeans
 

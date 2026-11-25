@@ -135,17 +135,7 @@ gridded = dataset.get_gridded_for_stations(
     variables=["total_precipitation"],
     method_overrides={"total_precipitation": "linear"},
 )
-
-# 5. Generate aligned rolling window tensors for machine learning
-windows = dataset.get_windows(
-    window_size=24,
-    horizon_size=6,
-    stations=["TA00001", "TA00016"],
-    gridded_url=["era5"],
-)
-
-print("Features (x):", windows.x.shape)
-print("Targets (y):", windows.y.shape)
+print(gridded["era5"].head())
 ```
 
 ## Objectives
@@ -207,10 +197,8 @@ The core package logic is modularized inside `masharikiweather/`:
 
 ### Core Data & Preprocessing (`masharikiweather/`)
 - **`dataset.py`**: User-facing dataset interface. Implements `MasharikiWeatherDataset`, separated observation accessors (`get_tahmo_observations`, `get_cds_insitu_observations`, `get_ghcn_observations`), cross-strand alignment (`align_observations`), metadata catalogs (`installation.parquet`, `parameters.parquet`), and high-level extraction entrypoints (`pull_station_data`, `pull_gridded_data`, `pull_weather_data`).
-- **`extract/apis/`**: Dagster extraction layer. Software-Defined Assets with native temporal partitioning, custom IO managers (`ParquetStationIOManager`, `ZarrGriddedIOManager`), and Bring-Your-Own-Key resolution (`CredentialsManager`).
-- **`dataloader.py`**: Constructs PyTorch Geometric `HeteroData` graphs with distance-bounded edges and terrain-steered advection.
-- **`losses.py` / `metrics.py`**: Evaluation metrics and loss functions.
-- **`rechunker.py` / `utils.py`**: Dask and Zarr chunking optimizations.
+- **`extract/apis/`**: Multi-source API extraction layer (TAHMO, GHCN, CDS In-Situ, ERA5, IMERG, CAMS, MERRA-2, Open-Meteo, NASA POWER, PVGIS, SARAH-3, LandSAF, TROPOMI), Dagster assets, custom IO managers (`ParquetStationIOManager`, `ZarrGriddedIOManager`), and Bring-Your-Own-Key resolution (`CredentialsManager`).
+- **`rechunker.py`**: Dask and Zarr chunking optimizations.
 
 ---
 

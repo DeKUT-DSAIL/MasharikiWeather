@@ -366,32 +366,3 @@ gridded_station_df, mask_df = dataset.get_gridded_for_stations(
 print("Station-Aligned ERA5 Features:")
 print(gridded_station_df["era5"].head())
 ```
-
----
-
-## 8. Spatiotemporal Graph Construction & PyTorch Geometric
-
-MasharikiWeather constructs PyTorch Geometric `HeteroData` graphs for graph neural network (GNN) modeling:
-
-```python
-# Generate rolling window spatiotemporal graph samples
-windows = dataset.get_windows(
-    input_steps=24,      # 24 hours of historical context
-    forecast_steps=6,    # 6 hours ahead forecasting horizon
-    stride=1,            # 1-hour rolling stride
-    gridded_groups=["era5"],
-    as_pyg=True,         # Export as torch_geometric.data.HeteroData
-)
-
-sample_graph = windows[0]
-print("Graph Node Types:", sample_graph.node_types)
-print("Graph Edge Types:", sample_graph.edge_types)
-print("Station Features Shape:", sample_graph["station"].x.shape)
-```
-
-The resulting `HeteroData` object includes:
-* **Station Nodes (`station`):** In-situ observation time series, static elevation, slope, and cyclical aspect angles ($\sin\theta, \cos\theta$).
-* **Gridded Nodes (`era5`):** Bilinear or nearest-neighbor atmospheric state features.
-* **Intra-Station Edges (`station`, `to`, `station`):** Distance-bounded directed spatial edges ($30\text{--}50\text{ km}$).
-* **Bipartite Edges (`era5`, `to`, `station`):** Directed connections linking atmospheric cells to observation sites.
-* **Edge Attributes:** Physical advection scalars combining ERA5 wind velocity vectors $(u, v)$ and terrain elevation differences ($\Delta z$).
