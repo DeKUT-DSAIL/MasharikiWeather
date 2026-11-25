@@ -35,8 +35,6 @@ __all__ = [
     "ObservationDataFrame",
     "StationList",
     "ParameterList",
-    "Windows",
-    "sliding_window_view",
     "df_add_missing_columns",
     "extract_stations",
     "extract_gridded",
@@ -3306,6 +3304,14 @@ class MasharikiWeatherDataset:
             if 'temperature' not in fetch_vars: fetch_vars.append('temperature')
             if 'geopotential' not in fetch_vars: fetch_vars.append('geopotential')
 
+        if needs_physics and "hydrostatic" in method_groups:
+            temp_aux = next(
+                (v for v in ds.data_vars if v.lower() in ("2m_temperature", "t2m", "2t")),
+                None,
+            )
+            if temp_aux and temp_aux not in fetch_vars:
+                fetch_vars.append(temp_aux)
+
         # Load bounding box definitively into RAM (Fixes catastrophic Dask Scheduler Hangs over HTTP chunks)
         local_ds = ds[fetch_vars].isel({lat_dim: lat_slice, lon_dim: lon_slice}).load()
         
@@ -3335,6 +3341,10 @@ class MasharikiWeatherDataset:
                 # Fallback to standard 6.5 C/km if 850/700hPa levels aren't in the dataset
                 eelr = xr.full_like(grid_elev, 0.0065)
             
+            # Snapshot grid-level temperature before thermodynamic correction mutates it
+            temp_col = next((v for v in sampled_continuous.data_vars if 't2m' in v.lower() or '2m_temperature' in v.lower() or v.lower() == '2t'), None)
+            grid_temp_for_hydrostatic = sampled_continuous[temp_col].copy() if temp_col else None
+
             # Apply Thermodynamic Corrections
             if "thermodynamic" in method_groups:
                 for temp_var in method_groups["thermodynamic"]:
@@ -3343,13 +3353,11 @@ class MasharikiWeatherDataset:
                     )
                     
             # Apply Hydrostatic Corrections
-            if "hydrostatic" in method_groups:
+            if "hydrostatic" in method_groups and grid_temp_for_hydrostatic is not None:
                 for pres_var in method_groups["hydrostatic"]:
-                    temp_col = next((v for v in sampled_continuous.data_vars if 't2m' in v.lower() or '2m_temperature' in v.lower()), None)
-                    if temp_col:
-                        sampled_continuous[pres_var] = self._apply_barometric_correction_xr(
-                            sampled_continuous[pres_var], sampled_continuous[temp_col], grid_elev, station_elev, eelr
-                        )
+                    sampled_continuous[pres_var] = self._apply_barometric_correction_xr(
+                        sampled_continuous[pres_var], grid_temp_for_hydrostatic, grid_elev, station_elev, eelr
+                    )
                         
         # Cleanup auxiliary variables not directly requested by user
         vars_to_drop = [v for v in sampled_continuous.data_vars if v not in c_vars]
