@@ -257,6 +257,7 @@ class CredentialsManager:
         cds_key: Optional[str] = None,
         rc_file: Optional[Union[str, Path]] = None,
         cds_rc_file: Optional[Union[str, Path]] = None,
+        env_file: Optional[Union[str, Path]] = None,
     ) -> Dict[str, Optional[str]]:
         """
         Discover Copernicus Climate Data Store (CDS) credentials.
@@ -301,6 +302,15 @@ class CredentialsManager:
 
         if k:
             return {"url": u or default_url, "key": k}
+
+        if env_file is not None:
+            env_path = Path(env_file).expanduser().resolve()
+            if env_path.is_file():
+                parsed_env = _parse_env_file(env_path)
+                k = parsed_env.get("CDSAPI_KEY") or parsed_env.get("CDS_API_KEY")
+                u = u or parsed_env.get("CDSAPI_URL") or parsed_env.get("CDS_API_URL")
+                if k:
+                    return {"url": u or default_url, "key": k}
 
         target_rc = rc_file or cds_rc_file
         if target_rc is not None and Path(target_rc).expanduser().is_file():

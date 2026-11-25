@@ -157,7 +157,7 @@ def test_get_ghcn_observations_contract(ds: MasharikiWeatherDataset) -> None:
     )
     _check_layout(obs)
     assert list(obs.columns) == [("KE000063612", "total_precipitation")]
-    assert len(obs) == 23
+    assert len(obs) == 24
     assert mask.shape == obs.shape
 
     # NumPy export shape: (T=48, N=1, C=2)
@@ -185,7 +185,7 @@ def test_get_cds_insitu_observations_contract(ds: MasharikiWeatherDataset) -> No
     )
     _check_layout(obs)
     assert list(obs.columns) == [("CDS_NBO", "2m_temperature")]
-    assert len(obs) == 4
+    assert len(obs) == 5
 
     # NumPy export
     arr = ds.get_cds_insitu_observations(as_numpy=True)

@@ -5,7 +5,6 @@ MasharikiWeather: Spatiotemporal data fusion for Africa.
 from . import extract
 from .dataset import (
     MasharikiWeatherDataset,
-    Windows,
     extract_stations,
     extract_gridded,
     pull_station_data,
@@ -35,7 +34,6 @@ __affiliation__ = "Centre for Data Science and Artificial Intelligence (DSAIL), 
 
 __all__ = [
     "MasharikiWeatherDataset",
-    "Windows",
     "rechunk_dataset",
     "extract_stations",
     "extract_gridded",

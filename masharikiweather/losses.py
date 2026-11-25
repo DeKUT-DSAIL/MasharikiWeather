@@ -317,7 +317,9 @@ class HurdleLoss(nn.Module):
         bce_loss = self.bce(logits, target_bin)
         if mask is not None:
             bce_loss = bce_loss * mask.float()
-        occurrence_loss = bce_loss.mean()
+            occurrence_loss = bce_loss.sum() / mask.float().sum().clamp_min(1.0)
+        else:
+            occurrence_loss = bce_loss.mean()
         
         # 2. Intensity Loss (Evaluated ONLY on positive precipitation points)
         pos_mask = (target_bin > 0.5)

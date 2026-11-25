@@ -213,9 +213,11 @@ def _read_hdf5_granule(
                 lat_sub = lat[lat_start:lat_stop]
                 lon_sub = lon[lon_start:lon_stop]
             else:
-                lat_start, lat_stop = 0, len(lat)
-                lon_start, lon_stop = 0, len(lon)
-                lat_sub, lon_sub = lat, lon
+                raise ValueError(
+                    f"Bounding box {bbox} matched 0 IMERG grid cells "
+                    f"(lat range [{float(lat.min()):.2f}, {float(lat.max()):.2f}], "
+                    f"lon range [{float(lon.min()):.2f}, {float(lon.max()):.2f}])."
+                )
         else:
             lat_start, lat_stop = 0, len(lat)
             lon_start, lon_stop = 0, len(lon)

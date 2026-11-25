@@ -402,6 +402,8 @@ class CDSInSituExtractor(BaseExtractor):
         output_format: str = "parquet",
         harmonize: bool = True,
         filter_quality: bool = False,
+        cds_key: Optional[str] = None,
+        cds_url: Optional[str] = None,
     ) -> Path:
         """
         Download in-situ observations for a single year, un-nest, and save to Parquet.
@@ -412,7 +414,7 @@ class CDSInSituExtractor(BaseExtractor):
         """
         box = bbox if bbox is not None else AFRICA_BBOX
         vars_to_fetch = variables if variables is not None else self.variables
-        client = self._get_client()
+        client = self._get_client(cds_key=cds_key, cds_url=cds_url)
 
         target_parquet = self.output_dir / f"insitu_surface_{year}.parquet"
         target_nc = self.output_dir / f"insitu_surface_{year}.nc"
@@ -491,6 +493,8 @@ class CDSInSituExtractor(BaseExtractor):
                 variables=variables,
                 output_format=output_format,
                 harmonize=harmonize,
+                cds_key=cds_key,
+                cds_url=cds_url,
             )
             results.append(res_path)
         return results

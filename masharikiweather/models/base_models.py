@@ -206,7 +206,7 @@ class PrecipAnomalyDetector(torch.nn.Module):
         if lambda_mass <= 0.0 or not hasattr(data, 'mass_constraint') or data.mass_constraint is None:
             return 0.0
             
-        from .losses import TweedieDevianceLoss
+        from ..losses import TweedieDevianceLoss
         tweedie = TweedieDevianceLoss(p=p)
         
         # Determine continuous daily clusters from 1D boolean array or assume continuous 24h strides
@@ -223,7 +223,7 @@ class PrecipAnomalyDetector(torch.nn.Module):
             n_nodes, horizon, channels = pred_hourly.shape
             daily_pred = pred_hourly.view(n_nodes, -1, 24, channels).sum(dim=2)
             
-        loss = tweedie(daily_pred, data.mass_constraint, mask=getattr(data, 'mass_mask', None))
+        loss = tweedie(daily_pred, data.mass_constraint, valid_mask=getattr(data, 'mass_mask', None))
         return loss * lambda_mass
 
 
