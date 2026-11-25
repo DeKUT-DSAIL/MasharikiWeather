@@ -49,7 +49,7 @@ The extraction layer in `masharikiweather/extract/apis/` provides data pipelines
 External meteorological APIs impose fixed rate limits and connection caps. The extraction layer handles these transparently:
 
 * **Configurable TAHMO Concurrency, Retry Timing & SSL Verification:**
-  TAHMO DataHub legacy endpoints are protected by bounded thread concurrency and configurable retry policies. The default extraction concurrency is `max_workers=4`, backed by an HTTP connection pool (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), thread-local sessions, and inter-request pacing delays. When HTTP or network failures occur, `TAHMOExtractor` waits `retry_delay=120.0` seconds before retrying (configurable via `retry_delay` or `TAHMO_RETRY_DELAY`, with attempt count tuned via `retries` or `TAHMO_RETRIES`). If the upstream server encounters TLS certificate expiration, certificate verification can be bypassed safely during maintenance windows via `verify_ssl=False` or `TAHMO_VERIFY_SSL=false`. Concurrency can be tuned via `max_workers` in `TAHMOExtractor`, `pull_station_data()`, or `pull_weather_data()`, but is capped at 4 to prevent server saturation.
+  TAHMO DataHub legacy endpoints are protected by bounded thread concurrency and configurable retry policies. The default extraction concurrency is `max_workers=4`, backed by an HTTP connection pool (`HTTPAdapter(pool_connections=8, pool_maxsize=8)`), thread-local sessions, and inter-request pacing delays. When HTTP or network failures occur, `TAHMOExtractor` waits `retry_delay=120.0` seconds before retrying (configurable via `retry_delay` or `TAHMO_RETRY_DELAY`, with attempt count tuned via `retries` or `TAHMO_RETRIES`). If the upstream server encounters TLS certificate expiration, certificate verification can be bypassed safely during maintenance windows via `verify_ssl=False` or `TAHMO_VERIFY_SSL=false`. Concurrency can be tuned via `max_workers` in `TAHMOExtractor`, `pull_station_data()`, or `pull_weather_data()`: TAHMO is capped at 16 workers and GHCN at 24 workers to prevent server saturation, while high-throughput sources such as IMERG can scale beyond 16.
 * **Copernicus CDS Concurrency & Adaptive Chunking:**
   ECMWF CDS limits simultaneous user requests. In NetCDF4 download mode (`data_format="netcdf4"`), queries start at a maximum 5-day interval. If the server rejects the query due to size limits or request timeouts, MasharikiWeather catches the error, logs a notice, and automatically downsizes the chunk size (4 days, 3 days, down to 1 day).
 * **NASA Earthdata Non-Interactive Authentication:**
@@ -256,7 +256,6 @@ tahmo_files = pull_station_data(
     source="tahmo",
     years=[2023],
     variables=["2m_temperature", "total_precipitation", "relative_humidity"],
-    max_workers=4,
     output_dir="./mashariki_data",
 )
 ```
@@ -290,7 +289,6 @@ result = pull_weather_data(
     gridded_source="era5",
     station_variables=["2m_temperature", "total_precipitation"],
     gridded_variables=["2m_temperature", "total_precipitation", "surface_pressure"],
-    max_workers=4,
     output_dir="./mashariki_data",
 )
 

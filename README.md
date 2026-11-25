@@ -77,12 +77,11 @@ pull_weather_data(
     station_source=["tahmo", "ghcn"],
     gridded_source=["era5"],
     output_dir="./mashariki-data",
-    max_workers=4,
 )
 
 # Option B: Direct TAHMO extraction with concurrent workers
 # Writes semi-wide yearly Parquet ({year}.parquet) by default and optional ordinal-slot Zarr
-tahmo = TAHMOExtractor(output_dir="./mashariki-data/obs/tahmo", max_workers=4)
+tahmo = TAHMOExtractor(output_dir="./mashariki-data/obs/tahmo")
 tahmo.extract(
     start_date="2023-01-01",
     end_date="2023-06-30",

@@ -1,4 +1,6 @@
+import concurrent.futures
 import difflib
+import inspect
 import logging
 import os
 import shutil
@@ -22,7 +24,11 @@ from .extract.apis.base import (
     EASTERN_AFRICA_BBOX,
     EAST_AFRICA_COUNTRIES,
     EASTERN_AFRICA_COUNTRIES,
+    ExtractionEstimate,
     SpatialBoundingBox,
+    allocate_worker_budget,
+    clamp_max_workers,
+    estimate_extraction,
     is_eastern_africa_country,
     parse_spatial_bbox,
 )
@@ -1342,6 +1348,7 @@ class MasharikiWeatherDataset:
                     sources=self.source_obs,
                     years=missing_partition_years,
                     root_dir=self.root_dir,
+                    max_workers=getattr(self, "max_workers", None),
                 )
                 for src in self.source_obs:
                     src_dir = self._resolve_obs_source_dir(src)
@@ -4159,6 +4166,29 @@ class MasharikiWeatherDataset:
 
 
 
+def _filter_supported_kwargs(
+    callable_obj: Callable[..., Any],
+    candidate_kwargs: Dict[str, Any],
+    *,
+    exclude: Optional[Set[str]] = None,
+    include_var_keyword: bool = False,
+) -> Dict[str, Any]:
+    """Filter keyword arguments to those accepted by callable_obj's signature."""
+    excluded = exclude or set()
+    filtered = {k: v for k, v in candidate_kwargs.items() if k not in excluded}
+    if hasattr(callable_obj, "assert_called"):
+        return filtered
+    try:
+        sig = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return {}
+    if include_var_keyword:
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                return filtered
+    return {k: v for k, v in filtered.items() if k in sig.parameters}
+
+
 def extract_stations(
     source: str = "tahmo",
     start_date: Union[str, datetime, date, pd.Timestamp] = "2023-01-01",
@@ -4169,8 +4199,13 @@ def extract_stations(
     save_parquet: bool = True,
     api_key: Optional[str] = None,
     api_secret: Optional[str] = None,
+    show_progress: bool = True,
+    resume: bool = True,
+    overwrite: bool = False,
+    keep_cache: bool = False,
+    dry_run: bool = False,
     **kwargs: Any,
-) -> Union[pd.DataFrame, Dict[str, Path]]:
+) -> Union[pd.DataFrame, Dict[str, Path], ExtractionEstimate]:
     """
     Extract in-situ ground station observations across Africa.
 
@@ -4194,11 +4229,17 @@ def extract_stations(
             of station IDs to Paths. If False, returns a unified pd.DataFrame.
         api_key: Optional API key for services requiring authentication (e.g. TAHMO).
         api_secret: Optional API secret for services requiring authentication (e.g. TAHMO).
+        show_progress: If True, displays progress bar during extraction.
+        resume: If True, resumes from cached checkpoint partitions when available.
+        overwrite: If True, ignores cached partitions and re-fetches all data.
+        keep_cache: If True, retains cache directory after successful extraction.
+        dry_run: If True, returns an ExtractionEstimate without making network calls.
         **kwargs: Additional parameters forwarded to the underlying extractor (e.g. max_workers).
 
     Returns:
-        Union[pd.DataFrame, Dict[str, Path]]: Pandas DataFrame if save_parquet=False,
-            or dictionary mapping station codes to saved Parquet paths if save_parquet=True.
+        Union[pd.DataFrame, Dict[str, Path], ExtractionEstimate]: Pandas DataFrame if save_parquet=False,
+            dictionary mapping station codes to saved Parquet paths if save_parquet=True,
+            or ExtractionEstimate if dry_run=True.
     """
     s_box: SpatialBoundingBox = AFRICA_BBOX
     if bbox is not None:
@@ -4207,18 +4248,64 @@ def extract_stations(
             s_box = parsed
 
     src = source.lower().strip()
+    supported_station_sources = {
+        "tahmo",
+        "ghcn",
+        "ghcnd",
+        "ghcn_daily",
+        "ghcn_hourly",
+        "cds_insitu",
+        "cds-insitu",
+        "cds",
+        "insitu",
+    }
+    if src not in supported_station_sources:
+        raise ValueError(
+            f"Unsupported station data source: '{source}'. "
+            f"Supported sources are: 'tahmo', 'ghcn', 'ghcnd', 'cds_insitu'."
+        )
+
+    if dry_run:
+        return estimate_extraction(
+            source=src,
+            start_date=start_date,
+            end_date=end_date,
+            bbox=s_box,
+            variables=variables,
+            stations=kwargs.get("stations") or kwargs.get("station_ids"),
+        )
+
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    resilience_kwargs: Dict[str, Any] = {
+        "show_progress": show_progress,
+        "resume": resume,
+        "overwrite": overwrite,
+        "keep_cache": keep_cache,
+    }
 
     if src == "tahmo":
         from .extract.apis.tahmo import TAHMOExtractor
-        max_workers = kwargs.pop("max_workers", 4)
+        max_workers = clamp_max_workers(kwargs.pop("max_workers", None), default=4, source="tahmo")
+        init_resilience = _filter_supported_kwargs(TAHMOExtractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            TAHMOExtractor.__init__,
+            kwargs,
+            exclude={"output_dir", "api_key", "api_secret", "max_workers"},
+        )
         extractor = TAHMOExtractor(
             output_dir=out_dir,
             api_key=api_key,
             api_secret=api_secret,
             max_workers=max_workers,
-            **kwargs,
+            **init_resilience,
+            **init_kwargs,
+        )
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables", "save_parquet", "max_workers"},
         )
         res = extractor.extract(
             start_date=start_date,
@@ -4227,6 +4314,8 @@ def extract_stations(
             variables=variables,
             save_parquet=save_parquet,
             max_workers=max_workers,
+            **extract_resilience,
+            **extract_kwargs,
         )
         if save_parquet:
             return {str(k): Path(v) for k, v in res.items()}
@@ -4245,14 +4334,35 @@ def extract_stations(
     elif src in ("ghcn", "ghcnd", "ghcn_daily", "ghcn_hourly"):
         from .extract.apis.ghcnd import GHCNExtractor
         res_type = "hourly" if "hour" in src else kwargs.pop("resolution", "daily")
-        extractor = GHCNExtractor(output_dir=out_dir, resolution=res_type, **kwargs)
+        max_workers = clamp_max_workers(kwargs.pop("max_workers", None), default=4, source="ghcnd")
+        init_resilience = _filter_supported_kwargs(GHCNExtractor.__init__, resilience_kwargs)
+        init_workers = _filter_supported_kwargs(GHCNExtractor.__init__, {"max_workers": max_workers})
+        init_kwargs = _filter_supported_kwargs(
+            GHCNExtractor.__init__,
+            kwargs,
+            exclude={"output_dir", "resolution", "max_workers"},
+        )
+        extractor = GHCNExtractor(
+            output_dir=out_dir,
+            resolution=res_type,
+            **init_workers,
+            **init_resilience,
+            **init_kwargs,
+        )
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables", "save_parquet"},
+        )
         res = extractor.extract(
             start_date=start_date,
             end_date=end_date,
             bbox=s_box,
             variables=variables,
             save_parquet=save_parquet,
-            **kwargs,
+            **extract_resilience,
+            **extract_kwargs,
         )
         if save_parquet:
             if isinstance(res, (str, Path)):
@@ -4263,27 +4373,34 @@ def extract_stations(
         else:
             return res if isinstance(res, pd.DataFrame) else pd.read_parquet(res)
 
-    elif src in ("cds_insitu", "cds-insitu", "cds", "insitu"):
+    else:
         from .extract.apis.cds_insitu import CDSInSituExtractor
-        extractor = CDSInSituExtractor(output_dir=out_dir, **kwargs)
+        init_resilience = _filter_supported_kwargs(CDSInSituExtractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            CDSInSituExtractor.__init__,
+            kwargs,
+            exclude={"output_dir"},
+        )
+        extractor = CDSInSituExtractor(output_dir=out_dir, **init_resilience, **init_kwargs)
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables"},
+        )
         paths = extractor.extract(
             start_date=start_date,
             end_date=end_date,
             bbox=s_box,
             variables=variables,
-            **kwargs,
+            **extract_resilience,
+            **extract_kwargs,
         )
         if save_parquet:
             return {f"cds_insitu_{p.stem}": Path(p) for p in paths}
         else:
             dfs = [pd.read_parquet(p) for p in paths if Path(p).exists()]
             return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
-    else:
-        raise ValueError(
-            f"Unsupported station data source: '{source}'. "
-            f"Supported sources are: 'tahmo', 'ghcn', 'ghcnd', 'cds_insitu'."
-        )
 
 
 def pull_station_data(
@@ -4339,8 +4456,13 @@ def extract_gridded(
     cds_arco_url: Optional[str] = None,
     username: Optional[str] = None,
     password: Optional[str] = None,
+    show_progress: bool = True,
+    resume: bool = True,
+    overwrite: bool = False,
+    keep_cache: bool = False,
+    dry_run: bool = False,
     **kwargs: Any,
-) -> Union[xr.Dataset, Path]:
+) -> Union[xr.Dataset, Path, ExtractionEstimate]:
     """
     Extract gridded atmospheric reanalysis, satellite, and numerical model fields for Africa.
 
@@ -4374,10 +4496,16 @@ def extract_gridded(
         cds_url: Optional Copernicus CDS API URL.
         username: Optional NASA Earthdata username.
         password: Optional NASA Earthdata password.
+        show_progress: If True, displays progress bar during extraction.
+        resume: If True, resumes from cached checkpoint partitions when available.
+        overwrite: If True, ignores cached partitions and re-fetches all data.
+        keep_cache: If True, retains cache directory after successful extraction.
+        dry_run: If True, returns an ExtractionEstimate without making network calls.
         **kwargs: Additional parameters forwarded to the underlying extractor.
 
     Returns:
-        Union[xr.Dataset, Path]: xr.Dataset if save_zarr=False, or Path to Zarr group if save_zarr=True.
+        Union[xr.Dataset, Path, ExtractionEstimate]: xr.Dataset if save_zarr=False,
+            Path to Zarr group if save_zarr=True, or ExtractionEstimate if dry_run=True.
     """
     s_box: SpatialBoundingBox = AFRICA_BBOX
     if bbox is not None:
@@ -4387,11 +4515,71 @@ def extract_gridded(
 
     src = source.lower().strip()
     _validate_source_parameters(source=source, variables=variables, stacklevel=2)
+
+    supported_gridded_sources = {
+        "era5",
+        "imerg",
+        "cams",
+        "copernicus_cams",
+        "merra2",
+        "nasa_merra2",
+        "open_meteo",
+        "openmeteo",
+        "nasa_power",
+        "power",
+        "pvgis",
+        "sarah3",
+        "landsaf",
+        "tropomi",
+    }
+    if src not in supported_gridded_sources:
+        raise ValueError(
+            f"Unsupported gridded source: '{source}'. "
+            f"Supported sources include: 'era5', 'imerg', 'cams', 'merra2', 'open_meteo', 'nasa_power'."
+        )
+
+    if dry_run:
+        return estimate_extraction(
+            source=src,
+            start_date=start_date,
+            end_date=end_date,
+            bbox=s_box,
+            variables=variables,
+            levels=levels,
+            chunk_days=chunk_days,
+            use_arco=use_arco if use_arco is not None else use_google_arco,
+        )
+
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    resilience_kwargs: Dict[str, Any] = {
+        "show_progress": show_progress,
+        "resume": resume,
+        "overwrite": overwrite,
+        "keep_cache": keep_cache,
+    }
 
     if src == "era5":
         from .extract.apis.era5 import ERA5Extractor
+        init_resilience = _filter_supported_kwargs(ERA5Extractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            ERA5Extractor.__init__,
+            kwargs,
+            exclude={
+                "output_dir",
+                "use_legacy",
+                "use_cds_arco",
+                "use_google_arco",
+                "data_format",
+                "prefer_arco",
+                "force_cds",
+                "cds_key",
+                "cds_url",
+                "cds_arco_url",
+                "chunking",
+                "stream",
+            },
+        )
         extractor = ERA5Extractor(
             output_dir=out_dir,
             use_legacy=use_legacy,
@@ -4405,7 +4593,33 @@ def extract_gridded(
             cds_arco_url=cds_arco_url,
             chunking=kwargs.get("chunking", chunking),
             stream=kwargs.get("stream", stream),
-            **kwargs,
+            **init_resilience,
+            **init_kwargs,
+        )
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={
+                "start_date",
+                "end_date",
+                "bbox",
+                "variables",
+                "levels",
+                "save_zarr",
+                "use_legacy",
+                "use_cds_arco",
+                "use_google_arco",
+                "data_format",
+                "force_cds",
+                "prefer_arco",
+                "chunk_days",
+                "chunking",
+                "stream",
+                "cds_key",
+                "cds_url",
+                "cds_arco_url",
+            },
         )
         res = extractor.extract(
             start_date=start_date,
@@ -4426,16 +4640,31 @@ def extract_gridded(
             cds_key=cds_key,
             cds_url=cds_url,
             cds_arco_url=cds_arco_url,
+            **extract_resilience,
+            **extract_kwargs,
         )
         return Path(res) if isinstance(res, (str, Path)) else res
 
     elif src == "imerg":
         from .extract.apis.imerg import IMERGExtractor
+        init_resilience = _filter_supported_kwargs(IMERGExtractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            IMERGExtractor.__init__,
+            kwargs,
+            exclude={"output_dir", "username", "password"},
+        )
         extractor = IMERGExtractor(
             output_dir=out_dir,
             username=username,
             password=password,
-            **kwargs,
+            **init_resilience,
+            **init_kwargs,
+        )
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables", "convert_to_zarr", "username", "password"},
         )
         res = extractor.extract(
             start_date=start_date,
@@ -4445,7 +4674,8 @@ def extract_gridded(
             convert_to_zarr=save_zarr,
             username=username,
             password=password,
-            **kwargs,
+            **extract_resilience,
+            **extract_kwargs,
         )
         if save_zarr:
             if res.zarr_stores:
@@ -4456,38 +4686,27 @@ def extract_gridded(
 
     elif src in ("cams", "copernicus_cams", "merra2", "nasa_merra2", "open_meteo", "openmeteo"):
         from .extract.apis.reanalysis import ReanalysisExtractor
-        extractor = ReanalysisExtractor(output_dir=out_dir, source=src, **kwargs)
-        df_or_path = extractor.extract(
-            start_date=start_date,
-            end_date=end_date,
-            bbox=s_box,
-            variables=variables,
-            save_parquet=False,
-            **kwargs,
+        init_resilience = _filter_supported_kwargs(ReanalysisExtractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            ReanalysisExtractor.__init__,
+            kwargs,
+            exclude={"output_dir", "source"},
         )
-        if isinstance(df_or_path, pd.DataFrame):
-            ds = df_or_path.to_xarray()
-        else:
-            df = pd.read_parquet(df_or_path)
-            ds = df.to_xarray()
-        if save_zarr:
-            s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
-            e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
-            zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
-            ds.to_zarr(zarr_path, mode="w", consolidated=True)
-            return zarr_path
-        return ds
-
-    elif src in ("nasa_power", "power", "pvgis", "sarah3", "landsaf", "tropomi"):
-        from .extract.apis.satellite import SatelliteExtractor
-        extractor = SatelliteExtractor(output_dir=out_dir, source=src, **kwargs)
+        extractor = ReanalysisExtractor(output_dir=out_dir, source=src, **init_resilience, **init_kwargs)
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables", "save_parquet"},
+        )
         df_or_path = extractor.extract(
             start_date=start_date,
             end_date=end_date,
             bbox=s_box,
             variables=variables,
             save_parquet=False,
-            **kwargs,
+            **extract_resilience,
+            **extract_kwargs,
         )
         if isinstance(df_or_path, pd.DataFrame):
             ds = df_or_path.to_xarray()
@@ -4503,10 +4722,41 @@ def extract_gridded(
         return ds
 
     else:
-        raise ValueError(
-            f"Unsupported gridded source: '{source}'. "
-            f"Supported sources include: 'era5', 'imerg', 'cams', 'merra2', 'open_meteo', 'nasa_power'."
+        from .extract.apis.satellite import SatelliteExtractor
+        init_resilience = _filter_supported_kwargs(SatelliteExtractor.__init__, resilience_kwargs)
+        init_kwargs = _filter_supported_kwargs(
+            SatelliteExtractor.__init__,
+            kwargs,
+            exclude={"output_dir", "source"},
         )
+        extractor = SatelliteExtractor(output_dir=out_dir, source=src, **init_resilience, **init_kwargs)
+        extract_resilience = _filter_supported_kwargs(extractor.extract, resilience_kwargs)
+        extract_kwargs = _filter_supported_kwargs(
+            extractor.extract,
+            kwargs,
+            exclude={"start_date", "end_date", "bbox", "variables", "save_parquet"},
+        )
+        df_or_path = extractor.extract(
+            start_date=start_date,
+            end_date=end_date,
+            bbox=s_box,
+            variables=variables,
+            save_parquet=False,
+            **extract_resilience,
+            **extract_kwargs,
+        )
+        if isinstance(df_or_path, pd.DataFrame):
+            ds = df_or_path.to_xarray()
+        else:
+            df = pd.read_parquet(df_or_path)
+            ds = df.to_xarray()
+        if save_zarr:
+            s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
+            e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
+            zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
+            ds.to_zarr(zarr_path, mode="w", consolidated=True)
+            return zarr_path
+        return ds
 
 
 def pull_gridded_data(
@@ -4574,6 +4824,7 @@ def pull_weather_data(
     station_variables: Optional[Sequence[str]] = None,
     gridded_variables: Optional[Sequence[str]] = None,
     output_dir: Union[str, Path] = "./mashariki-data",
+    concurrent_sources: bool = True,
     **kwargs: Any,
 ) -> Dict[str, Any]:
     """
@@ -4594,6 +4845,8 @@ def pull_weather_data(
         station_variables: Optional sequence of variable names for station extraction.
         gridded_variables: Optional sequence of variable names for gridded extraction.
         output_dir: Root storage directory for observational Parquet and gridded Zarr outputs.
+        concurrent_sources: If True and multiple sources are requested, executes sources
+            concurrently within a bounded worker budget.
         **kwargs: Additional keyword arguments passed to pull_station_data and pull_gridded_data.
 
     Returns:
@@ -4610,9 +4863,80 @@ def pull_weather_data(
     save_parquet_val = kwargs.pop("save_parquet", True)
     save_zarr_val = kwargs.pop("save_zarr", True)
 
+    st_sources: List[str] = (
+        ([station_source] if isinstance(station_source, str) else list(station_source))
+        if station_source is not None
+        else []
+    )
+    gr_sources: List[str] = (
+        ([gridded_source] if isinstance(gridded_source, str) else list(gridded_source))
+        if gridded_source is not None
+        else []
+    )
+    total_sources = len(st_sources) + len(gr_sources)
+
     station_results: Dict[str, Any] = {}
-    if station_source is not None:
-        st_sources = [station_source] if isinstance(station_source, str) else list(station_source)
+    gridded_results: Dict[str, Any] = {}
+
+    if concurrent_sources and total_sources > 1:
+        outer_workers, per_source_workers = allocate_worker_budget(
+            total_sources,
+            kwargs.get("max_workers"),
+        )
+        task_kwargs = dict(kwargs)
+        req_mw = task_kwargs.get("max_workers")
+        if req_mw is not None:
+            task_kwargs["max_workers"] = min(max(1, int(req_mw)), per_source_workers)
+        else:
+            task_kwargs["max_workers"] = per_source_workers
+
+        def _run_station(st_src: str) -> Any:
+            st_out = obs_root / st_src
+            return pull_station_data(
+                source=st_src,
+                start_date=start_date,
+                end_date=end_date,
+                bbox=target_bbox,
+                variables=station_variables,
+                output_dir=st_out,
+                save_parquet=save_parquet_val,
+                **task_kwargs,
+            )
+
+        def _run_gridded(gr_src: str) -> Any:
+            gr_out = gridded_root / gr_src
+            return pull_gridded_data(
+                source=gr_src,
+                start_date=start_date,
+                end_date=end_date,
+                bbox=target_bbox,
+                variables=gridded_variables,
+                output_dir=gr_out,
+                save_zarr=save_zarr_val,
+                **task_kwargs,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=outer_workers) as executor:
+            future_map: Dict[concurrent.futures.Future[Any], Tuple[str, str]] = {}
+            for st_src in st_sources:
+                fut = executor.submit(_run_station, st_src)
+                future_map[fut] = ("station", st_src)
+            for gr_src in gr_sources:
+                fut = executor.submit(_run_gridded, gr_src)
+                future_map[fut] = ("gridded", gr_src)
+
+            for fut in concurrent.futures.as_completed(future_map):
+                kind, src_name = future_map[fut]
+                try:
+                    res_val = fut.result()
+                except Exception as e:
+                    logger.error("Failed pulling %s data from %s: %s", kind, src_name, e)
+                    res_val = None
+                if kind == "station":
+                    station_results[src_name] = res_val
+                else:
+                    gridded_results[src_name] = res_val
+    else:
         for st_src in st_sources:
             st_out = obs_root / st_src
             try:
@@ -4631,9 +4955,6 @@ def pull_weather_data(
                 logger.error("Failed pulling station data from %s: %s", st_src, e)
                 station_results[st_src] = None
 
-    gridded_results: Dict[str, Any] = {}
-    if gridded_source is not None:
-        gr_sources = [gridded_source] if isinstance(gridded_source, str) else list(gridded_source)
         for gr_src in gr_sources:
             gr_out = gridded_root / gr_src
             try:

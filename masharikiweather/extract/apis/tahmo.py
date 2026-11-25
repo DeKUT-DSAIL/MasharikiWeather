@@ -43,10 +43,12 @@ from .base import (
     EAST_AFRICA_BBOX,
     KENYA_BBOX,
     BaseExtractor,
+    clamp_max_workers,
     SpatialBoundingBox,
     TemporalRange,
 )
 from .credentials import CredentialsError, CredentialsManager, parse_date, parse_date_range
+from .resilience import ExtractionEstimate, retry_with_backoff
 
 logger = logging.getLogger("MasharikiWeather.TAHMO")
 
@@ -629,7 +631,7 @@ class TAHMOExtractor(BaseExtractor):
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             logger.warning("SSL certificate verification is disabled for TAHMO DataHub.")
 
-        self.max_workers = max_workers
+        self.max_workers = clamp_max_workers(max_workers, default=4, source="tahmo")
         self._local = threading.local()
         self.failed_stations: Dict[str, str] = {}
 
@@ -1247,13 +1249,15 @@ class TAHMOExtractor(BaseExtractor):
         writer: Optional[pq.ParquetWriter] = None
         try:
             writer = pq.ParquetWriter(str(tmp_path), unified_schema, compression=compression)
-            for code, pf in valid_files:
+            for idx, (code, pf) in enumerate(valid_files, start=1):
                 df = pd.read_parquet(pf)
                 if df.empty:
+                    del df
                     continue
                 if "sensor_id" not in df.columns:
                     df = cls._station_df_to_semi_wide(df, code)
                     if df.empty:
+                        del df
                         continue
                 else:
                     if "time" not in df.columns:
@@ -1276,6 +1280,8 @@ class TAHMOExtractor(BaseExtractor):
                 writer.write_table(table)
                 del df, table, arrays
                 pa.default_memory_pool().release_unused()
+                if idx % 20 == 0:
+                    gc.collect()
         finally:
             if writer is not None:
                 writer.close()
@@ -1459,7 +1465,12 @@ class TAHMOExtractor(BaseExtractor):
         max_workers: Optional[int] = None,
         parquet_layout: Literal["yearly", "station", "both"] = "yearly",
         keep_station_cache: bool = False,
-    ) -> Dict[str, Union[pd.DataFrame, Path]]:
+        show_progress: bool = True,
+        resume: bool = True,
+        overwrite: bool = False,
+        keep_cache: Optional[bool] = None,
+        dry_run: bool = False,
+    ) -> Union[Dict[str, Union[pd.DataFrame, Path]], ExtractionEstimate]:
         """
         Execute batch station extraction with legacy-server-respecting concurrency.
 
@@ -1469,7 +1480,8 @@ class TAHMOExtractor(BaseExtractor):
             stations: Sequence of N_target station codes or None
         Output:
             results: Dict[str, Union[pd.DataFrame, Path]] mapping year (when parquet_layout='yearly')
-                     or station_code (when parquet_layout='station' or save_parquet=False) -> Path or DataFrame
+                     or station_code (when parquet_layout='station' or save_parquet=False) -> Path or DataFrame,
+                     or ExtractionEstimate when dry_run=True.
 
         Parameters
         ----------
@@ -1501,13 +1513,24 @@ class TAHMOExtractor(BaseExtractor):
             - "station": Write individual `{station_code}_{start}_{end}.parquet` files.
             - "both": Write both individual station files and consolidated `{year}.parquet` files.
         keep_station_cache : bool, default False
-            When `parquet_layout="yearly"`, whether to retain temporary per-station cache files
-            under `.station_cache/` after the yearly Parquet file is compiled.
+            Deprecated alias for `keep_cache`.
+        show_progress : bool, default True
+            If True, displays a station-level progress bar during extraction.
+        resume : bool, default True
+            If True, resumes from manifest-backed cache partitions when available.
+        overwrite : bool, default False
+            If True, ignores cached partitions and re-fetches all stations.
+        keep_cache : Optional[bool], default None
+            Whether to retain cache partitions after successful extraction. If None,
+            falls back to `keep_station_cache`.
+        dry_run : bool, default False
+            If True, returns an ExtractionEstimate without making any remote API calls.
 
         Returns
         -------
-        Dict[str, Union[pd.DataFrame, Path]]
-            Dictionary mapping year (or station code) to DataFrame or Parquet Path.
+        Union[Dict[str, Union[pd.DataFrame, Path]], ExtractionEstimate]
+            Dictionary mapping year (or station code) to DataFrame or Parquet Path,
+            or ExtractionEstimate if `dry_run=True`.
         """
         t_range = self.validate_temporal_range(start_date, end_date)
         if stations is not None:
@@ -1519,6 +1542,17 @@ class TAHMOExtractor(BaseExtractor):
         if parquet_layout not in ("yearly", "station", "both"):
             raise ValueError(f"parquet_layout must be 'yearly', 'station', or 'both', received: {parquet_layout}")
 
+        if dry_run:
+            return self.estimate_extraction(
+                start_date=start_date,
+                end_date=end_date,
+                bbox=bbox or AFRICA_BBOX,
+                variables=variables,
+                stations=stations,
+            )
+
+        effective_keep_cache = keep_cache if keep_cache is not None else keep_station_cache
+
         stations_df = self.get_stations(bbox=bbox or AFRICA_BBOX) if stations is None else None
         if stations is None:
             target_codes = stations_df["station_code"].tolist() if stations_df is not None else []
@@ -1528,7 +1562,11 @@ class TAHMOExtractor(BaseExtractor):
         if generate_metadata:
             self.generate_metadata_catalogs(stations_df=stations_df)
 
-        effective_workers = self.max_workers if max_workers is None else max_workers
+        effective_workers = (
+            self.max_workers
+            if max_workers is None
+            else clamp_max_workers(max_workers, default=self.max_workers, source="tahmo")
+        )
         logger.info("Extracting TAHMO observations for %d stations (max_workers=%s)...", len(target_codes), effective_workers)
         results: Dict[str, Union[pd.DataFrame, Path]] = {}
 
@@ -1536,71 +1574,149 @@ class TAHMOExtractor(BaseExtractor):
         s_str = s_dt.strftime("%Y%m%d")
         e_str = e_dt.strftime("%Y%m%d")
 
+        rate_limiter = (
+            self.create_rate_limiter(
+                requests_per_second=1.0 / self.request_delay,
+                burst=max(1, effective_workers or 1),
+            )
+            if self.request_delay > 0
+            else None
+        )
+        cache = self.create_cache(
+            self.output_dir,
+            request_params={
+                "start_date": s_str,
+                "end_date": e_str,
+                "bbox": bbox or AFRICA_BBOX,
+                "variables": list(variables) if variables is not None else None,
+                "parquet_layout": parquet_layout,
+                "stations": sorted(target_codes) if stations is not None else None,
+            },
+            resume=resume,
+            overwrite=overwrite,
+        )
+
         dataframes: Dict[str, pd.DataFrame] = {}
         all_station_files: List[Tuple[str, Path]] = []
 
         if save_parquet and parquet_layout in ("yearly", "both"):
             year_slices = self._split_date_range_by_year(s_dt, e_dt)
-            cleanup_dirs: List[Path] = []
             for year, y_start, y_end in year_slices:
                 yearly_path = self.output_dir / f"{year}.parquet"
-                if yearly_path.exists() and parquet_layout == "yearly" and not save_zarr:
+                if resume and not overwrite and yearly_path.exists() and parquet_layout == "yearly" and not save_zarr:
                     logger.info("Yearly TAHMO Parquet already exists: %s", yearly_path)
                     results[str(year)] = yearly_path
                     continue
 
-                cache_dir = self.output_dir if parquet_layout == "both" else (self.output_dir / ".station_cache" / str(year))
-                cache_dir.mkdir(parents=True, exist_ok=True)
+                legacy_cache_dir = self.output_dir / ".station_cache" / str(year)
                 ys_str = y_start.strftime("%Y%m%d")
                 ye_str = y_end.strftime("%Y%m%d")
 
-                def _fetch_station_for_year(code: str) -> Tuple[str, Optional[Path]]:
-                    st_path = (
-                        cache_dir / f"{code}_{ys_str}_{ye_str}.parquet"
+                station_files: List[Tuple[str, Path]] = []
+                pending_codes: List[str] = []
+                cached_count = 0
+                fetched_count = 0
+
+                for code in target_codes:
+                    part_key = f"{year}/{code}"
+                    if cache.is_done(part_key):
+                        cache.record_hit(part_key)
+                        cached_count += 1
+                        cached_p = cache.get_path(part_key)
+                        if cached_p is not None:
+                            if parquet_layout == "both":
+                                st_path = self.output_dir / f"{code}_{ys_str}_{ye_str}.parquet"
+                                if not st_path.exists():
+                                    shutil.copy2(cached_p, st_path)
+                                station_files.append((code, st_path))
+                                results[f"{code}_{year}"] = st_path
+                            else:
+                                station_files.append((code, cached_p))
+                        continue
+
+                    legacy_path = (
+                        self.output_dir / f"{code}_{ys_str}_{ye_str}.parquet"
                         if parquet_layout == "both"
-                        else cache_dir / f"{code}.parquet"
+                        else legacy_cache_dir / f"{code}.parquet"
                     )
-                    if st_path.exists():
-                        return code, st_path
+                    if resume and not overwrite and legacy_path.exists():
+                        cached_count += 1
+                        station_files.append((code, legacy_path))
+                        if parquet_layout == "both":
+                            results[f"{code}_{year}"] = legacy_path
+                        continue
+
+                    pending_codes.append(code)
+
+                def _fetch_station_for_year(code: str) -> Tuple[str, Optional[Path]]:
+                    part_key = f"{year}/{code}"
                     try:
-                        df = self.extract_station(
-                            station_code=code,
-                            start_date=y_start,
-                            end_date=y_end,
-                            variables=variables,
+                        df = retry_with_backoff(
+                            lambda: self.extract_station(
+                                station_code=code,
+                                start_date=y_start,
+                                end_date=y_end,
+                                variables=variables,
+                            ),
+                            max_retries=2,
+                            base_delay=0.0 if self.request_delay == 0.0 else 1.0,
+                            retry_on=(requests.RequestException, TimeoutError, ConnectionError, OSError),
+                            rate_limiter=rate_limiter,
                         )
                         if df.empty:
                             logger.info("No data returned for station %s (%d).", code, year)
+                            cache.mark_empty(part_key)
                             return code, None
                         semi_df = self._station_df_to_semi_wide(df, code)
                         del df
                         if semi_df.empty:
+                            cache.mark_empty(part_key)
                             return code, None
-                        semi_df.to_parquet(st_path, index=False)
+                        cached_p = cache.save_parquet(part_key, semi_df)
+                        if parquet_layout == "both":
+                            st_path = self.output_dir / f"{code}_{ys_str}_{ye_str}.parquet"
+                            semi_df.to_parquet(st_path, index=False)
+                            del semi_df
+                            gc.collect()
+                            return code, st_path
                         del semi_df
-                        return code, st_path
+                        gc.collect()
+                        return code, cached_p
                     except Exception as e:
                         logger.error("Failed to extract station %s (%d): %s", code, year, e)
                         self.failed_stations[code] = str(e)
+                        cache.mark_failed(part_key, e)
                         return code, None
 
-                station_files: List[Tuple[str, Path]] = []
-                if effective_workers and effective_workers > 1 and len(target_codes) > 1:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                        futures = {executor.submit(_fetch_station_for_year, c): c for c in target_codes}
-                        for fut in concurrent.futures.as_completed(futures):
-                            code, p = fut.result()
+                with self.progress_bar(
+                    total=len(target_codes),
+                    initial=cached_count,
+                    unit="station",
+                    desc=f"TAHMO {year}",
+                    show_progress=show_progress,
+                ) as pbar:
+                    if effective_workers and effective_workers > 1 and len(pending_codes) > 1:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                            futures = {executor.submit(_fetch_station_for_year, c): c for c in pending_codes}
+                            for fut in concurrent.futures.as_completed(futures):
+                                code, p = fut.result()
+                                fetched_count += 1
+                                if p is not None:
+                                    station_files.append((code, p))
+                                    if parquet_layout == "both":
+                                        results[f"{code}_{year}"] = p
+                                pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                                pbar.update(1)
+                    else:
+                        for code in pending_codes:
+                            code, p = _fetch_station_for_year(code)
+                            fetched_count += 1
                             if p is not None:
                                 station_files.append((code, p))
                                 if parquet_layout == "both":
                                     results[f"{code}_{year}"] = p
-                else:
-                    for code in target_codes:
-                        code, p = _fetch_station_for_year(code)
-                        if p is not None:
-                            station_files.append((code, p))
-                            if parquet_layout == "both":
-                                results[f"{code}_{year}"] = p
+                            pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                            pbar.update(1)
 
                 station_files.sort(key=lambda item: item[0])
                 all_station_files.extend(station_files)
@@ -1609,12 +1725,6 @@ class TAHMOExtractor(BaseExtractor):
                     results[str(year)] = written_year
                     logger.info("Compiled yearly TAHMO Parquet (%d stations): %s", len(station_files), written_year)
 
-                if parquet_layout == "yearly" and not keep_station_cache and cache_dir.exists():
-                    if save_zarr:
-                        cleanup_dirs.append(cache_dir)
-                    else:
-                        shutil.rmtree(cache_dir, ignore_errors=True)
-
             if save_zarr and all_station_files:
                 name = zarr_name or f"tahmo_stations_{s_str}_{e_str}.zarr"
                 zarr_path = self.output_dir / name
@@ -1622,62 +1732,107 @@ class TAHMOExtractor(BaseExtractor):
                 if written_zarr is not None:
                     results["_zarr"] = written_zarr
                     logger.info("Compiled multi-station TAHMO Zarr store (ordinal slots): %s", written_zarr)
-
-            for cdir in cleanup_dirs:
-                shutil.rmtree(cdir, ignore_errors=True)
-
-            if parquet_layout == "yearly" and not keep_station_cache:
-                cache_root = self.output_dir / ".station_cache"
-                if cache_root.exists() and not any(cache_root.iterdir()):
-                    cache_root.rmdir()
         else:
+            pending_codes = []
+            cached_count = 0
+            fetched_count = 0
+
+            for code in target_codes:
+                parquet_path = self.output_dir / f"{code}_{s_str}_{e_str}.parquet"
+                if cache.is_done(code):
+                    cache.record_hit(code)
+                    cached_count += 1
+                    cached_p = cache.get_path(code)
+                    if cached_p is not None:
+                        if save_parquet:
+                            if not parquet_path.exists() or overwrite:
+                                shutil.copy2(cached_p, parquet_path)
+                            results[code] = parquet_path
+                            if save_zarr:
+                                dataframes[code] = cache.load_parquet(code)
+                        else:
+                            df_cached = cache.load_parquet(code)
+                            results[code] = df_cached
+                            if save_zarr:
+                                dataframes[code] = df_cached
+                    continue
+
+                if save_parquet and resume and not overwrite and parquet_path.exists() and not save_zarr:
+                    logger.info("Station %s already extracted: %s", code, parquet_path)
+                    cached_count += 1
+                    results[code] = parquet_path
+                    continue
+
+                pending_codes.append(code)
+
             def _fetch_single_station(code: str) -> Tuple[str, Optional[pd.DataFrame], Optional[Path]]:
                 parquet_path = self.output_dir / f"{code}_{s_str}_{e_str}.parquet"
-                if save_parquet and parquet_path.exists() and not save_zarr:
-                    logger.info("Station %s already extracted: %s", code, parquet_path)
-                    return code, None, parquet_path
-
                 try:
-                    df = self.extract_station(
-                        station_code=code,
-                        start_date=start_date,
-                        end_date=end_date,
-                        variables=variables,
+                    df = retry_with_backoff(
+                        lambda: self.extract_station(
+                            station_code=code,
+                            start_date=start_date,
+                            end_date=end_date,
+                            variables=variables,
+                        ),
+                        max_retries=2,
+                        base_delay=0.0 if self.request_delay == 0.0 else 1.0,
+                        retry_on=(requests.RequestException, TimeoutError, ConnectionError, OSError),
+                        rate_limiter=rate_limiter,
                     )
                     if df.empty:
                         logger.info("No data returned for station %s.", code)
+                        cache.mark_empty(code)
                         return code, None, None
 
+                    cache.save_parquet(code, df.reset_index())
                     saved_p = None
                     if save_parquet:
                         df.reset_index().to_parquet(parquet_path, index=False)
                         saved_p = parquet_path
+                        if not save_zarr:
+                            del df
+                            gc.collect()
+                            return code, None, saved_p
                     return code, df, saved_p
                 except Exception as e:
                     logger.error("Failed to extract station %s: %s", code, e)
                     self.failed_stations[code] = str(e)
+                    cache.mark_failed(code, e)
                     return code, None, None
 
-            if effective_workers and effective_workers > 1 and len(target_codes) > 1:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                    futures = {executor.submit(_fetch_single_station, c): c for c in target_codes}
-                    for fut in concurrent.futures.as_completed(futures):
-                        code, df, p = fut.result()
+            with self.progress_bar(
+                total=len(target_codes),
+                initial=cached_count,
+                unit="station",
+                show_progress=show_progress,
+            ) as pbar:
+                if effective_workers and effective_workers > 1 and len(pending_codes) > 1:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                        futures = {executor.submit(_fetch_single_station, c): c for c in pending_codes}
+                        for fut in concurrent.futures.as_completed(futures):
+                            code, df, p = fut.result()
+                            fetched_count += 1
+                            if save_zarr and df is not None:
+                                dataframes[code] = df
+                            if p is not None:
+                                results[code] = p
+                            elif df is not None and not save_parquet:
+                                results[code] = df
+                            pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                            pbar.update(1)
+                else:
+                    for code in pending_codes:
+                        code, df, p = _fetch_single_station(code)
+                        fetched_count += 1
                         if save_zarr and df is not None:
                             dataframes[code] = df
                         if p is not None:
                             results[code] = p
                         elif df is not None and not save_parquet:
                             results[code] = df
-            else:
-                for code in target_codes:
-                    code, df, p = _fetch_single_station(code)
-                    if save_zarr and df is not None:
-                        dataframes[code] = df
-                    if p is not None:
-                        results[code] = p
-                    elif df is not None and not save_parquet:
-                        results[code] = df
+                        pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                        pbar.update(1)
 
         if save_zarr and dataframes:
             name = zarr_name or f"tahmo_stations_{s_str}_{e_str}.zarr"
@@ -1686,5 +1841,8 @@ class TAHMOExtractor(BaseExtractor):
             if written_zarr is not None:
                 results["_zarr"] = written_zarr
                 logger.info("Compiled multi-station TAHMO Zarr store (ordinal slots): %s", written_zarr)
+
+        if not effective_keep_cache:
+            cache.cleanup(keep_on_failure=True)
 
         return results
