@@ -993,7 +993,7 @@ class ERA5Extractor(BaseExtractor):
         use_legacy: Optional[bool] = None,
         use_cds_arco: Optional[bool] = None,
         use_google_arco: Optional[bool] = None,
-        data_format: str = "netcdf4",
+        data_format: str = "grib",
         arco_url: str = DEFAULT_GOOGLE_ARCO_URL,
         cds_arco_url: Optional[str] = None,
         chunking: Optional[str] = None,
@@ -1471,7 +1471,7 @@ class ERA5Extractor(BaseExtractor):
         data_levels: str = "both",
         n_days_per_chunk: int = 5,
         time_interval: int = 1,
-        data_format: str = "netcdf4",
+        data_format: str = "grib",
         cds_key: Optional[str] = None,
         cds_url: Optional[str] = None,
     ) -> List[Path]:
@@ -1858,7 +1858,7 @@ class ERA5Extractor(BaseExtractor):
             chunked = ds_slice.chunk(target_chunks)
             for var in chunked.variables:
                 chunked[var].encoding.clear()
-            chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+            chunked.to_zarr(zarr_path, mode="w", zarr_format=3)
             ds_slice.close()
             chunked.close()
             del ds_slice, chunked
@@ -1879,7 +1879,8 @@ class ERA5Extractor(BaseExtractor):
             pbar.set_postfix(phase="writing Zarr")
             name = zarr_name or default_name
             zarr_path = self.output_dir / name
-            opener = open_era5_netcdf if fmt_name in ("netcdf4", "netcdf", "nc") else open_era5_grib
+            is_nc_files = bool(downloaded_files) and all(str(p).lower().endswith((".nc", ".nc4")) for p in downloaded_files)
+            opener = open_era5_netcdf if (fmt_name in ("netcdf4", "netcdf", "nc") or is_nc_files) else open_era5_grib
 
             if len(downloaded_files) > 1:
                 if zarr_path.exists():
@@ -1897,7 +1898,7 @@ class ERA5Extractor(BaseExtractor):
                     gc.collect()
             else:
                 combined_ds = opener(downloaded_files, harmonize=True)
-                combined_ds.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+                combined_ds.to_zarr(zarr_path, mode="w", zarr_format=3)
                 combined_ds.close()
                 del combined_ds
                 gc.collect()
@@ -1968,7 +1969,7 @@ class ERA5Extractor(BaseExtractor):
                 # Fallback 1: CDS Legacy API
                 cds_legacy_err_msg = ""
                 try:
-                    fmt = (data_format or self.data_format or "netcdf4").lower().strip()
+                    fmt = (data_format or self.data_format or "grib").lower().strip()
                     logger.info("Priority cascade [2/3]: Attempting CDS Legacy API extraction (format: %s)...", fmt)
                     pbar.set_postfix(phase="downloading", backend="cds_legacy")
                     downloaded = self.extract_cds_slice(
@@ -1985,7 +1986,8 @@ class ERA5Extractor(BaseExtractor):
                         pbar.update(1)
                         return _stream_legacy_files_to_zarr(downloaded, fmt, f"era5_legacy_{s_str}_{e_str}.zarr", pbar)
 
-                    if fmt in ("netcdf4", "netcdf", "nc"):
+                    is_nc = bool(downloaded) and all(str(p).lower().endswith((".nc", ".nc4")) for p in downloaded)
+                    if fmt in ("netcdf4", "netcdf", "nc") or is_nc:
                         combined = open_era5_netcdf(downloaded, harmonize=True)
                     else:
                         combined = open_era5_grib(downloaded, harmonize=True)
@@ -2068,7 +2070,7 @@ class ERA5Extractor(BaseExtractor):
                 return _finalize_dataset(ds_slice)
 
             # 3. Legacy CDS API Backend
-            fmt = (data_format or self.data_format or "netcdf4").lower().strip()
+            fmt = (data_format or self.data_format or "grib").lower().strip()
             logger.info("Executing ERA5 extraction via legacy CDS API backend (format: %s)...", fmt)
             pbar.set_postfix(phase="downloading", backend="cds_legacy")
             downloaded = self.extract_cds_slice(
@@ -2087,7 +2089,8 @@ class ERA5Extractor(BaseExtractor):
                     pbar.update(1)
                     return _stream_legacy_files_to_zarr(downloaded, fmt, f"era5_legacy_{s_str}_{e_str}.zarr", pbar)
 
-                if fmt in ("netcdf4", "netcdf", "nc"):
+                is_nc = bool(downloaded) and all(str(p).lower().endswith((".nc", ".nc4")) for p in downloaded)
+                if fmt in ("netcdf4", "netcdf", "nc") or is_nc:
                     combined = open_era5_netcdf(downloaded, harmonize=True)
                 else:
                     combined = open_era5_grib(downloaded, harmonize=True)

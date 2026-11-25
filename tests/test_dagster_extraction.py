@@ -127,7 +127,7 @@ def test_zarr_gridded_io_manager(tmp_path: Path) -> None:
     expected_path = tmp_path / "gridded" / "sample_gridded_asset" / "all.zarr"
     assert expected_path.exists()
 
-    loaded_ds = xr.open_zarr(str(expected_path), consolidated=True)
+    loaded_ds = xr.open_zarr(str(expected_path))
     assert "precipitationCal" in loaded_ds.data_vars
     assert loaded_ds.sizes["time"] == 5
     assert loaded_ds.sizes["lat"] == 3

@@ -18,7 +18,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -55,6 +55,7 @@ IMERG_LATE_RUN_NAME = "GPM_3IMERGHHL"
 
 # Canonical Descriptive Variable Harmonization Registry for IMERG
 IMERG_RAW_TO_CANONICAL: Dict[str, str] = {
+    "precipitation": "total_precipitation",
     "precipitationCal": "total_precipitation",
     "precipitationUncal": "uncalibrated_precipitation",
     "randomError": "precipitation_error",
@@ -63,7 +64,29 @@ IMERG_RAW_TO_CANONICAL: Dict[str, str] = {
 }
 
 IMERG_CANONICAL_TO_RAW: Dict[str, str] = {
-    v: k for k, v in IMERG_RAW_TO_CANONICAL.items()
+    "total_precipitation": "precipitationCal",
+    "uncalibrated_precipitation": "precipitationUncal",
+    "precipitation_error": "randomError",
+    "high_quality_precipitation": "HQprecipitation",
+    "probability_liquid_precipitation": "probabilityLiquidPrecipitation",
+}
+
+IMERG_VARIABLE_CANDIDATES: Dict[str, Tuple[str, ...]] = {
+    "precipitation": ("precipitation", "precipitationCal"),
+    "precipitationcal": ("precipitationCal", "precipitation"),
+    "total_precipitation": ("precipitation", "precipitationCal"),
+    "tp": ("precipitation", "precipitationCal"),
+    "precip": ("precipitation", "precipitationCal"),
+    "prcp": ("precipitation", "precipitationCal"),
+    "rain": ("precipitation", "precipitationCal"),
+    "precipitationuncal": ("precipitationUncal",),
+    "uncalibrated_precipitation": ("precipitationUncal",),
+    "hqprecipitation": ("HQprecipitation",),
+    "high_quality_precipitation": ("HQprecipitation",),
+    "randomerror": ("randomError",),
+    "precipitation_error": ("randomError",),
+    "probabilityliquidprecipitation": ("probabilityLiquidPrecipitation",),
+    "probability_liquid_precipitation": ("probabilityLiquidPrecipitation",),
 }
 
 
@@ -75,6 +98,45 @@ def canonicalize_imerg_variable(var: str) -> str:
 def imerg_canonical_to_raw(var: str) -> str:
     """Map canonical descriptive name to raw IMERG HDF5 variable name."""
     return IMERG_CANONICAL_TO_RAW.get(var, var)
+
+
+def resolve_imerg_variables(
+    variables: Sequence[str],
+    available_vars: Iterable[str],
+) -> List[str]:
+    """
+    Resolve requested IMERG variable names or aliases against available HDF5 Grid keys.
+
+    Supports both IMERG V07 ('precipitation') and V06 ('precipitationCal') names,
+    canonical names ('total_precipitation'), and common shorthand aliases ('tp', 'precip').
+    """
+    avail_list = [str(v) for v in available_vars]
+    avail_set = set(avail_list)
+    avail_lower = {v.lower(): v for v in avail_list}
+    resolved: List[str] = []
+
+    for req in variables:
+        req_str = str(req).strip()
+        req_key = req_str.lower().replace("-", "_").replace(" ", "_")
+        candidates: List[str] = []
+        if req_str in avail_set:
+            candidates.append(req_str)
+        for cand in IMERG_VARIABLE_CANDIDATES.get(req_key, ()):
+            if cand not in candidates:
+                candidates.append(cand)
+        mapped = imerg_canonical_to_raw(req_str)
+        if mapped not in candidates:
+            candidates.append(mapped)
+
+        matched = next((c for c in candidates if c in avail_set), None)
+        if matched is None:
+            matched = avail_lower.get(req_key)
+        if matched is not None and matched not in resolved:
+            resolved.append(matched)
+        elif matched is None:
+            logger.warning("Requested IMERG variable '%s' not found in granule Grid.", req_str)
+
+    return resolved
 
 
 def harmonize_imerg_dataset(ds: xr.Dataset, to_canonical: bool = True) -> xr.Dataset:
@@ -202,10 +264,15 @@ def _read_hdf5_granule(
         seconds_val = int(grid["time"][:][0])
         dt = IMERG_EPOCH + timedelta(seconds=seconds_val)
 
-        # Map requested canonical names back to raw HDF5 dataset names
+        # Map requested names/aliases (V06/V07/canonical) against actual HDF5 Grid keys
         if variables is not None:
-            raw_target_vars = [imerg_canonical_to_raw(v) for v in variables]
-            target_vars = [k for k in raw_target_vars if k in grid]
+            target_vars = resolve_imerg_variables(variables, grid.keys())
+            if not target_vars:
+                available = sorted(k for k in grid.keys() if k not in SKIP_VARS)
+                raise ValueError(
+                    f"None of the requested IMERG variables {list(variables)} were found in {p_str}. "
+                    f"Available Grid variables: {available}"
+                )
         else:
             target_vars = [k for k in grid.keys() if k not in SKIP_VARS]
 

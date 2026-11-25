@@ -294,9 +294,6 @@ def tahmo_station_observations(context) -> pd.DataFrame:
         extractor = TAHMOExtractor(
             output_dir=Path(root_dir) / "obs" / "tahmo_station_observations",
             max_workers=effective_workers,
-            show_progress=show_progress,
-            resume=resume,
-            keep_cache=keep_cache,
         )
         stations_df = extractor.get_stations(bbox=AFRICA_BBOX)
     except Exception as init_err:
@@ -322,9 +319,6 @@ def tahmo_station_observations(context) -> pd.DataFrame:
         extractor = TAHMOExtractor(
             output_dir=Path(root_dir) / "obs" / "tahmo_station_observations",
             max_workers=effective_workers,
-            show_progress=show_progress,
-            resume=resume,
-            keep_cache=keep_cache,
         )
         if effective_workers > 1 and len(target_stations) > 1:
             def _fetch_one(code: str) -> Optional[pd.DataFrame]:
@@ -464,12 +458,7 @@ def era5_gridded_reanalysis(context) -> xr.Dataset:
     # 1. Attempt Google Cloud ARCO-ERA5
     try:
         context.log.info(f"Querying Google Cloud ARCO-ERA5 data store: {ARCO_ERA5_ZARR_URL}")
-        extractor = ERA5Extractor(
-            prefer_arco=True,
-            show_progress=show_progress,
-            resume=resume,
-            keep_cache=keep_cache,
-        )
+        extractor = ERA5Extractor(prefer_arco=True)
         ds_slice = extractor.extract_arco_slice(
             bbox=AFRICA_BBOX,
             start_date=start_dt,

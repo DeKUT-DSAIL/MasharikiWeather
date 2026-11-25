@@ -1341,8 +1341,8 @@ class MasharikiWeatherDataset:
             if any((self.root_dir / "obs").glob("*.parquet")):
                 found_local_obs = True
 
-        # Programmatic Dagster extraction trigger when missing local data
-        if missing_partition_years and not found_local_obs and not self.use_hf and not (self.tabular_parquet_path and os.path.exists(self.tabular_parquet_path)):
+        # Programmatic Dagster extraction trigger when explicitly enabled via auto_extract=True
+        if kwargs.get("auto_extract", False) and missing_partition_years and not found_local_obs and not self.use_hf and not (self.tabular_parquet_path and os.path.exists(self.tabular_parquet_path)):
             try:
                 from .extract.apis.dagster_pipeline import materialize_extraction
                 materialize_extraction(
@@ -2130,7 +2130,7 @@ class MasharikiWeatherDataset:
                     # 3. Trigger Parallel Single-Pass Write
                     with dask.config.set(scheduler='threads', num_workers=num_workers):
                         with ProgressBar():
-                            ds.to_zarr(temp_target, mode='w', encoding=encoding, consolidated=True, compute=True, zarr_format=2)
+                            ds.to_zarr(temp_target, mode='w', encoding=encoding, compute=True, zarr_format=3)
                     
                     # 4. Atomic Swap
                     if os.path.exists(target_write_path):
@@ -4446,7 +4446,7 @@ def extract_gridded(
     use_legacy: Optional[bool] = None,
     use_cds_arco: Optional[bool] = None,
     use_google_arco: Optional[bool] = None,
-    data_format: str = "netcdf4",
+    data_format: str = "grib",
     use_arco: Optional[bool] = None,
     force_cds: Optional[bool] = None,
     chunk_days: int = 5,
@@ -4718,7 +4718,7 @@ def extract_gridded(
             s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
             e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
             zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
-            ds.to_zarr(zarr_path, mode="w", consolidated=True)
+            ds.to_zarr(zarr_path, mode="w", zarr_format=3)
             return zarr_path
         return ds
 
@@ -4755,7 +4755,7 @@ def extract_gridded(
             s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
             e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
             zarr_path = out_dir / f"{src}_{s_str}_{e_str}.zarr"
-            ds.to_zarr(zarr_path, mode="w", consolidated=True)
+            ds.to_zarr(zarr_path, mode="w", zarr_format=3)
             return zarr_path
         return ds
 
@@ -4772,7 +4772,7 @@ def pull_gridded_data(
     use_legacy: Optional[bool] = None,
     use_cds_arco: Optional[bool] = None,
     use_google_arco: Optional[bool] = None,
-    data_format: str = "netcdf4",
+    data_format: str = "grib",
     use_arco: Optional[bool] = None,
     force_cds: Optional[bool] = None,
     chunk_days: int = 5,
