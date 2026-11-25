@@ -22,7 +22,7 @@ from .dataset import (
 )
 from .rechunker import rechunk_dataset
 
-__version__ = "0.2"
+__version__ = "0.2.0"
 __author__ = "Teofilo Ligawa, Samuel Mbugua, James Muiru, Hilda Muthoni, Ciira wa Maina"
 __authors__ = [
     "Teofilo Ligawa",

@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.abspath(".."))
 project = "MasharikiWeather"
 copyright = "2026, Centre for Data Science and Artificial Intelligence (DSAIL), Dedan Kimathi University of Technology"
 author = "Teofilo Ligawa, Samuel Mbugua, James Muiru, Hilda Muthoni, and Ciira wa Maina"
-version = "0.2"
-release = "0.2"
+version = "0.2.0"
+release = "0.2.0"
 
 # General configuration
 extensions = [
