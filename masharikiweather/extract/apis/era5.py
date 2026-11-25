@@ -13,6 +13,7 @@ All outputs are saved as standardized, CF-compliant Zarr groups on local disk.
 from __future__ import annotations
 
 import calendar
+import gc
 import logging
 import os
 import shutil
@@ -32,6 +33,7 @@ from .base import (
     TemporalRange,
 )
 from .credentials import CredentialsError, CredentialsManager, get_cds_api_key, parse_date, parse_date_range
+from .resilience import ExtractionEstimate, append_to_zarr, make_progress_bar
 
 logger = logging.getLogger("MasharikiWeather.ERA5")
 
@@ -1693,8 +1695,13 @@ class ERA5Extractor(BaseExtractor):
         cds_arco_url: Optional[str] = None,
         force_cds: Optional[bool] = None,
         prefer_arco: Optional[bool] = None,
+        show_progress: bool = True,
+        resume: bool = True,
+        overwrite: bool = False,
+        keep_cache: bool = False,
+        dry_run: bool = False,
         **kwargs: Any,
-    ) -> Union[xr.Dataset, Path]:
+    ) -> Union[xr.Dataset, Path, ExtractionEstimate]:
         """
         Execute ERA5 extraction across legacy CDS API, CDS ARCO, or Google ARCO backends.
 
@@ -1740,11 +1747,21 @@ class ERA5Extractor(BaseExtractor):
             Backward compatibility flag forcing legacy CDS extraction.
         prefer_arco : Optional[bool]
             Backward compatibility flag prioritizing ARCO extraction.
+        show_progress : bool, default True
+            If True, displays a progress bar during extraction.
+        resume : bool, default True
+            If True, resumes from manifest-backed cache checkpoints when available.
+        overwrite : bool, default False
+            If True, ignores cached checkpoints and re-fetches all data.
+        keep_cache : bool, default False
+            If True, retains cache directory after successful extraction.
+        dry_run : bool, default False
+            If True, returns an ExtractionEstimate without making remote API calls.
 
         Returns
         -------
-        Union[xr.Dataset, Path]
-            Extracted Dataset or local Zarr store Path.
+        Union[xr.Dataset, Path, ExtractionEstimate]
+            Extracted Dataset, local Zarr store Path, or ExtractionEstimate if `dry_run=True`.
         """
         box = bbox if bbox is not None else AFRICA_BBOX
         t_range = self.validate_temporal_range(start_date, end_date)
@@ -1774,90 +1791,250 @@ class ERA5Extractor(BaseExtractor):
         else:
             chosen = "cascade"
 
-        # 0. Priority Cascade: Google ARCO -> CDS Legacy -> CDS ARCO
-        if chosen == "cascade":
-            logger.info("Executing ERA5 extraction via Priority Cascade (Google ARCO -> CDS Legacy -> CDS ARCO)...")
-            arco_available = False
-            try:
-                arco_available = self.check_google_arco_availability(
-                    start_date=start_date,
-                    end_date=end_date,
-                    variables=variables,
-                    bbox=box,
-                )
-            except Exception as check_err:
-                logger.info("Google ARCO availability check encountered error: %s", check_err)
-                arco_available = False
+        if dry_run:
+            use_arco_flag = chosen in ("google_arco", "cds_arco", "cascade")
+            return self.estimate_extraction(
+                start_date=start_date,
+                end_date=end_date,
+                bbox=box,
+                variables=variables,
+                levels=levels,
+                chunk_days=chunk_days,
+                use_arco=use_arco_flag,
+            )
 
-            if arco_available:
+        n_days_total = max(1, (e_dt - s_dt).days + 1)
+        is_multi_chunk = n_days_total > max(1, int(chunk_days))
+        use_cache = bool(save_zarr or is_multi_chunk)
+        cache = (
+            self.create_cache(
+                self.output_dir,
+                request_params={
+                    "start_date": s_str,
+                    "end_date": e_str,
+                    "bbox": box,
+                    "variables": list(variables) if variables is not None else None,
+                    "levels": list(levels) if levels is not None else None,
+                    "chosen": chosen,
+                    "save_zarr": save_zarr,
+                    "zarr_name": zarr_name,
+                    "chunk_days": chunk_days,
+                },
+                resume=resume,
+                overwrite=overwrite,
+            )
+            if use_cache
+            else None
+        )
+
+        if cache is not None:
+            if save_zarr and cache.is_done("zarr_output"):
+                marker_path = cache.get_path("zarr_output")
+                if marker_path is not None and marker_path.is_file():
+                    target_zarr = Path(marker_path.read_text(encoding="utf-8").strip())
+                    if target_zarr.exists():
+                        cache.record_hit("zarr_output")
+                        if not keep_cache:
+                            cache.cleanup(keep_on_failure=True)
+                        return target_zarr
+            elif not save_zarr and cache.is_done("dataset"):
+                cache.record_hit("dataset")
+                ds_cached = cache.load_dataset("dataset")
+                if ds_cached is not None and not keep_cache:
+                    ds_cached = ds_cached.load()
+                    cache.cleanup(keep_on_failure=True)
+                return ds_cached
+
+        progress_source = "era5_arco" if chosen in ("google_arco", "cds_arco", "cascade") else "era5"
+        total_steps = 2 if save_zarr else 1
+
+        def _finalize_zarr(ds_slice: xr.Dataset, default_name: str, pbar: Any) -> Path:
+            pbar.set_postfix(phase="writing Zarr")
+            name = zarr_name or default_name
+            zarr_path = self.output_dir / name
+            target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
+            if "level" in ds_slice.dims:
+                target_chunks["level"] = ds_slice.sizes["level"]
+            chunked = ds_slice.chunk(target_chunks)
+            for var in chunked.variables:
+                chunked[var].encoding.clear()
+            chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+            ds_slice.close()
+            chunked.close()
+            del ds_slice, chunked
+            gc.collect()
+            if cache is not None:
+                cache.save_bytes("zarr_output", str(zarr_path).encode("utf-8"), suffix=".txt")
+                if not keep_cache:
+                    cache.cleanup(keep_on_failure=True)
+            pbar.update(1)
+            return zarr_path
+
+        def _stream_legacy_files_to_zarr(
+            downloaded_files: Sequence[Union[str, Path]],
+            fmt_name: str,
+            default_name: str,
+            pbar: Any,
+        ) -> Path:
+            pbar.set_postfix(phase="writing Zarr")
+            name = zarr_name or default_name
+            zarr_path = self.output_dir / name
+            opener = open_era5_netcdf if fmt_name in ("netcdf4", "netcdf", "nc") else open_era5_grib
+
+            if len(downloaded_files) > 1:
+                if zarr_path.exists():
+                    shutil.rmtree(zarr_path, ignore_errors=True)
+                for chunk_file in downloaded_files:
+                    ds_chunk = opener([chunk_file], harmonize=True)
+                    for var in ds_chunk.variables:
+                        ds_chunk[var].encoding.clear()
+                    target_chunks = {"time": min(48, max(1, ds_chunk.sizes.get("time", 1))), "lat": -1, "lon": -1}
+                    if "level" in ds_chunk.dims:
+                        target_chunks["level"] = ds_chunk.sizes["level"]
+                    append_to_zarr(ds_chunk, zarr_path, append_dim="time", chunks=target_chunks)
+                    ds_chunk.close()
+                    del ds_chunk
+                    gc.collect()
+            else:
+                combined_ds = opener(downloaded_files, harmonize=True)
+                combined_ds.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
+                combined_ds.close()
+                del combined_ds
+                gc.collect()
+
+            if cache is not None:
+                cache.save_bytes("zarr_output", str(zarr_path).encode("utf-8"), suffix=".txt")
+                if not keep_cache:
+                    cache.cleanup(keep_on_failure=True)
+            pbar.update(1)
+            return zarr_path
+
+        def _finalize_dataset(ds_slice: xr.Dataset) -> xr.Dataset:
+            if cache is not None:
+                cache.save_dataset("dataset", ds_slice, fmt="netcdf")
+                if not keep_cache:
+                    cache.cleanup(keep_on_failure=True)
+            return ds_slice
+
+        with make_progress_bar(
+            total=total_steps,
+            source=progress_source,
+            unit="chunk",
+            show_progress=show_progress,
+        ) as pbar:
+            pbar.set_postfix(phase="queued")
+
+            # 0. Priority Cascade: Google ARCO -> CDS Legacy -> CDS ARCO
+            if chosen == "cascade":
+                logger.info("Executing ERA5 extraction via Priority Cascade (Google ARCO -> CDS Legacy -> CDS ARCO)...")
+                arco_available = False
                 try:
-                    logger.info("Priority cascade [1/3]: Extracting from Google Cloud ARCO...")
-                    ds_slice = self.extract_google_arco_slice(
+                    arco_available = self.check_google_arco_availability(
+                        start_date=start_date,
+                        end_date=end_date,
+                        variables=variables,
+                        bbox=box,
+                    )
+                except Exception as check_err:
+                    logger.info("Google ARCO availability check encountered error: %s", check_err)
+                    arco_available = False
+
+                if arco_available:
+                    try:
+                        logger.info("Priority cascade [1/3]: Extracting from Google Cloud ARCO...")
+                        pbar.set_postfix(phase="downloading", backend="google_arco")
+                        ds_slice = self.extract_google_arco_slice(
+                            bbox=box,
+                            start_date=start_date,
+                            end_date=end_date,
+                            variables=variables,
+                            levels=levels,
+                        )
+                        pbar.update(1)
+                        if save_zarr:
+                            return _finalize_zarr(ds_slice, f"era5_google_arco_{s_str}_{e_str}.zarr", pbar)
+                        return _finalize_dataset(ds_slice)
+                    except Exception as arco_err:
+                        logger.warning(
+                            "Google ARCO extraction failed despite availability check: %s. Falling back to CDS Legacy...",
+                            arco_err,
+                        )
+                else:
+                    logger.info(
+                        "Google ARCO ERA5 is unavailable or lagging for requested range [%s, %s]. Falling back to CDS Legacy...",
+                        s_str, e_str,
+                    )
+
+                # Fallback 1: CDS Legacy API
+                cds_legacy_err_msg = ""
+                try:
+                    fmt = (data_format or self.data_format or "netcdf4").lower().strip()
+                    logger.info("Priority cascade [2/3]: Attempting CDS Legacy API extraction (format: %s)...", fmt)
+                    pbar.set_postfix(phase="downloading", backend="cds_legacy")
+                    downloaded = self.extract_cds_slice(
+                        bbox=box,
+                        start_date=start_date,
+                        end_date=end_date,
+                        variables=variables,
+                        n_days_per_chunk=chunk_days,
+                        data_format=fmt,
+                        cds_key=cds_key or self.cds_key,
+                        cds_url=cds_url or self.cds_url,
+                    )
+                    if save_zarr:
+                        pbar.update(1)
+                        return _stream_legacy_files_to_zarr(downloaded, fmt, f"era5_legacy_{s_str}_{e_str}.zarr", pbar)
+
+                    if fmt in ("netcdf4", "netcdf", "nc"):
+                        combined = open_era5_netcdf(downloaded, harmonize=True)
+                    else:
+                        combined = open_era5_grib(downloaded, harmonize=True)
+                    pbar.update(1)
+                    return _finalize_dataset(combined)
+                except Exception as legacy_err:
+                    cds_legacy_err_msg = str(legacy_err)
+                    logger.warning(
+                        "CDS Legacy API extraction failed: %s. Falling back to CDS ARCO...",
+                        legacy_err,
+                    )
+
+                # Fallback 2: CDS ARCO via obstore
+                try:
+                    logger.info("Priority cascade [3/3]: Attempting CDS ARCO Zarr extraction...")
+                    pbar.set_postfix(phase="downloading", backend="cds_arco")
+                    ds_slice = self.extract_cds_arco_slice(
                         bbox=box,
                         start_date=start_date,
                         end_date=end_date,
                         variables=variables,
                         levels=levels,
+                        stream=stream or self.stream,
+                        chunking=chunking or self.chunking,
+                        url=cds_arco_url or self.cds_arco_url,
+                        cds_key=cds_key or self.cds_key,
                     )
+                    pbar.update(1)
                     if save_zarr:
-                        name = zarr_name or f"era5_google_arco_{s_str}_{e_str}.zarr"
-                        zarr_path = self.output_dir / name
-                        target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
-                        if "level" in ds_slice.dims:
-                            target_chunks["level"] = ds_slice.sizes["level"]
-                        chunked = ds_slice.chunk(target_chunks)
-                        for var in chunked.variables:
-                            chunked[var].encoding.clear()
-                        chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                        return zarr_path
-                    return ds_slice
+                        return _finalize_zarr(ds_slice, f"era5_cds_arco_{s_str}_{e_str}.zarr", pbar)
+                    return _finalize_dataset(ds_slice)
                 except Exception as arco_err:
-                    logger.warning(
-                        "Google ARCO extraction failed despite availability check: %s. Falling back to CDS Legacy...",
-                        arco_err,
+                    if cache is not None:
+                        cache.mark_failed("cascade", arco_err)
+                    logger.error(
+                        "All ERA5 backends in priority cascade failed. Google ARCO: unavailable; CDS Legacy: %s; CDS ARCO: %s",
+                        cds_legacy_err_msg, arco_err,
                     )
-            else:
-                logger.info(
-                    "Google ARCO ERA5 is unavailable or lagging for requested range [%s, %s]. Falling back to CDS Legacy...",
-                    s_str, e_str,
-                )
+                    raise RuntimeError(
+                        f"All ERA5 extraction backends failed in priority cascade. "
+                        f"Google ARCO: unavailable or failed; "
+                        f"CDS Legacy: {cds_legacy_err_msg}; "
+                        f"CDS ARCO: {arco_err}"
+                    ) from arco_err
 
-            # Fallback 1: CDS Legacy API
-            cds_legacy_err_msg = ""
-            try:
-                fmt = (data_format or self.data_format or "netcdf4").lower().strip()
-                logger.info("Priority cascade [2/3]: Attempting CDS Legacy API extraction (format: %s)...", fmt)
-                downloaded = self.extract_cds_slice(
-                    bbox=box,
-                    start_date=start_date,
-                    end_date=end_date,
-                    variables=variables,
-                    n_days_per_chunk=chunk_days,
-                    data_format=fmt,
-                    cds_key=cds_key or self.cds_key,
-                    cds_url=cds_url or self.cds_url,
-                )
-                if fmt in ("netcdf4", "netcdf", "nc"):
-                    combined = open_era5_netcdf(downloaded, harmonize=True)
-                else:
-                    combined = open_era5_grib(downloaded, harmonize=True)
-
-                if save_zarr:
-                    name = zarr_name or f"era5_legacy_{s_str}_{e_str}.zarr"
-                    zarr_path = self.output_dir / name
-                    combined.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                    return zarr_path
-                return combined
-            except Exception as legacy_err:
-                cds_legacy_err_msg = str(legacy_err)
-                logger.warning(
-                    "CDS Legacy API extraction failed: %s. Falling back to CDS ARCO...",
-                    legacy_err,
-                )
-
-            # Fallback 2: CDS ARCO via obstore
-            try:
-                logger.info("Priority cascade [3/3]: Attempting CDS ARCO Zarr extraction...")
+            # 1. CDS ARCO Backend
+            if chosen == "cds_arco":
+                logger.info("Executing ERA5 extraction via CDS ARCO Zarr backend...")
+                pbar.set_postfix(phase="downloading", backend="cds_arco")
                 ds_slice = self.extract_cds_arco_slice(
                     bbox=box,
                     start_date=start_date,
@@ -1869,108 +2046,57 @@ class ERA5Extractor(BaseExtractor):
                     url=cds_arco_url or self.cds_arco_url,
                     cds_key=cds_key or self.cds_key,
                 )
+                pbar.update(1)
                 if save_zarr:
-                    name = zarr_name or f"era5_cds_arco_{s_str}_{e_str}.zarr"
-                    zarr_path = self.output_dir / name
-                    target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
-                    if "level" in ds_slice.dims:
-                        target_chunks["level"] = ds_slice.sizes["level"]
-                    chunked = ds_slice.chunk(target_chunks)
-                    for var in chunked.variables:
-                        chunked[var].encoding.clear()
-                    chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                    return zarr_path
-                return ds_slice
-            except Exception as arco_err:
-                logger.error(
-                    "All ERA5 backends in priority cascade failed. Google ARCO: unavailable; CDS Legacy: %s; CDS ARCO: %s",
-                    cds_legacy_err_msg, arco_err,
+                    return _finalize_zarr(ds_slice, f"era5_cds_arco_{s_str}_{e_str}.zarr", pbar)
+                return _finalize_dataset(ds_slice)
+
+            # 2. Google ARCO Backend
+            if chosen == "google_arco":
+                logger.info("Executing ERA5 extraction via Google Cloud ARCO backend...")
+                pbar.set_postfix(phase="downloading", backend="google_arco")
+                ds_slice = self.extract_google_arco_slice(
+                    bbox=box,
+                    start_date=start_date,
+                    end_date=end_date,
+                    variables=variables,
+                    levels=levels,
                 )
-                raise RuntimeError(
-                    f"All ERA5 extraction backends failed in priority cascade. "
-                    f"Google ARCO: unavailable or failed; "
-                    f"CDS Legacy: {cds_legacy_err_msg}; "
-                    f"CDS ARCO: {arco_err}"
-                ) from arco_err
+                pbar.update(1)
+                if save_zarr:
+                    return _finalize_zarr(ds_slice, f"era5_google_arco_{s_str}_{e_str}.zarr", pbar)
+                return _finalize_dataset(ds_slice)
 
-        # 1. CDS ARCO Backend
-        if chosen == "cds_arco":
-            logger.info("Executing ERA5 extraction via CDS ARCO Zarr backend...")
-            ds_slice = self.extract_cds_arco_slice(
+            # 3. Legacy CDS API Backend
+            fmt = (data_format or self.data_format or "netcdf4").lower().strip()
+            logger.info("Executing ERA5 extraction via legacy CDS API backend (format: %s)...", fmt)
+            pbar.set_postfix(phase="downloading", backend="cds_legacy")
+            downloaded = self.extract_cds_slice(
                 bbox=box,
                 start_date=start_date,
                 end_date=end_date,
                 variables=variables,
-                levels=levels,
-                stream=stream or self.stream,
-                chunking=chunking or self.chunking,
-                url=cds_arco_url or self.cds_arco_url,
+                n_days_per_chunk=chunk_days,
+                data_format=fmt,
                 cds_key=cds_key or self.cds_key,
+                cds_url=cds_url or self.cds_url,
             )
-            if save_zarr:
-                name = zarr_name or f"era5_cds_arco_{s_str}_{e_str}.zarr"
-                zarr_path = self.output_dir / name
-                target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
-                if "level" in ds_slice.dims:
-                    target_chunks["level"] = ds_slice.sizes["level"]
-                chunked = ds_slice.chunk(target_chunks)
-                for var in chunked.variables:
-                    chunked[var].encoding.clear()
-                chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                return zarr_path
-            return ds_slice
 
-        # 2. Google ARCO Backend
-        if chosen == "google_arco":
-            logger.info("Executing ERA5 extraction via Google Cloud ARCO backend...")
-            ds_slice = self.extract_google_arco_slice(
-                bbox=box,
-                start_date=start_date,
-                end_date=end_date,
-                variables=variables,
-                levels=levels,
-            )
-            if save_zarr:
-                name = zarr_name or f"era5_google_arco_{s_str}_{e_str}.zarr"
-                zarr_path = self.output_dir / name
-                target_chunks = {"time": min(48, max(1, ds_slice.sizes.get("time", 1))), "lat": -1, "lon": -1}
-                if "level" in ds_slice.dims:
-                    target_chunks["level"] = ds_slice.sizes["level"]
-                chunked = ds_slice.chunk(target_chunks)
-                for var in chunked.variables:
-                    chunked[var].encoding.clear()
-                chunked.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                return zarr_path
-            return ds_slice
+            try:
+                if save_zarr:
+                    pbar.update(1)
+                    return _stream_legacy_files_to_zarr(downloaded, fmt, f"era5_legacy_{s_str}_{e_str}.zarr", pbar)
 
-        # 3. Legacy CDS API Backend
-        fmt = (data_format or self.data_format or "netcdf4").lower().strip()
-        logger.info("Executing ERA5 extraction via legacy CDS API backend (format: %s)...", fmt)
-        downloaded = self.extract_cds_slice(
-            bbox=box,
-            start_date=start_date,
-            end_date=end_date,
-            variables=variables,
-            n_days_per_chunk=chunk_days,
-            data_format=fmt,
-            cds_key=cds_key or self.cds_key,
-            cds_url=cds_url or self.cds_url,
-        )
-
-        try:
-            if fmt in ("netcdf4", "netcdf", "nc"):
-                combined = open_era5_netcdf(downloaded, harmonize=True)
-            else:
-                combined = open_era5_grib(downloaded, harmonize=True)
-
-            if save_zarr:
-                name = zarr_name or f"era5_legacy_{s_str}_{e_str}.zarr"
-                zarr_path = self.output_dir / name
-                combined.to_zarr(zarr_path, mode="w", zarr_format=2, consolidated=True)
-                return zarr_path
-            return combined
-        except Exception as err:
-            raise RuntimeError(
-                f"Failed to decode legacy ERA5 files downloaded to {self.output_dir}: {err}"
-            ) from err
+                if fmt in ("netcdf4", "netcdf", "nc"):
+                    combined = open_era5_netcdf(downloaded, harmonize=True)
+                else:
+                    combined = open_era5_grib(downloaded, harmonize=True)
+                pbar.update(1)
+                return _finalize_dataset(combined)
+            except Exception as err:
+                if cache is not None:
+                    cache.mark_failed("legacy", err)
+                raise RuntimeError(
+                    f"Failed to decode legacy ERA5 files downloaded to {self.output_dir}: {err}"
+                ) from err
 

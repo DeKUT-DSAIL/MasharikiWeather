@@ -23,6 +23,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from ..resilience import clamp_max_workers
+
 logger = logging.getLogger("MasharikiWeather.Reanalysis.Common")
 
 # Regional centroids and bounding boxes (Africa is first-class priority, global supported)
@@ -218,7 +220,7 @@ class _BaseDatasetWrapper:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_ttl_hours = cache_ttl_hours
-        self.max_workers = max_workers
+        self.max_workers = clamp_max_workers(max_workers, default=8, max_cap=None, source="reanalysis")
         self.rate_limit_delay = rate_limit_delay
 
     def _get_cache_path(self, prefix: str, params: Dict[str, Any]) -> Path:

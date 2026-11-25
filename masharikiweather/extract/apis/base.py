@@ -17,11 +17,32 @@ import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from .resilience import (
+    GHCN_MAX_WORKERS_CAP,
+    MAX_WORKERS_CAP,
+    SOURCE_MAX_WORKERS_CAPS,
+    SOURCE_PROGRESS_PROFILES,
+    TAHMO_MAX_WORKERS_CAP,
+    ExtractionCache,
+    ExtractionEstimate,
+    ExtractionManifestSummary,
+    RateLimiter,
+    allocate_worker_budget,
+    append_to_zarr,
+    clamp_max_workers,
+    estimate_extraction,
+    get_available_memory_mb,
+    make_progress_bar,
+    retry_with_backoff,
+    stream_merge_parquet,
+)
 
 try:
     import pyproj
@@ -1505,3 +1526,83 @@ class BaseExtractor(ABC):
         Check that dataset complies with WGS 84 (EPSG:4326) CF grid_mapping conventions.
         """
         return validate_crs_compliance(ds=ds, strict=strict)
+
+    def progress_bar(
+        self,
+        iterable: Optional[Iterable[Any]] = None,
+        *,
+        unit: Optional[str] = None,
+        total: Optional[int] = None,
+        initial: int = 0,
+        desc: Optional[str] = None,
+        show_progress: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Create a source-aware progress bar bound to this extractor's source profile.
+        """
+        return make_progress_bar(
+            iterable=iterable,
+            source=self.extractor_name,
+            unit=unit,
+            total=total,
+            initial=initial,
+            desc=desc,
+            show_progress=show_progress,
+            **kwargs,
+        )
+
+    def create_cache(
+        self,
+        output_dir: Union[str, Path],
+        request_params: Dict[str, Any],
+        *,
+        resume: bool = True,
+        overwrite: bool = False,
+    ) -> ExtractionCache:
+        """
+        Create a thread-safe manifest-backed ExtractionCache for this extractor.
+        """
+        return ExtractionCache(
+            output_dir=output_dir,
+            source=self.extractor_name,
+            request_params=request_params,
+            resume=resume,
+            overwrite=overwrite,
+        )
+
+    def create_rate_limiter(
+        self,
+        requests_per_second: float,
+        burst: int = 1,
+    ) -> RateLimiter:
+        """
+        Create a thread-safe token-bucket RateLimiter.
+        """
+        return RateLimiter(requests_per_second=requests_per_second, burst=burst)
+
+    def estimate_extraction(
+        self,
+        start_date: Union[str, datetime, date, pd.Timestamp],
+        end_date: Union[str, datetime, date, pd.Timestamp],
+        bbox: Optional[Union[SpatialBoundingBox, Sequence[float]]] = None,
+        variables: Optional[Sequence[str]] = None,
+        stations: Optional[Sequence[str]] = None,
+        levels: Optional[Sequence[int]] = None,
+        chunk_days: int = 5,
+        use_arco: Optional[bool] = None,
+    ) -> ExtractionEstimate:
+        """
+        Compute a zero-network pre-flight extraction estimate for this extractor.
+        """
+        return estimate_extraction(
+            source=self.extractor_name,
+            start_date=start_date,
+            end_date=end_date,
+            bbox=bbox,
+            variables=variables,
+            stations=stations,
+            levels=levels,
+            chunk_days=chunk_days,
+            use_arco=use_arco,
+        )

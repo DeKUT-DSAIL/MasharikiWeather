@@ -10,6 +10,7 @@ subsetting, bounding box cropping, and local Zarr group compilation.
 from __future__ import annotations
 
 import calendar
+import gc
 import json
 import logging
 import os
@@ -30,6 +31,13 @@ from .base import (
     TemporalRange,
 )
 from .credentials import CredentialsError, CredentialsManager, parse_date, parse_date_range
+from .resilience import (
+    ExtractionEstimate,
+    append_to_zarr,
+    clamp_max_workers,
+    get_available_memory_mb,
+    retry_with_backoff,
+)
 
 logger = logging.getLogger("MasharikiWeather.IMERG")
 
@@ -340,7 +348,7 @@ class IMERGExtractor(BaseExtractor):
         self.password = password
         self.token = token
         self.env_file = env_file
-        self.max_workers = max_workers
+        self.max_workers = clamp_max_workers(max_workers, default=4, max_cap=None, source="imerg")
 
     def extract(
         self,
@@ -355,7 +363,12 @@ class IMERGExtractor(BaseExtractor):
         password: Optional[str] = None,
         token: Optional[str] = None,
         env_file: Optional[Union[str, Path]] = None,
-    ) -> IMERGResult:
+        show_progress: bool = True,
+        resume: bool = True,
+        overwrite: bool = False,
+        keep_cache: bool = False,
+        dry_run: bool = False,
+    ) -> Union[IMERGResult, ExtractionEstimate]:
         """
         Execute end-to-end IMERG search, non-interactive download, and Zarr compilation.
 
@@ -366,8 +379,6 @@ class IMERGExtractor(BaseExtractor):
         Precipitation Rate Variable: 'precipitationCal' / 'total_precipitation' (mm/hr).
         Output Zarr array shape: (T_time, Lat, Lon).
         """
-        import earthaccess
-
         box = bbox if bbox is not None else AFRICA_BBOX
         t_range = self.validate_temporal_range(start_date, end_date)
         if variables is not None:
@@ -375,6 +386,16 @@ class IMERGExtractor(BaseExtractor):
         self.validate_temporal_bounds(t_range, strict=False)
         s_dt = t_range.start.to_pydatetime()
         e_dt = t_range.end.to_pydatetime()
+
+        if dry_run:
+            return self.estimate_extraction(
+                start_date=start_date,
+                end_date=end_date,
+                bbox=box,
+                variables=variables,
+            )
+
+        import earthaccess
 
         _login_earthdata_non_interactive(
             username=username or self.username,
@@ -396,6 +417,22 @@ class IMERGExtractor(BaseExtractor):
             zarr_dir=zarr_root if convert_to_zarr else None,
         )
 
+        cache = self.create_cache(
+            self.output_dir,
+            request_params={
+                "start_date": s_dt.isoformat(),
+                "end_date": e_dt.isoformat(),
+                "bbox": box,
+                "variables": list(variables) if variables is not None else None,
+                "dataset_name": self.dataset_name,
+                "version": self.version,
+                "harmonize": harmonize,
+            },
+            resume=resume,
+            overwrite=overwrite,
+        )
+        rate_limiter = self.create_rate_limiter(requests_per_second=4.0, burst=4)
+
         monthly_windows = t_range.split_by_month()
         logger.info(
             "Searching IMERG granules for %s (%d monthly window(s))...",
@@ -404,46 +441,92 @@ class IMERGExtractor(BaseExtractor):
         )
 
         bbox_tuple = box.to_bbox_tuple()
+        discovered_total = 0
+        avail_mb = get_available_memory_mb()
+        granule_batch_size = 24 if (avail_mb is not None and avail_mb < 8000.0) else 48
 
-        for win_start, win_end in monthly_windows:
-            w_start_str = win_start.strftime("%Y-%m-%d %H:%M:%S")
-            w_end_str = win_end.strftime("%Y-%m-%d %H:%M:%S")
+        with self.progress_bar(
+            total=None,
+            unit="granule",
+            show_progress=show_progress,
+        ) as pbar:
+            for win_start, win_end in monthly_windows:
+                w_start_str = win_start.strftime("%Y-%m-%d %H:%M:%S")
+                w_end_str = win_end.strftime("%Y-%m-%d %H:%M:%S")
+                month_key = f"{win_start.year}_{win_start.month:02d}"
 
-            # Operational transition handling:
-            # IMERG V07 Final Run (GPM_3IMERGHH) ended around Oct 2025.
-            # Merge Final Run with Late Run (GPM_3IMERGHHL) for timestamps >= 2025-11-01.
-            if win_start >= IMERG_TRANSITION_DATE:
-                active_dataset = IMERG_LATE_RUN_NAME
-                logger.info(
-                    "Requested date %s exceeds IMERG Final Run cutoff; appending Late Run (GPM_3IMERGHHL) records.",
-                    win_start.strftime("%Y-%m-%d"),
-                )
-            else:
-                active_dataset = self.dataset_name
+                # Operational transition handling:
+                # IMERG V07 Final Run (GPM_3IMERGHH) ended around Oct 2025.
+                # Merge Final Run with Late Run (GPM_3IMERGHHL) for timestamps >= 2025-11-01.
+                if win_start >= IMERG_TRANSITION_DATE:
+                    active_dataset = IMERG_LATE_RUN_NAME
+                    logger.info(
+                        "Requested date %s exceeds IMERG Final Run cutoff; appending Late Run (GPM_3IMERGHHL) records.",
+                        win_start.strftime("%Y-%m-%d"),
+                    )
+                else:
+                    active_dataset = self.dataset_name
 
-            month_dir = raw_root / active_dataset / str(win_start.year) / f"{win_start.month:02d}"
-            month_dir.mkdir(parents=True, exist_ok=True)
+                month_dir = raw_root / active_dataset / str(win_start.year) / f"{win_start.month:02d}"
+                month_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info("Searching granules (%s): %s to %s", active_dataset, w_start_str, w_end_str)
-            try:
-                granules = earthaccess.search_data(
-                    short_name=active_dataset,
-                    version=self.version,
-                    temporal=(w_start_str, w_end_str),
-                    bounding_box=bbox_tuple,
-                )
-                if not granules:
-                    logger.warning("No granules discovered for %s-%02d (%s)", win_start.year, win_start.month, active_dataset)
-                    result.failed_months.append(f"{win_start.year}-{win_start.month:02d}")
+                if cache.is_done(month_key):
+                    cache.record_hit(month_key)
+                    existing_files = sorted(str(p) for p in month_dir.glob("*.HDF5"))
+                    result.files.extend(existing_files)
+                    discovered_total += len(existing_files)
+                    pbar.total = discovered_total
+                    pbar.set_postfix(month=month_key, cached=len(existing_files))
+                    pbar.update(len(existing_files))
                     continue
 
-                logger.info("Found %d granules. Downloading to %s...", len(granules), month_dir)
-                downloaded = earthaccess.download(granules, str(month_dir))
-                result.files.extend([str(f) for f in downloaded])
+                logger.info("Searching granules (%s): %s to %s", active_dataset, w_start_str, w_end_str)
+                try:
+                    granules = retry_with_backoff(
+                        lambda: earthaccess.search_data(
+                            short_name=active_dataset,
+                            version=self.version,
+                            temporal=(w_start_str, w_end_str),
+                            bounding_box=bbox_tuple,
+                        ),
+                        max_retries=3,
+                        base_delay=1.0,
+                        rate_limiter=rate_limiter,
+                    )
+                    if not granules:
+                        logger.warning("No granules discovered for %s-%02d (%s)", win_start.year, win_start.month, active_dataset)
+                        result.failed_months.append(f"{win_start.year}-{win_start.month:02d}")
+                        cache.mark_empty(month_key)
+                        pbar.set_postfix(month=month_key, granules=0)
+                        continue
 
-            except Exception as e:
-                logger.error("Download error for %d-%02d (%s): %s", win_start.year, win_start.month, active_dataset, e)
-                result.failed_months.append(f"{win_start.year}-{win_start.month:02d}")
+                    discovered_total += len(granules)
+                    pbar.total = discovered_total
+                    pbar.refresh()
+
+                    logger.info("Found %d granules. Downloading to %s in batches of %d...", len(granules), month_dir, granule_batch_size)
+                    downloaded_strs: List[str] = []
+                    for batch_start in range(0, len(granules), granule_batch_size):
+                        granule_batch = granules[batch_start : batch_start + granule_batch_size]
+                        downloaded_batch = retry_with_backoff(
+                            lambda b=granule_batch: earthaccess.download(b, str(month_dir)),
+                            max_retries=3,
+                            base_delay=1.0,
+                            rate_limiter=rate_limiter,
+                        )
+                        batch_strs = [str(f) for f in downloaded_batch]
+                        downloaded_strs.extend(batch_strs)
+                        result.files.extend(batch_strs)
+                        pbar.set_postfix(month=month_key, granules=len(downloaded_strs))
+                        pbar.update(len(batch_strs))
+                        gc.collect()
+
+                    cache.save_bytes(month_key, json.dumps(downloaded_strs).encode("utf-8"), suffix=".json")
+
+                except Exception as e:
+                    logger.error("Download error for %d-%02d (%s): %s", win_start.year, win_start.month, active_dataset, e)
+                    result.failed_months.append(f"{win_start.year}-{win_start.month:02d}")
+                    cache.mark_failed(month_key, e)
 
         if convert_to_zarr:
             zarr_root.mkdir(parents=True, exist_ok=True)
@@ -465,42 +548,67 @@ class IMERGExtractor(BaseExtractor):
 
                 store_path = zarr_root / str(y) / f"IMERG_{y}_{m:02d}.zarr"
                 store_path.parent.mkdir(parents=True, exist_ok=True)
+                zarr_key = f"zarr_{y}_{m:02d}"
+
+                if cache.is_done(zarr_key) and store_path.exists():
+                    cache.record_hit(zarr_key)
+                    result.zarr_stores.append(str(store_path))
+                    continue
 
                 logger.info("Compiling %d HDF5 granules into Zarr store: %s", len(h5_files), store_path)
                 try:
-                    dsets: List[xr.Dataset] = []
-                    for h5_p in h5_files:
-                        try:
-                            ds_one = _read_hdf5_granule(h5_p, bbox=box, variables=variables, harmonize=harmonize)
-                            dsets.append(ds_one)
-                        except Exception as rd_err:
-                            logger.warning("Skipping unreadable file %s: %s", h5_p, rd_err)
+                    if store_path.exists():
+                        shutil.rmtree(store_path, ignore_errors=True)
 
-                    if not dsets:
+                    wrote_any = False
+                    for batch_start in range(0, len(h5_files), granule_batch_size):
+                        batch_files = h5_files[batch_start : batch_start + granule_batch_size]
+                        dsets: List[xr.Dataset] = []
+                        for h5_p in batch_files:
+                            try:
+                                ds_one = _read_hdf5_granule(h5_p, bbox=box, variables=variables, harmonize=harmonize)
+                                dsets.append(ds_one)
+                            except Exception as rd_err:
+                                logger.warning("Skipping unreadable file %s: %s", h5_p, rd_err)
+
+                        if not dsets:
+                            continue
+
+                        combined = xr.concat(dsets, dim="time", coords="minimal", compat="override")
+                        _, uniq_idx = np.unique(combined.time.values, return_index=True)
+                        if len(uniq_idx) < combined.sizes["time"]:
+                            combined = combined.isel(time=np.sort(uniq_idx))
+                        combined = combined.sortby("time")
+
+                        combined.attrs["source_run"] = run_type
+                        combined.attrs["transition_boundary"] = "2025-11-01"
+
+                        for var in combined.variables:
+                            combined[var].encoding.clear()
+
+                        append_to_zarr(combined, store_path, append_dim="time", chunks=chunks)
+                        wrote_any = True
+
+                        for ds_one in dsets:
+                            ds_one.close()
+                        combined.close()
+                        del dsets, combined
+                        gc.collect()
+
+                    if not wrote_any:
                         continue
 
-                    combined = xr.concat(dsets, dim="time", coords="minimal", compat="override")
-                    # Deduplicate and sort by time
-                    _, uniq_idx = np.unique(combined.time.values, return_index=True)
-                    if len(uniq_idx) < combined.sizes["time"]:
-                        combined = combined.isel(time=np.sort(uniq_idx))
-                    combined = combined.sortby("time")
-
-                    # Attach transition provenance metadata
-                    combined.attrs["source_run"] = run_type
-                    combined.attrs["transition_boundary"] = "2025-11-01"
-
-                    chunked = combined.chunk(chunks)
-                    for var in chunked.variables:
-                        chunked[var].encoding.clear()
-
-                    chunked.to_zarr(str(store_path), mode="w", consolidated=True)
                     result.zarr_stores.append(str(store_path))
+                    cache.save_bytes(zarr_key, str(store_path).encode("utf-8"), suffix=".txt")
                     logger.info("Created Zarr store: %s", store_path)
 
                 except Exception as z_err:
                     err_msg = f"{y}_{m:02d}: {z_err}"
                     logger.error("Zarr compilation failure: %s", err_msg)
                     result.zarr_errors.append(err_msg)
+                    cache.mark_failed(zarr_key, z_err)
+
+        if not keep_cache:
+            cache.cleanup(keep_on_failure=True)
 
         return result

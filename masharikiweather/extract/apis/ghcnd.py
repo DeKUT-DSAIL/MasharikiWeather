@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import gc
 import hashlib
 import io
 import logging
@@ -2974,7 +2975,8 @@ def get_african_stations(
 # Unified BaseExtractor Integration
 # ==============================================================================
 
-from .base import BaseExtractor, SpatialBoundingBox, AFRICA_BBOX
+from .base import BaseExtractor, SpatialBoundingBox, AFRICA_BBOX, clamp_max_workers
+from .resilience import ExtractionEstimate, get_available_memory_mb, stream_merge_parquet
 
 # Standard parameters catalog inventory for NOAA GHCN
 DEFAULT_GHCN_PARAMETERS: List[Dict[str, Any]] = [
@@ -3050,6 +3052,7 @@ class GHCNExtractor(BaseExtractor):
         region: Optional[str] = "africa",
         stations: Optional[List[str]] = None,
         apply_qc: bool = True,
+        max_workers: Optional[int] = None,
     ) -> None:
         self.output_dir = pathlib.Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -3057,6 +3060,7 @@ class GHCNExtractor(BaseExtractor):
         self.region = region
         self.stations = stations
         self.apply_qc = apply_qc
+        self.max_workers = clamp_max_workers(max_workers, default=4, source="ghcnd")
 
     def extract(
         self,
@@ -3067,8 +3071,13 @@ class GHCNExtractor(BaseExtractor):
         stations: Optional[Sequence[str]] = None,
         format: str = "wide",
         save_parquet: bool = True,
+        show_progress: bool = True,
+        resume: bool = True,
+        overwrite: bool = False,
+        keep_cache: bool = False,
+        dry_run: bool = False,
         **kwargs: Any,
-    ) -> Union[pd.DataFrame, pathlib.Path]:
+    ) -> Union[pd.DataFrame, pathlib.Path, ExtractionEstimate]:
         """
         Execute GHCN observation extraction and optionally save to Parquet.
 
@@ -3097,6 +3106,127 @@ class GHCNExtractor(BaseExtractor):
 
         vars_to_fetch = list(variables) if variables is not None else ["t2m_max", "t2m_min", "precipitation"]
 
+        if dry_run:
+            return self.estimate_extraction(
+                start_date=start_date,
+                end_date=end_date,
+                bbox=bbox,
+                variables=vars_to_fetch,
+                stations=target_stations,
+            )
+
+        s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
+        e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
+        res_str = self.resolution.lower()
+        out_file = self.output_dir / f"ghcn_{res_str}_{s_str}_{e_str}.parquet"
+
+        cache = self.create_cache(
+            self.output_dir,
+            request_params={
+                "start_date": s_str,
+                "end_date": e_str,
+                "bbox": bbox,
+                "variables": vars_to_fetch,
+                "stations": sorted(target_stations) if target_stations is not None else None,
+                "resolution": self.resolution,
+                "region": self.region,
+                "format": format,
+                "apply_qc": self.apply_qc,
+            },
+            resume=resume,
+            overwrite=overwrite,
+        )
+
+        if save_parquet and resume and not overwrite and out_file.exists() and cache.is_done("ghcn_data"):
+            cache.record_hit("ghcn_data")
+            if not keep_cache:
+                cache.cleanup(keep_on_failure=True)
+            return out_file
+
+        if cache.is_done("ghcn_data") and not save_parquet:
+            cache.record_hit("ghcn_data")
+            df = cache.load_parquet("ghcn_data")
+            if not keep_cache:
+                cache.cleanup(keep_on_failure=True)
+            return df
+
+        avail_mb = get_available_memory_mb()
+        batch_size = 10 if (avail_mb is not None and avail_mb < 8000.0) else 25
+        start_str = str(pd.to_datetime(start_date).strftime("%Y-%m-%d"))
+        end_str = str(pd.to_datetime(end_date).strftime("%Y-%m-%d"))
+
+        def _prepare_parquet_df(frame: pd.DataFrame) -> pd.DataFrame:
+            if isinstance(frame.columns, pd.MultiIndex):
+                flat_cols = ["_".join(str(c) for c in col).strip("_") for col in frame.columns]
+                flat_df = frame.copy()
+                flat_df.columns = flat_cols
+                return flat_df.reset_index()
+            return frame.reset_index()
+
+        if save_parquet and target_stations and len(target_stations) > batch_size:
+            batch_paths: List[pathlib.Path] = []
+            with self.progress_bar(
+                total=len(target_stations),
+                unit="station",
+                show_progress=show_progress,
+            ) as pbar:
+                for batch_idx in range(0, len(target_stations), batch_size):
+                    batch_stations = target_stations[batch_idx : batch_idx + batch_size]
+                    batch_key = f"batch_{batch_idx:04d}"
+                    pbar.set_postfix(resolution=self.resolution, batch=batch_idx // batch_size + 1)
+
+                    if cache.is_done(batch_key):
+                        cache.record_hit(batch_key)
+                        cached_p = cache.get_path(batch_key)
+                        if cached_p is not None:
+                            batch_paths.append(cached_p)
+                        pbar.update(len(batch_stations))
+                        continue
+
+                    ghcn_batch = GHCN(
+                        resolution=self.resolution,
+                        region=None,
+                        stations=batch_stations,
+                        bounds=target_bounds,
+                        cache_dir=str(self.output_dir / "cache"),
+                        apply_qc=self.apply_qc,
+                        async_workers=self.max_workers,
+                    )
+                    try:
+                        batch_df = ghcn_batch(
+                            variables=vars_to_fetch,
+                            start_date=start_str,
+                            end_date=end_str,
+                            format=format,
+                            apply_qc=self.apply_qc,
+                            **kwargs,
+                        )
+                    except Exception as exc:
+                        cache.mark_failed(batch_key, exc)
+                        raise
+
+                    if batch_df.empty:
+                        cache.mark_empty(batch_key)
+                    else:
+                        flat_batch = _prepare_parquet_df(batch_df)
+                        saved_batch = cache.save_parquet(batch_key, flat_batch)
+                        batch_paths.append(saved_batch)
+                        del flat_batch
+
+                    del batch_df, ghcn_batch
+                    gc.collect()
+                    pbar.update(len(batch_stations))
+
+            stream_merge_parquet(
+                batch_paths,
+                out_file,
+                batch_size=batch_size,
+                delete_inputs=False,
+            )
+            if not keep_cache:
+                cache.cleanup(keep_on_failure=True)
+            return out_file
+
         ghcn_inst = GHCN(
             resolution=self.resolution,
             region=self.region if not target_stations and not target_bounds else None,
@@ -3104,32 +3234,63 @@ class GHCNExtractor(BaseExtractor):
             bounds=target_bounds,
             cache_dir=str(self.output_dir / "cache"),
             apply_qc=self.apply_qc,
+            async_workers=self.max_workers,
         )
 
-        df = ghcn_inst(
-            variables=vars_to_fetch,
-            start_date=str(pd.to_datetime(start_date).strftime("%Y-%m-%d")),
-            end_date=str(pd.to_datetime(end_date).strftime("%Y-%m-%d")),
-            format=format,
-            apply_qc=self.apply_qc,
-            **kwargs,
-        )
+        total_units = len(target_stations) if target_stations else None
+        with self.progress_bar(
+            total=total_units,
+            unit="station",
+            show_progress=show_progress,
+        ) as pbar:
+            pbar.set_postfix(resolution=self.resolution, phase="fetching")
+            try:
+                df = ghcn_inst(
+                    variables=vars_to_fetch,
+                    start_date=start_str,
+                    end_date=end_str,
+                    format=format,
+                    apply_qc=self.apply_qc,
+                    **kwargs,
+                )
+            except Exception as exc:
+                cache.mark_failed("ghcn_data", exc)
+                raise
+
+            n_stations_done = (
+                len(target_stations)
+                if target_stations
+                else (
+                    int(df["station"].nunique())
+                    if "station" in df.columns
+                    else max(1, len(df.columns))
+                )
+            )
+            if total_units is None:
+                pbar.total = n_stations_done
+                pbar.refresh()
+            pbar.set_postfix(resolution=self.resolution, stations=n_stations_done)
+            pbar.update(total_units if total_units is not None else n_stations_done)
+
+        if df.empty:
+            cache.mark_empty("ghcn_data")
+        else:
+            try:
+                cache.save_parquet("ghcn_data", df)
+            except Exception:
+                pass
 
         if save_parquet:
-            s_str = pd.to_datetime(start_date).strftime("%Y%m%d")
-            e_str = pd.to_datetime(end_date).strftime("%Y%m%d")
-            res_str = self.resolution.lower()
-            out_file = self.output_dir / f"ghcn_{res_str}_{s_str}_{e_str}.parquet"
-            if isinstance(df.columns, pd.MultiIndex):
-                # Flatten multiindex for parquet compatibility
-                flat_cols = ['_'.join(str(c) for c in col).strip('_') for col in df.columns]
-                flat_df = df.copy()
-                flat_df.columns = flat_cols
-                flat_df.reset_index().to_parquet(out_file, index=False)
-            else:
-                df.reset_index().to_parquet(out_file, index=False)
+            flat_df = _prepare_parquet_df(df)
+            flat_df.to_parquet(out_file, index=False)
+            del flat_df, df
+            gc.collect()
+            if not keep_cache:
+                cache.cleanup(keep_on_failure=True)
             return out_file
 
+        if not keep_cache:
+            cache.cleanup(keep_on_failure=True)
         return df
 
     def generate_metadata_catalogs(
