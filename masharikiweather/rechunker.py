@@ -60,7 +60,7 @@ def rechunk_dataset(input_path: str, output_path: str, time_chunks: int = DEFAUL
     encoding = get_zarr_encoding(ds, time_chunks)
     
     # Ensure parent directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
     # Atomic Write Pattern: Ensure we don't leave partial Zarrs
     temp_path = f"{output_path}.tmp"

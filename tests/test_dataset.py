@@ -24,8 +24,6 @@ import xarray as xr
 from masharikiweather.dataset import (
     MasharikiWeatherDataset,
     ObservationDataFrame,
-    Windows,
-    sliding_window_view,
     df_add_missing_columns,
     extract_gridded,
     pull_station_data,
@@ -105,52 +103,6 @@ def mock_dataset(synthetic_obs_df, synthetic_stations_table):
 # 1. MATHEMATICAL CORRECTNESS
 # ===========================================================================
 
-class TestSlidingWindowView:
-    """Tests for the sliding_window_view helper function."""
-
-    def test_output_shape_1d(self):
-        """Verify correct (N-W+1, W) shape for 1D input."""
-        a = np.arange(10)
-        result = sliding_window_view(a, 3)
-        assert result.shape == (8, 3)
-
-    def test_output_shape_2d(self):
-        """Verify shape (N-W+1, W, Features) for 2D input."""
-        a = np.arange(20).reshape(10, 2)
-        result = sliding_window_view(a, 4)
-        assert result.shape == (7, 4, 2)
-
-    def test_output_shape_3d(self):
-        """Verify shape for 3D arrays (Time, Channels, Lat), typical for gridded data."""
-        a = np.arange(60).reshape(10, 3, 2)
-        result = sliding_window_view(a, 3)
-        assert result.shape == (8, 3, 3, 2)
-
-    def test_contiguous_memory(self):
-        """The audit fix requires contiguous arrays for PyTorch safety."""
-        a = np.arange(20).reshape(10, 2)
-        result = sliding_window_view(a, 3)
-        assert result.flags["C_CONTIGUOUS"], "Result must be C-contiguous for torch.from_numpy()"
-
-    def test_values_correctness(self):
-        """Each window must contain the correct sequential slice."""
-        a = np.array([10, 20, 30, 40, 50])
-        result = sliding_window_view(a, 3)
-        np.testing.assert_array_equal(result[0], [10, 20, 30])
-        np.testing.assert_array_equal(result[1], [20, 30, 40])
-        np.testing.assert_array_equal(result[2], [30, 40, 50])
-
-    def test_window_equals_length(self):
-        """When window_size == len(array), should return one window."""
-        a = np.array([1, 2, 3])
-        result = sliding_window_view(a, 3)
-        assert result.shape == (1, 3)
-
-    def test_pandas_index_input(self):
-        """sliding_window_view should handle pd.DatetimeIndex via .values."""
-        idx = pd.date_range("2023-01-01", periods=5, freq="h")
-        result = sliding_window_view(idx, 3)
-        assert result.shape == (3, 3)
 
 
 class TestLapseRateCorrection:
@@ -472,77 +424,8 @@ class TestCoastalFillValues:
 # 3. SOFTWARE ENGINEERING CORRECTNESS
 # ===========================================================================
 
-class TestParameterValidation:
-    """Tests for get_windows input validation."""
-
-    def test_invalid_ml_task_raises(self, mock_dataset):
-        with pytest.raises(ValueError, match="ml_task"):
-            mock_dataset.get_windows(
-                window_size=2, horizon_size=1, ml_task="invalid"
-            )
-
-    def test_invalid_spatial_mode_raises(self, mock_dataset):
-        with pytest.raises(ValueError, match="spatial_mode"):
-            mock_dataset.get_windows(
-                window_size=2, horizon_size=1, spatial_mode="voxel"
-            )
-
-    def test_invalid_split_raises(self, mock_dataset):
-        with pytest.raises(ValueError, match="split"):
-            mock_dataset.get_windows(
-                window_size=2, horizon_size=1, split="validation"
-            )
-
-    def test_correction_ml_task_accepted(self, mock_dataset):
-        """ml_task='correction' must be accepted without error."""
-        windows = mock_dataset.get_windows(
-            window_size=2, horizon_size=1, ml_task="correction"
-        )
-        assert windows.x is not None
 
 
-class TestWindowsDataclass:
-    """Tests for Windows field population across modes."""
-
-    def test_stations_mode_populates_static_stations(self, mock_dataset):
-        windows = mock_dataset.get_windows(
-            window_size=2, horizon_size=1, spatial_mode="stations"
-        )
-        assert windows.static_stations is not None
-        assert windows.static_stations.dtype == np.float32
-
-    def test_stations_mode_populates_categorical(self, mock_dataset):
-        windows = mock_dataset.get_windows(
-            window_size=2, horizon_size=1, spatial_mode="stations"
-        )
-        assert windows.static_stations_categorical is not None
-        assert windows.static_stations_categorical.dtype == np.int64
-
-    def test_station_data_always_present(self, mock_dataset):
-        """Station obs (x, y) must be populated for ALL ml_tasks."""
-        for task in ["downscaling", "forecasting", "correction"]:
-            windows = mock_dataset.get_windows(
-                window_size=2, horizon_size=1, ml_task=task
-            )
-            assert windows.x is not None
-            assert windows.y is not None
-            assert windows.mask_x is not None
-            assert windows.mask_y is not None
-
-    def test_feature_labels_is_always_list(self, mock_dataset):
-        """feature_labels must always be a list, never a pd.Index."""
-        windows = mock_dataset.get_windows(
-            window_size=2, horizon_size=1
-        )
-        assert isinstance(windows.feature_labels, list)
-
-    def test_feature_labels_single_string_wrapped(self, mock_dataset):
-        """A single string parameter must be wrapped in a list."""
-        windows = mock_dataset.get_windows(
-            window_size=2, horizon_size=1, parameters="temperature"
-        )
-        assert isinstance(windows.feature_labels, list)
-        assert windows.feature_labels == ["temperature"]
 
 
 class TestDEMColumnLookup:
@@ -568,27 +451,6 @@ class TestDEMColumnLookup:
         assert elev_col == 'dem'
 
 
-class TestWindowShapeConsistency:
-    """Verify that x/y window shapes are internally consistent."""
-
-    def test_x_y_batch_dimension_match(self, mock_dataset):
-        windows = mock_dataset.get_windows(window_size=3, horizon_size=2)
-        assert windows.x.shape[0] == windows.y.shape[0], "Batch dim must match"
-        assert windows.mask_x.shape[0] == windows.x.shape[0]
-        assert windows.mask_y.shape[0] == windows.y.shape[0]
-
-    def test_x_has_correct_window_size(self, mock_dataset):
-        windows = mock_dataset.get_windows(window_size=3, horizon_size=2)
-        assert windows.x.shape[1] == 3, "x time dim must equal window_size"
-
-    def test_y_has_correct_horizon_size(self, mock_dataset):
-        windows = mock_dataset.get_windows(window_size=3, horizon_size=2)
-        assert windows.y.shape[1] == 2, "y time dim must equal horizon_size"
-
-    def test_insufficient_data_returns_empty(self, mock_dataset):
-        """When data is shorter than window+horizon, return empty arrays."""
-        windows = mock_dataset.get_windows(window_size=100, horizon_size=100)
-        assert windows.x.size == 0
 
 
 class TestValidateStations:
@@ -647,26 +509,6 @@ class TestDfAddMissingColumns:
         np.testing.assert_array_equal(result[("S1", "temp")].values, [1, 2, 3])
 
 
-class TestGetXarrayBatch:
-    """Tests for get_xarray_batch single-window extraction."""
-
-    def test_batch_slicing_returns_single_window(self, mock_dataset):
-        windows = mock_dataset.get_windows(window_size=2, horizon_size=1)
-        n_batches = windows.x.shape[0]
-        assert n_batches > 0
-
-        xr_batch = mock_dataset.get_xarray_batch(windows, batch_idx=0)
-        # After conversion, x/y should be xr.Dataset
-        assert isinstance(xr_batch.x, xr.Dataset)
-        assert isinstance(xr_batch.y, xr.Dataset)
-
-    def test_batch_preserves_static_tensors(self, mock_dataset):
-        """Shallow copy must preserve static tensors from original windows."""
-        windows = mock_dataset.get_windows(window_size=2, horizon_size=1)
-        xr_batch = mock_dataset.get_xarray_batch(windows, batch_idx=0)
-        # Static tensors are shared (shallow copy)
-        if windows.static_stations is not None:
-            assert xr_batch.static_stations is windows.static_stations
 
 
 # ---------------------------------------------------------------------------

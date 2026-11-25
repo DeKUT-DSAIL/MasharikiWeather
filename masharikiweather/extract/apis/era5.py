@@ -1970,6 +1970,7 @@ class ERA5Extractor(BaseExtractor):
                 return zarr_path
             return combined
         except Exception as err:
-            logger.warning("File decoding failed (%s), returning downloaded files directory.", err)
-            return self.output_dir
+            raise RuntimeError(
+                f"Failed to decode legacy ERA5 files downloaded to {self.output_dir}: {err}"
+            ) from err
 

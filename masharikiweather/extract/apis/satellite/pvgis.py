@@ -452,7 +452,7 @@ class PVGIS(_BaseDatasetWrapper):
         if start_date is None and start_year is not None:
             start_date = f"{int(start_year)}-01-01"
         if end_date is None and end_year is not None:
-            end_date = f"{int(end_year)}-01-07" if start_year == end_year else f"{int(end_year)}-12-31"
+            end_date = f"{int(end_year)}-12-31"
         s_date = _parse_date(start_date, "2020-01-01")
         e_date = _parse_date(end_date, "2020-01-07")
         start_yr = int(s_date[:4])

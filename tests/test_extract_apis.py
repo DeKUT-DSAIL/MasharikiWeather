@@ -2405,3 +2405,60 @@ class TestDecomposedSatelliteModules:
             locs = mock_inst.call_args[1]["locations"]
             assert len(locs) == 9
 
+
+
+class TestPre020CoreBugFixes:
+    """Tests for core extraction, credentials, metadata, and storage bug fixes."""
+
+    def test_credentials_inspect_status_cds_accepts_env_file(self, tmp_path: Path) -> None:
+        env_p = tmp_path / ".env"
+        env_p.write_text("CDSAPI_KEY=test-cds-key\n", encoding="utf-8")
+        status = CredentialsManager.inspect_status(env_file=env_p)
+        assert status["Copernicus CDS"]["available"] is True
+
+    def test_ghcn_clean_daily_preserves_99_9_precipitation(self) -> None:
+        from masharikiweather.extract.apis.ghcnd import clean_daily_dataframe
+
+        df = pd.DataFrame({
+            "variable": ["total_precipitation", "total_precipitation"],
+            "observation": [99.9, 9999.0],
+        })
+        cleaned = clean_daily_dataframe(df, apply_qc=True)
+        assert len(cleaned) == 1
+        assert cleaned["observation"].iloc[0] == pytest.approx(99.9)
+
+    def test_ghcn_metadata_integer_year_parsing(self, tmp_path: Path) -> None:
+        from masharikiweather.extract.apis.ghcnd import GHCNExtractor
+
+        ext = GHCNExtractor(output_dir=tmp_path)
+        mock_stations = pd.DataFrame([
+            {
+                "ID": "KE000063612",
+                "NAME": "Lodwar",
+                "LAT": 3.12,
+                "LON": 35.62,
+                "ELEV": 515.0,
+                "first_year": 1980,
+                "last_year": 2023,
+            }
+        ])
+        inst_p, _ = ext.generate_metadata_catalogs(stations_df=mock_stations, output_dir=tmp_path / "meta")
+        df_inst = pd.read_parquet(inst_p)
+        assert pd.to_datetime(df_inst["start_date"].iloc[0]).year == 1980
+        assert pd.to_datetime(df_inst["end_date"].iloc[0]).year == 2023
+
+    def test_rechunk_dataset_bare_relative_output_path(self, tmp_path: Path, monkeypatch: Any) -> None:
+        import xarray as xr
+        from masharikiweather.rechunker import rechunk_dataset
+
+        in_zarr = tmp_path / "in.zarr"
+        ds = xr.Dataset(
+            {"t2m": (("time", "lat", "lon"), np.ones((4, 2, 2), dtype=np.float32))},
+            coords={"time": pd.date_range("2023-01-01", periods=4, freq="h"), "lat": [0.0, 1.0], "lon": [36.0, 37.0]},
+        )
+        ds.to_zarr(str(in_zarr), mode="w", zarr_format=2, consolidated=True)
+
+        monkeypatch.chdir(tmp_path)
+        ok = rechunk_dataset(str(in_zarr), "out.zarr", time_chunks=2)
+        assert ok is True
+        assert (tmp_path / "out.zarr").exists()

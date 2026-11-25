@@ -286,8 +286,8 @@ def clean_daily_dataframe(df: pd.DataFrame, apply_qc: bool = True) -> pd.DataFra
     obs = pd.to_numeric(clean["observation"], errors="coerce")
     var = clean["variable"].astype(str).str.lower() if "variable" in clean.columns else pd.Series("", index=clean.index)
 
-    # Discard sentinel missing values
-    invalid_sentinel = obs.isin([-9999, 9999, -999.9, 999.9, -99.9, 99.9])
+    # Discard sentinel missing values (avoid flagging valid 99.9 mm daily rainfall)
+    invalid_sentinel = obs.isin([-9999, 9999, -999.9, 999.9])
     clean.loc[invalid_sentinel, "observation"] = np.nan
 
     # Temperature bounds (TMAX, TMIN, TAVG, TOBS)
@@ -3212,9 +3212,15 @@ class GHCNExtractor(BaseExtractor):
                 first_y = row.get("first_year")
                 last_y = row.get("last_year")
                 if first_y and pd.notna(first_y) and str(first_y).strip() != "":
-                    row_dict["start_date"] = pd.to_datetime(first_y, errors="coerce")
+                    fy_str = str(int(float(first_y))) if str(first_y).strip().isdigit() else str(first_y)
+                    if fy_str.isdigit() and len(fy_str) == 4:
+                        fy_str = f"{fy_str}-01-01"
+                    row_dict["start_date"] = pd.to_datetime(fy_str, errors="coerce")
                 if last_y and pd.notna(last_y) and str(last_y).strip() != "":
-                    row_dict["end_date"] = pd.to_datetime(last_y, errors="coerce")
+                    ly_str = str(int(float(last_y))) if str(last_y).strip().isdigit() else str(last_y)
+                    if ly_str.isdigit() and len(ly_str) == 4:
+                        ly_str = f"{ly_str}-12-31"
+                    row_dict["end_date"] = pd.to_datetime(ly_str, errors="coerce")
 
                 install_rows.append(row_dict)
 

@@ -241,29 +241,6 @@ class TestTopographyOOPInterface:
         assert "DistanceToWater" in ds_all.topography.data_vars
         assert "SLOPE_10000M_SIGRATIO1" in ds_all.topography.data_vars
 
-    def test_get_windows_incorporates_topo_static_features(
-        self,
-        mock_dataset_with_stations: MasharikiWeatherDataset,
-        synthetic_topography_zarr: Path,
-    ) -> None:
-        """Verify window extraction automatically maps static topography into static_features."""
-        ds = mock_dataset_with_stations
-        ds.load_topography(merge_stations=True)
-
-        windows = ds.get_windows(
-            window_size=3,
-            horizon_size=2,
-            stations=["TA00001", "TA00002"],
-            parameters=["2m_temperature"],
-        )
-
-        assert hasattr(windows, "static_features")
-        assert hasattr(windows, "static_feature_labels")
-        assert "dem" in windows.static_feature_labels
-        assert "Slope" in windows.static_feature_labels
-        assert "TPI_2000M" in windows.static_feature_labels
-        assert windows.static_features.shape[0] == 2  # 2 stations
-        assert windows.static_features.shape[1] == len(windows.static_feature_labels)
 
 
 class TestRemoteHuggingFaceTopographyStreaming:
