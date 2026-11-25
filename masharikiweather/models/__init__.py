@@ -1,3 +1,0 @@
-"""
-MasharikiWeather Models Package.
-"""
