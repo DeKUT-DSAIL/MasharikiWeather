@@ -529,7 +529,7 @@ class TAHMOExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/tahmo",
+        output_dir: Union[str, Path] = "./mashariki-data/obs/tahmo",
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         env_file: Optional[Union[str, Path]] = None,
@@ -546,7 +546,7 @@ class TAHMOExtractor(BaseExtractor):
 
         Parameters
         ----------
-        output_dir : Union[str, Path], default "./data/tahmo"
+        output_dir : Union[str, Path], default "./mashariki-data/obs/tahmo"
             Directory path where extracted station observations and metadata will be saved.
         api_key : Optional[str]
             TAHMO DataHub API key.

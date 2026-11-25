@@ -3045,7 +3045,7 @@ class GHCNExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, pathlib.Path] = "./data/ghcn",
+        output_dir: Union[str, pathlib.Path] = "./mashariki-data/obs/ghcn",
         resolution: str = "daily",
         region: Optional[str] = "africa",
         stations: Optional[List[str]] = None,

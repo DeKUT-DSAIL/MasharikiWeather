@@ -62,7 +62,7 @@ If reading from online Hugging Face stores, you can authenticate via the CLI (`h
 
 ### Data Extraction
 
-Before initializing `MasharikiWeatherDataset`, pull station observations and gridded fields to local storage (`./mashariki_data`). You do not need to know station codes in advance; extractors discover stations automatically within a bounding box (`EAST_AFRICA_BBOX`, `KENYA_BBOX`, or `AFRICA_BBOX`).
+Before initializing `MasharikiWeatherDataset`, pull station observations and gridded fields to local storage (`./mashariki-data`). You do not need to know station codes in advance; extractors discover stations automatically within a bounding box (`EAST_AFRICA_BBOX`, `KENYA_BBOX`, or `AFRICA_BBOX`).
 
 ```python
 from masharikiweather import pull_weather_data
@@ -76,24 +76,24 @@ pull_weather_data(
     bbox=EAST_AFRICA_BBOX,
     station_source=["tahmo", "ghcn"],
     gridded_source=["era5"],
-    output_dir="./mashariki_data",
+    output_dir="./mashariki-data",
     max_workers=4,
 )
 
 # Option B: Direct TAHMO extraction with concurrent workers
 # Writes semi-wide yearly Parquet ({year}.parquet) by default and optional ordinal-slot Zarr
-tahmo = TAHMOExtractor(output_dir="./mashariki_data/obs/tahmo", max_workers=4)
+tahmo = TAHMOExtractor(output_dir="./mashariki-data/obs/tahmo", max_workers=4)
 tahmo.extract(
     start_date="2023-01-01",
     end_date="2023-06-30",
     bbox=EAST_AFRICA_BBOX,
-    save_parquet=True,   # writes ./mashariki_data/obs/tahmo/2023.parquet
+    save_parquet=True,   # writes ./mashariki-data/obs/tahmo/2023.parquet
     save_zarr=False,     # set True to also write an ordinal-slot Zarr store
     generate_metadata=True,
 )
 ```
 
-Extraction populates `./mashariki_data/obs/{source}/{year}.parquet`, `./mashariki_data/gridded/{source}/`, and `./mashariki_data/obs/{source}/metadata/{installation,parameters}.parquet`, which `MasharikiWeatherDataset` loads directly.
+Extraction populates `./mashariki-data/obs/{source}/{year}.parquet`, `./mashariki-data/gridded/{source}/`, and `./mashariki-data/obs/{source}/metadata/{installation,parameters}.parquet`, which `MasharikiWeatherDataset` loads directly.
 
 ### Quickstart
 
@@ -103,7 +103,7 @@ import matplotlib.pyplot as plt
 
 # 1. Initialize dataset with local storage and physical temporal frequency
 dataset = MasharikiWeatherDataset(
-    root="./mashariki_data",
+    root="./mashariki-data",
     source_obs=["tahmo", "ghcn"],
     years=[2023, 2024],
     freq="h",

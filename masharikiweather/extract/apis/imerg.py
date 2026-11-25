@@ -322,7 +322,7 @@ class IMERGExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/imerg",
+        output_dir: Union[str, Path] = "./mashariki-data/gridded/imerg",
         dataset_name: str = "GPM_3IMERGHH",
         version: str = "07",
         username: Optional[str] = None,

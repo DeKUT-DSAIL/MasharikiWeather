@@ -325,7 +325,7 @@ class CDSInSituExtractor(BaseExtractor):
 
     def __init__(
         self,
-        output_dir: Union[str, Path] = "./data/cds_insitu",
+        output_dir: Union[str, Path] = "./mashariki-data/obs/cds-insitu",
         variables: Optional[Sequence[str]] = None,
         dataset_name: str = "insitu-observations-surface-land",
         time_aggregation: str = "daily",
