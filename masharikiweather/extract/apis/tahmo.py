@@ -1705,7 +1705,7 @@ class TAHMOExtractor(BaseExtractor):
                                     station_files.append((code, p))
                                     if parquet_layout == "both":
                                         results[f"{code}_{year}"] = p
-                                pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                                pbar.set_postfix(cached=cached_count, fetched=fetched_count)
                                 pbar.update(1)
                     else:
                         for code in pending_codes:
@@ -1715,7 +1715,7 @@ class TAHMOExtractor(BaseExtractor):
                                 station_files.append((code, p))
                                 if parquet_layout == "both":
                                     results[f"{code}_{year}"] = p
-                            pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                            pbar.set_postfix(cached=cached_count, fetched=fetched_count)
                             pbar.update(1)
 
                 station_files.sort(key=lambda item: item[0])
@@ -1819,7 +1819,7 @@ class TAHMOExtractor(BaseExtractor):
                                 results[code] = p
                             elif df is not None and not save_parquet:
                                 results[code] = df
-                            pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                            pbar.set_postfix(cached=cached_count, fetched=fetched_count)
                             pbar.update(1)
                 else:
                     for code in pending_codes:
@@ -1831,7 +1831,7 @@ class TAHMOExtractor(BaseExtractor):
                             results[code] = p
                         elif df is not None and not save_parquet:
                             results[code] = df
-                        pbar.set_postfix(station=code, cached=cached_count, fetched=fetched_count)
+                        pbar.set_postfix(cached=cached_count, fetched=fetched_count)
                         pbar.update(1)
 
         if save_zarr and dataframes:
