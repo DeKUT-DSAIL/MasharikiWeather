@@ -381,7 +381,7 @@ def list_open_meteo_parameters(category: Optional[str] = None) -> pd.DataFrame:
 
 def get_open_meteo_metadata() -> Dict[str, Any]:
     """
-    Retrieve comprehensive scientific metadata regarding Open-Meteo global weather and reanalysis.
+    Retrieve full scientific metadata regarding Open-Meteo global weather and reanalysis.
 
     Returns
     -------

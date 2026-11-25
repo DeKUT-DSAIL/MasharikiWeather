@@ -279,7 +279,7 @@ def search_parameters(query: Optional[str] = None) -> pd.DataFrame:
 
 def get_parameter_latency() -> pd.DataFrame:
     """
-    Return a comprehensive overview of expected data latency across variable streams.
+    Return a full overview of expected data latency across variable streams.
 
     Returns
     -------
@@ -330,7 +330,7 @@ def get_latest_available_dates(
       Derived from the NASA CERES SYN1deg multi-satellite product
       (Terra + Aqua + 5 geostationary satellites).
       Latency: ~2 to 3 months (~60 to 90 days) behind real-time due to
-      rigorous cross-satellite calibration and monthly batch releases.
+      standard cross-satellite calibration and monthly batch releases.
 
     Parameters
     ----------

@@ -111,7 +111,7 @@ print("Target Tensor Shape:", windows.targets.shape)  # (N_samples, T_out, N_sta
 ```text
 docs/
 |-- README.md             # This document (GitHub root index for docs/)
-|-- index.md              # Sphinx / ReadTheDocs table of contents
+|-- index.md              # Sphinx table of contents
 |-- conf.py               # Sphinx configuration with autodoc and myst-parser
 |-- credentials.md        # Step 1: Environment Setup & API Authentication
 |-- extraction.md         # Step 2: Data Extraction Pipelines (TAHMO, ERA5, Satellites)

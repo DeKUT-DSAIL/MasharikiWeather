@@ -386,7 +386,7 @@ CANONICAL_VARIABLE_METADATA: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Register TAHMO canonical synonyms into CANONICAL_VARIABLE_METADATA for seamless cross-resolution
+# Register TAHMO canonical synonyms into CANONICAL_VARIABLE_METADATA for direct cross-resolution
 TAHMO_CANONICAL_SYNONYMS: Dict[str, str] = {
     "electrical_conductivity": "soil_electrical_conductivity",
     "humidity_sensor_temperature": "relative_humidity_sensor_temperature",
@@ -734,7 +734,7 @@ def _validate_source_parameters(
 
     Mathematical docstring:
         Checks requested parameter subset V against source capabilities set S_source.
-        For every v in V not in S_source, emits an explicit UserWarning.
+        For every v in V not in S_source, emits an direct UserWarning.
 
     Args:
         source: Name of the gridded or satellite data product.
@@ -807,7 +807,7 @@ class ObservationDataFrame(pd.DataFrame):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """
-        Initialize ObservationDataFrame and enforce strict 2-level MultiIndex names.
+        Initialize ObservationDataFrame and enforce fixed 2-level MultiIndex names.
 
         Mathematical docstring:
             Ensures columns have MultiIndex(names=['station_id', 'parameter']) when 2-level.
@@ -1349,7 +1349,7 @@ def df_add_missing_columns(
 
 class MasharikiWeatherDataset:
     """
-    A comprehensive dataset class for the Mashariki Weather dataset, 
+    A full dataset class for the Mashariki Weather dataset, 
     providing direct access to historical weather observations and 
     topographical data for the African continent.
     """ 
@@ -1469,7 +1469,7 @@ class MasharikiWeatherDataset:
         Primary data loading path is local disk (root_dir), reading Parquet files in
         root_dir/obs/{source} and Zarr groups in root_dir/gridded/{group}.
         If local partition files are missing, programmatically triggers Dagster extraction.
-        Remote HuggingFace streaming is opt-in via use_hf=True or explicit token provision.
+        Remote HuggingFace streaming is opt-in via use_hf=True or direct token provision.
 
         Args:
             repo_id (str): Hugging Face repository ID.
@@ -1488,7 +1488,7 @@ class MasharikiWeatherDataset:
             tabular_parquet_path (Optional[str]): Path to cached tabular observations parquet file.
             rechunk (bool): Whether to rechunk gridded stores to daily steps upon open.
             swap (bool): Whether to perform atomic file swap upon rechunking.
-            use_hf (bool): Whether to explicitly query remote HuggingFace filesystem if local files are absent.
+            use_hf (bool): Whether to directly query remote HuggingFace filesystem if local files are absent.
             root (Optional[Union[str, Path]]): Convenience alias for root_dir.
             prefer_zarr (bool): Whether to prioritize Zarr reading over Parquet for TAHMO observations.
             extended_topo_vars (Optional[Union[str, Sequence[str]]]): Static topographic descriptors to load
@@ -2449,11 +2449,11 @@ class MasharikiWeatherDataset:
 
     def _load_local_registries(self) -> None:
         """
-        Load metadata catalogs scoped strictly to active observation sources.
+        Load metadata catalogs scoped only to active observation sources.
 
         Prioritizes source-specific catalogs (obs/{src}/metadata/); concatenates
         catalogs across multi-source selections; falls back to global catalogs
-        with strict source-filtering on network and parameters.
+        with fixed source-filtering on network and parameters.
         """
         # --- 1. Load Station Catalog ---
         source_st_dfs: List[pd.DataFrame] = []
@@ -3462,7 +3462,7 @@ class MasharikiWeatherDataset:
         lapse_rate_k_per_m: xr.DataArray
     ) -> xr.DataArray:
         """
-        Applies the rigorous hydrostatic barometric formula utilizing a dynamic lapse rate,
+        Applies the standard hydrostatic barometric formula utilizing a dynamic lapse rate,
         with a mathematical fallback for isothermal atmospheric layers.
         """
         g = 9.80665 # Gravitational acceleration
@@ -3630,7 +3630,7 @@ class MasharikiWeatherDataset:
                             sampled_continuous[pres_var], sampled_continuous[temp_col], grid_elev, station_elev, eelr
                         )
                         
-        # Cleanup auxiliary variables not explicitly requested by user
+        # Cleanup auxiliary variables not directly requested by user
         vars_to_drop = [v for v in sampled_continuous.data_vars if v not in c_vars]
         sampled_continuous = sampled_continuous.drop_vars(vars_to_drop)
         return sampled_continuous
@@ -3813,7 +3813,7 @@ class MasharikiWeatherDataset:
                     if v_levels:
                         ds = ds.sel(level=v_levels)
                 
-                # Apply explicit temporal constraints to violently slash HTTP payload downloads
+                # Apply direct temporal constraints to reduce HTTP payload downloads
                 if first_date or last_date:
                     f_dt = pd.to_datetime(first_date, utc=True).tz_localize(None) if first_date else None
                     l_dt = pd.to_datetime(last_date, utc=True).tz_localize(None) if last_date else None
@@ -3864,7 +3864,7 @@ class MasharikiWeatherDataset:
                     group_results.append(sampled_patch)
 
                 # --- Merge and Flatten to DataFrame ---
-                # Drop nuisance coordinates PRE-MERGE to avoid strict Xarray spatial dimension conflicts
+                # Drop nuisance coordinates PRE-MERGE to avoid fixed Xarray spatial dimension conflicts
                 nuisance_coords = [lat_dim, lon_dim, 'latitude', 'longitude', 'step',
                                    'number', 'surface', 'valid_time', 'height',
                                    'spatial', 'band', 'spatial_ref', 'patch_y', 'patch_x']
@@ -3877,7 +3877,7 @@ class MasharikiWeatherDataset:
                 merged_yearly_ds = xr.merge(clean_results, compat="override")
                 df = merged_yearly_ds.to_dataframe().reset_index()
                 
-                # Cleanup residual columns explicitly in pandas
+                # Cleanup residual columns directly in pandas
                 cols_to_drop = [c for c in nuisance_coords if c in df.columns]
                 df = df.drop(columns=cols_to_drop, errors='ignore')
                 
@@ -3967,7 +3967,7 @@ class MasharikiWeatherDataset:
             df = df.fillna(fill_value)
             
         if as_numpy:
-            # Enforce strict lexicographic ordering before numpy flatten
+            # Enforce fixed lexicographic ordering before numpy flatten
             # to prevent station/parameter axis scrambling
             df = df.sort_index(axis=1)
             stations = df.columns.unique(0)
@@ -4282,7 +4282,7 @@ class MasharikiWeatherDataset:
             return_mask: Whether to return a mask of the observations alongside the data.
             as_numpy: Whether to export observations as 3D numpy arrays of shape (T, N_stations, C_params).
             split: Temporal split partition ('train' or 'test') anchored at test_set_start.
-            copy: Whether to return an explicit copy of the observations.
+            copy: Whether to return an direct copy of the observations.
 
         Returns:
             ObservationDataFrame or np.ndarray, or tuple (data, mask).
@@ -4439,7 +4439,7 @@ class MasharikiWeatherDataset:
         if groups is None:
             groups = ["chirps"]
 
-        # Strict validation: only daily precipitation products allowed
+        # Fixed validation: only daily precipitation products allowed
         invalid_groups = [g for g in groups if g not in self.VALID_CONSTRAINT_GROUPS]
         if invalid_groups:
             raise ValueError(
@@ -4450,7 +4450,7 @@ class MasharikiWeatherDataset:
 
         self._validate_groups(groups)
 
-        # Determine stations from the Windows object if not explicitly provided
+        # Determine stations from the Windows object if not directly provided
         constraint_stations = stations or getattr(windows, 'station_labels', None)
         target_years = years or self.years
 
@@ -4816,7 +4816,7 @@ class MasharikiWeatherDataset:
                 
             # For the missing mask, if any timestamp within the interval was missing, the interval might be considered missing.
             # Using max() correctly flags True if any sub-interval had True. But since we use min_count=21, 
-            # maybe we use sum() > (hours_in_res - precip_min_count). For now, strict max() is safest for physical fields.
+            # maybe we use sum() > (hours_in_res - precip_min_count). For now, fixed max() is safest for physical fields.
             mask = mask.resample(temporal_resolution).max()
 
         station_static_whitelist = [
@@ -4878,7 +4878,7 @@ class MasharikiWeatherDataset:
             # Valid indices: 0 to len - window_size
             windows.valid_batch_indices = np.arange(0, len(obs_np) - window_size + 1, stride)
             
-        # FORECASTING / DOWNSCALING / MULTI-HORIZON: Strict Causal Windowing [t-tau, t] -> [t+delay, t+delay+horizon]
+        # FORECASTING / DOWNSCALING / MULTI-HORIZON: Fixed Causal Windowing [t-tau, t] -> [t+delay, t+delay+horizon]
         else:
             sample_span = window_size + delay + horizon_size
             if len(observations) < sample_span:
@@ -4962,7 +4962,7 @@ class MasharikiWeatherDataset:
                                 lon_dim = 'lon' if 'lon' in ds.coords else 'longitude'
 
                                 if bbox is not None:
-                                    # Explicit bbox supersedes crop_to_stations
+                                    # Direct bbox supersedes crop_to_stations
                                     # Add 0.25-degree buffer per LAM best practice
                                     buf = 0.25
                                     min_lat, min_lon = bbox[0] - buf, bbox[1] - buf

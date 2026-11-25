@@ -159,7 +159,7 @@ def search_parameters(query: Optional[str] = None) -> pd.DataFrame:
 
 class PVGIS(_BaseDatasetWrapper):
     """
-    Comprehensive client for the European Commission Joint Research Centre (JRC)
+    Full client for the European Commission Joint Research Centre (JRC)
     Photovoltaic Geographical Information System (PVGIS) API.
 
     Supports:

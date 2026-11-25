@@ -1,7 +1,7 @@
 """
 Base Extraction Interfaces, Spatial/Temporal Validators, and CRS Compliance Engines.
 
-Defines standardized data classes, abstract extraction contracts, high-throughput
+Defines standardized data classes, abstract extraction contracts, batch
 vectorized validators, and CF-1.8+ / WGS 84 (EPSG:4326) CRS enforcement utilities
 for MasharikiWeather.
 """
@@ -874,7 +874,7 @@ def validate_crs_compliance(
         Dataset or DataArray to validate.
     target_epsg : int, default 4326
         Target EPSG coordinate reference code.
-    strict : bool, default False
+    fixed : bool, default False
         If True, raises CRSComplianceError on non-compliance.
 
     Returns
@@ -1019,10 +1019,10 @@ def validate_variables(
     requested_variables : Sequence[str]
         List of variable names requested by caller.
     available_variables : Optional[Sequence[str]]
-        Explicit set of valid variables for this extractor. If None, resolved from registry.
+        Direct set of valid variables for this extractor. If None, resolved from registry.
     extractor_name : Optional[str]
         Identifier of the calling extractor ('imerg', 'era5', 'tahmo', etc.).
-    strict : bool, default True
+    fixed : bool, default True
         If True, raises VariableNotAvailableError when any requested variable is unavailable.
         If False, issues UserWarning and returns sanitized results.
 
@@ -1130,7 +1130,7 @@ def validate_station_identifiers(
         Known valid station inventory. If DataFrame, searches 'station_id' or index.
     extractor_network : str, default 'tahmo'
         Expected observing network ('tahmo', 'ghcn', 'ghcnd', 'cds_insitu').
-    strict : bool, default True
+    fixed : bool, default True
         If True, raises StationNotFoundError on invalid stations or cross-network mismatches.
 
     Returns
@@ -1255,7 +1255,7 @@ def validate_temporal_coverage(
     strict: bool = False,
 ) -> TemporalValidationResult:
     """
-    High-throughput vectorized temporal coverage validation across station inventories.
+    Batch vectorized temporal coverage validation across station inventories.
 
     Vectorized evaluations:
     1. Pre-commission check: station active interval begins after query end date.
@@ -1278,7 +1278,7 @@ def validate_temporal_coverage(
         API operational limits (earliest_available, latest_available).
     requested_stations : Optional[Sequence[str]]
         Subset of station identifiers to validate. If None, validates all catalog stations.
-    strict : bool, default False
+    fixed : bool, default False
         If True, raises TemporalCoverageError if requested range is out of operational bounds
         or if requested stations have 0.0 coverage.
 

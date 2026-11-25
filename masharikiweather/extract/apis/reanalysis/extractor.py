@@ -64,7 +64,7 @@ class ReanalysisExtractor(BaseExtractor):
         locations : sequence of dict or tuple, optional
             List of target locations.
         bbox : SpatialBoundingBox, optional
-            Spatial bounding box to sample if locations are not explicitly specified.
+            Spatial bounding box to sample if locations are not directly specified.
         variables : sequence of str, optional
             Target variables to retrieve.
         format : str, default 'wide'

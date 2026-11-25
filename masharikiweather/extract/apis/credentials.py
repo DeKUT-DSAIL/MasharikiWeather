@@ -2,7 +2,7 @@
 Credentials and Authentication Management for MasharikiWeather APIs.
 
 Provides a unified Bring Your Own Key (BYOK) credential manager that discovers
-authentication secrets from explicit parameters, environment variables,
+authentication secrets from direct parameters, environment variables,
 local .env files, and configuration files (~/.cdsapirc, ~/.netrc).
 """
 
@@ -167,7 +167,7 @@ class CredentialsManager:
     def _get_candidate_env_paths(cls, env_file: Optional[Union[str, Path]] = None) -> List[Path]:
         """
         Generate candidate search paths for environment files.
-        Checks explicit env_file if provided, followed by .env in current
+        Checks direct env_file if provided, followed by .env in current
         working directory, AI4weather sibling repositories, and user home directory.
         Never enforces a required file path.
         """
@@ -195,7 +195,7 @@ class CredentialsManager:
         Discover TAHMO DataHub credentials.
 
         Resolution precedence:
-        1. Explicit `api_key` and `api_secret` arguments.
+        1. Direct `api_key` and `api_secret` arguments.
         2. Environment variables `TAHMO_API_KEY` and `TAHMO_API_SECRET`.
         3. Optional `env_file` argument, plus .env in current directory or user home directory.
 
@@ -262,10 +262,10 @@ class CredentialsManager:
         Discover Copernicus Climate Data Store (CDS) credentials.
 
         Resolution precedence:
-        1. Explicit function arguments (`key`, `url`, `cds_key`, `cds_url`).
+        1. Direct function arguments (`key`, `url`, `cds_key`, `cds_url`).
         2. Environment variables `CDSAPI_KEY` and `CDSAPI_URL`.
-        3. Explicitly specified `rc_file` or `cds_rc_file`.
-        4. If not explicitly provided, returns None for url and key so that
+        3. Directly specified `rc_file` or `cds_rc_file`.
+        4. If not directly provided, returns None for url and key so that
            cdsapi.Client() initializes with its native automatic discovery
            (~/.cdsapirc or standard environment variables).
 
@@ -321,12 +321,12 @@ class CredentialsManager:
         env_file: Optional[Union[str, Path]] = None,
     ) -> str:
         """
-        Discover Copernicus CDS API key string from explicit argument, environment, or ~/.cdsapirc.
+        Discover Copernicus CDS API key string from direct argument, environment, or ~/.cdsapirc.
 
         Parameters
         ----------
         key : Optional[str]
-            Explicitly provided CDS API key.
+            Directly provided CDS API key.
         rc_file : Optional[Union[str, Path]]
             Custom path to .cdsapirc file.
         env_file : Optional[Union[str, Path]]
@@ -382,7 +382,7 @@ class CredentialsManager:
         Discover NASA Earthdata / Earth Access credentials.
 
         Resolution precedence:
-        1. Explicit `username`, `password`, or `token` arguments.
+        1. Direct `username`, `password`, or `token` arguments.
         2. Environment variables `EARTHDATA_USERNAME`, `EARTHDATA_PASSWORD`, `EARTHDATA_TOKEN`, `EDL_TOKEN`.
         3. Netrc configuration in $HOME/.netrc or ~/.netrc.
         4. Optional `env_file` argument, plus .env in current directory or user home directory.
@@ -536,7 +536,7 @@ def get_credentials(service: str, **kwargs: Any) -> Dict[str, Any]:
     service : str
         Service identifier ('tahmo', 'earthdata', 'imerg', 'cds', 'era5', etc.).
     **kwargs : Any
-        Explicit credential arguments and aliases passed directly to the service retriever.
+        Direct credential arguments and aliases passed directly to the service retriever.
         Supported keywords:
         - TAHMO: api_key, api_secret, env_file
         - CDS/ERA5/In-Situ: key, url, cds_key, cds_url, rc_file, cds_rc_file
