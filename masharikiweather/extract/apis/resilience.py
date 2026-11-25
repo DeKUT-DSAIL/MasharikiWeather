@@ -443,6 +443,10 @@ def _canonicalize_value(val: Any) -> Any:
     return str(val)
 
 
+DEFAULT_CACHE_TTL_DAYS: float = 7.0
+_KEY_EXPLICIT_DATE_RE = re.compile(r"(?:\d{8}_\d{8}|^\d{4}-\d{2}$)")
+
+
 def _compute_request_hash(source: str, request_params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """Compute deterministic 16-character SHA-256 prefix from source and canonicalized parameters."""
     canonical_params = _canonicalize_value(request_params)
@@ -483,18 +487,24 @@ class ExtractionCache:
         request_params: Dict[str, Any],
         resume: bool = True,
         overwrite: bool = False,
+        cache_ttl_days: Optional[float] = DEFAULT_CACHE_TTL_DAYS,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.source = _normalize_source_name(source)
         self.resume = bool(resume)
         self.overwrite = bool(overwrite)
+        self.cache_ttl_days = cache_ttl_days
         self.request_hash, canonical_params = _compute_request_hash(self.source, request_params)
+        self._canonical_params: Dict[str, Any] = canonical_params
         self.cache_dir = self.output_dir / ".extract_cache" / self.source / self.request_hash
         self.manifest_path = self.cache_dir / "manifest.json"
         self._lock = threading.RLock()
         self._start_time = time.monotonic()
         self._cached_hits: Set[str] = set()
         self._newly_fetched: Set[str] = set()
+
+        if self.cache_ttl_days is not None and self.cache_ttl_days > 0:
+            self.prune_expired(max_age_days=self.cache_ttl_days)
 
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._manifest: Dict[str, Any] = self._init_manifest(canonical_params)
@@ -514,6 +524,7 @@ class ExtractionCache:
                 "source": self.source,
                 "request_hash": self.request_hash,
                 "request_params": canonical_params,
+                "updated_at": time.time(),
                 "partitions": {},
             }
             self._write_manifest_locked(manifest)
@@ -521,6 +532,7 @@ class ExtractionCache:
 
     def _write_manifest_locked(self, manifest: Optional[Dict[str, Any]] = None) -> None:
         target = manifest if manifest is not None else self._manifest
+        target["updated_at"] = time.time()
         tmp_path = self.cache_dir / f"manifest.json.tmp.{uuid.uuid4().hex}"
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(target, fh, indent=2, sort_keys=True)
@@ -540,12 +552,131 @@ class ExtractionCache:
         }
         self._write_manifest_locked()
 
+    def _is_peer_manifest_compatible(self, peer_params: Dict[str, Any], key: str) -> bool:
+        """Return True if a sibling cache manifest is safe to reuse for partition `key`."""
+        if not isinstance(peer_params, dict):
+            return False
+
+        cur_vars = self._canonical_params.get("variables")
+        peer_vars = peer_params.get("variables")
+        if peer_vars is not None:
+            if cur_vars is None:
+                return False
+            if not set(str(v) for v in cur_vars).issubset(set(str(v) for v in peer_vars)):
+                return False
+
+        for strict_key in ("resolution", "format", "apply_qc", "parquet_layout", "dataset_name", "region"):
+            if strict_key in self._canonical_params or strict_key in peer_params:
+                if self._canonical_params.get(strict_key) != peer_params.get(strict_key):
+                    return False
+
+        if _KEY_EXPLICIT_DATE_RE.search(str(key)):
+            return True
+
+        return (
+            peer_params.get("start_date") == self._canonical_params.get("start_date")
+            and peer_params.get("end_date") == self._canonical_params.get("end_date")
+        )
+
+    def _promote_from_peer_caches_locked(self, key: str) -> bool:
+        """Search sibling request hashes for a completed `key` and promote it locally."""
+        source_root = self.output_dir / ".extract_cache" / self.source
+        if not source_root.is_dir():
+            return False
+
+        for peer_dir in sorted(source_root.iterdir()):
+            if not peer_dir.is_dir() or peer_dir.name == self.request_hash:
+                continue
+            peer_manifest_path = peer_dir / "manifest.json"
+            if not peer_manifest_path.is_file():
+                continue
+            try:
+                with open(peer_manifest_path, "r", encoding="utf-8") as fh:
+                    peer_manifest = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+
+            if not self._is_peer_manifest_compatible(peer_manifest.get("request_params", {}), key):
+                continue
+
+            entry = peer_manifest.get("partitions", {}).get(str(key))
+            if not entry or entry.get("status") != "completed":
+                continue
+
+            rel_path = entry.get("path")
+            if not rel_path:
+                continue
+            src_target = peer_dir / rel_path
+            if not src_target.exists():
+                continue
+
+            dest_name = Path(rel_path).name
+            dest_target = self.cache_dir / dest_name
+            try:
+                if src_target.is_file() and src_target.stat().st_size > 0:
+                    try:
+                        if dest_target.exists():
+                            dest_target.unlink()
+                        os.link(src_target, dest_target)
+                    except OSError:
+                        shutil.copy2(src_target, dest_target)
+                    self._set_partition_locked(key, "completed", rel_path=dest_name, error=None)
+                    return True
+                if src_target.is_dir() and any(src_target.iterdir()):
+                    if dest_target.exists():
+                        shutil.rmtree(dest_target)
+                    shutil.copytree(src_target, dest_target)
+                    self._set_partition_locked(key, "completed", rel_path=dest_name, error=None)
+                    return True
+            except OSError:
+                continue
+
+        return False
+
+    def prune_expired(self, max_age_days: float = DEFAULT_CACHE_TTL_DAYS) -> int:
+        """Remove sibling request-hash cache directories older than `max_age_days`."""
+        if max_age_days <= 0:
+            return 0
+        source_root = self.output_dir / ".extract_cache" / self.source
+        if not source_root.is_dir():
+            return 0
+
+        cutoff = time.time() - (float(max_age_days) * 86400.0)
+        removed = 0
+        for peer_dir in list(source_root.iterdir()):
+            if not peer_dir.is_dir() or peer_dir.name == self.request_hash:
+                continue
+            manifest_p = peer_dir / "manifest.json"
+            updated_at: Optional[float] = None
+            if manifest_p.is_file():
+                try:
+                    with open(manifest_p, "r", encoding="utf-8") as fh:
+                        data = json.load(fh)
+                    if isinstance(data, dict) and isinstance(data.get("updated_at"), (int, float)):
+                        updated_at = float(data["updated_at"])
+                except (OSError, json.JSONDecodeError):
+                    pass
+            if updated_at is None:
+                try:
+                    updated_at = peer_dir.stat().st_mtime
+                except OSError:
+                    continue
+            if updated_at < cutoff:
+                shutil.rmtree(peer_dir, ignore_errors=True)
+                removed += 1
+        return removed
+
     def is_done(self, key: str) -> bool:
-        """Return True if key is already completed (with non-empty file) or empty under resume mode."""
+        """Return True if key is already completed (locally or in a compatible peer hash) or empty."""
         if not self.resume or self.overwrite:
             return False
         with self._lock:
             entry = self._manifest["partitions"].get(str(key))
+            if not entry:
+                if self._promote_from_peer_caches_locked(key):
+                    entry = self._manifest["partitions"].get(str(key))
+                else:
+                    return False
             if not entry:
                 return False
             status = entry.get("status")
@@ -567,6 +698,9 @@ class ExtractionCache:
         """Return the cached file or directory Path for key if recorded and present."""
         with self._lock:
             entry = self._manifest["partitions"].get(str(key))
+            if not entry and self.resume and not self.overwrite:
+                if self._promote_from_peer_caches_locked(key):
+                    entry = self._manifest["partitions"].get(str(key))
             if not entry:
                 return None
             rel_path = entry.get("path")
