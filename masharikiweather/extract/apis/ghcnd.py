@@ -3260,7 +3260,6 @@ __all__ = [
     'query_ghcn_hourly',
     'ghcn_daily',
     'ghcn_hourly',
-    'get_ghcn_data',
     'check_ghcn_availability',
     'get_stations',
     'get_african_stations',
