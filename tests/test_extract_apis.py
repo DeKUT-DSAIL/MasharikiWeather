@@ -2601,3 +2601,31 @@ def test_imerg_yearly_zarr_and_open_imerg_zarr(tmp_path: Path) -> None:
     opened = open_imerg_zarr(zdir, "2023-01-01", "2023-01-03")
     assert opened.sizes["time"] == 3
     opened.close()
+
+
+def test_cds_insitu_separates_daily_and_sub_daily_filenames(tmp_path: Path, monkeypatch: Any) -> None:
+    """Verify CDSInSituExtractor separates daily and sub_daily outputs by time_aggregation."""
+    from masharikiweather.extract.apis.cds_insitu import CDSInSituExtractor
+
+    retrieved: List[str] = []
+
+    class _FakeClient:
+        def retrieve(self, dataset: str, req: Dict[str, Any], target: str) -> None:
+            retrieved.append(req["time_aggregation"])
+            xr.Dataset(
+                {"air_temperature": (("obs",), np.array([295.0], dtype=np.float32))},
+                coords={"obs": [0]},
+            ).to_netcdf(target)
+
+    ext_daily = CDSInSituExtractor(output_dir=tmp_path, time_aggregation="daily")
+    ext_sub = CDSInSituExtractor(output_dir=tmp_path, time_aggregation="sub_daily")
+    monkeypatch.setattr(ext_daily, "_get_client", lambda **kw: _FakeClient())
+    monkeypatch.setattr(ext_sub, "_get_client", lambda **kw: _FakeClient())
+
+    p_daily = ext_daily.extract_year(2023)
+    p_sub = ext_sub.extract_year(2023)
+
+    assert p_daily.name == "insitu_surface_daily_2023.parquet"
+    assert p_sub.name == "insitu_surface_sub_daily_2023.parquet"
+    assert p_daily != p_sub
+    assert retrieved == ["daily", "sub_daily"]
