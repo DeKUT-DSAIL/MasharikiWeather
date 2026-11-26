@@ -2033,38 +2033,36 @@ class MasharikiWeatherDataset:
         Supports Automated Daily Re-chunking if self.rechunk=True.
         """
         optimized_path = f"{self.root_dir}/optimized/{group}/{year}.zarr"
-        local_path = f"{self.root_dir}/gridded/{group}/{year}.zarr"
-        
-        # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
-        if os.path.exists(optimized_path):
+        candidate_local_paths = [
+            f"{self.root_dir}/gridded/{group}/{year}.zarr",
+            f"{self.root_dir}/gridded/{group}/{group}_{year}.zarr",
+            f"{self.root_dir}/gridded/{group}/zarr/{year}.zarr",
+            f"{self.root_dir}/gridded/{group}/zarr/IMERG_{year}.zarr",
+        ]
+        local_path = next((p for p in candidate_local_paths if os.path.exists(p)), candidate_local_paths[0])
+
+        def _open_zarr_any_version(p_str: str, chunks_arg: Any) -> xr.Dataset:
             try:
-                ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
-                                  consolidated=True, decode_timedelta=False, zarr_format=2)
+                return xr.open_zarr(p_str, chunks=chunks_arg, decode_timedelta=False)
             except Exception:
                 try:
-                    ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, 
-                                      consolidated=False, decode_timedelta=False, zarr_format=2)
+                    return xr.open_zarr(p_str, chunks=chunks_arg, consolidated=True, decode_timedelta=False, zarr_format=2)
                 except Exception:
-                    ds = xr.open_zarr(optimized_path, chunks={} if lazy else None, decode_timedelta=False)
+                    return xr.open_zarr(p_str, chunks=chunks_arg, consolidated=False, decode_timedelta=False, zarr_format=2)
+
+        # 1. Prioritize Daily Optimized Tier (O(1) Fetch)
+        if os.path.exists(optimized_path):
+            ds = _open_zarr_any_version(optimized_path, {} if lazy else None)
             return self._standardize_coordinates(ds)
-        
+
         # 2. Check Raw Download Tier
         if os.path.exists(local_path):
             # Automated Optimization Hook
             if self.rechunk:
                 rechunk_dataset(local_path, optimized_path, time_chunks=24, swap=getattr(self, "swap", False))
                 return self._open_gridded_zarr(group, year, lazy)
-                
-            chunks = {} if lazy else None
-            try:
-                ds = xr.open_zarr(local_path, chunks=chunks, 
-                                  consolidated=True, decode_timedelta=False, zarr_format=2)
-            except Exception:
-                try:
-                    ds = xr.open_zarr(local_path, chunks=chunks, 
-                                      consolidated=False, decode_timedelta=False, zarr_format=2)
-                except Exception:
-                    ds = xr.open_zarr(local_path, chunks=chunks, decode_timedelta=False)
+
+            ds = _open_zarr_any_version(local_path, {} if lazy else None)
             return self._standardize_coordinates(ds)
                 
         # 3. Fallback to Hugging Face lazy streaming pipeline if enabled
@@ -4735,7 +4733,7 @@ def extract_gridded(
         for yr in range(s_ts.year, e_ts.year + 1):
             y_start = max(s_ts, pd.Timestamp(f"{yr}-01-01"))
             y_end = min(e_ts, pd.Timestamp(f"{yr}-12-31 23:59:59"))
-            zarr_path = out_dir / f"{src}_{yr}.zarr"
+            zarr_path = out_dir / f"{yr}.zarr"
             append_existing = False
 
             if resume and not overwrite:
@@ -4759,7 +4757,7 @@ def extract_gridded(
                 ds_yr.to_zarr(zarr_path, mode="w", zarr_format=3)
             last_zarr_path = zarr_path
 
-        return last_zarr_path if last_zarr_path is not None else out_dir / f"{src}_{s_ts.year}.zarr"
+        return last_zarr_path if last_zarr_path is not None else out_dir / f"{s_ts.year}.zarr"
 
 
 def pull_gridded_data(

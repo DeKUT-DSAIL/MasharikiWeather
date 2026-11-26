@@ -361,7 +361,7 @@ def open_imerg_zarr(
     s_dt, e_dt = parse_date_range(start_date, end_date)
 
     root = Path(zarr_dir)
-    yearly_stores = sorted(root.glob("IMERG_*.zarr"))
+    yearly_stores = sorted(list(root.glob("[0-9][0-9][0-9][0-9].zarr")) + list(root.glob("IMERG_*.zarr")))
     monthly_stores = sorted(root.glob("*/IMERG_*_*.zarr"))
     valid_stores: List[Path] = []
 
@@ -523,7 +523,7 @@ class IMERGExtractor(BaseExtractor):
 
         if convert_to_zarr and resume and not overwrite:
             for yr in years_in_range:
-                store_path = zarr_root / f"IMERG_{yr}.zarr"
+                store_path = zarr_root / f"{yr}.zarr"
                 cov = inspect_zarr_coverage(store_path)
                 if cov is None:
                     continue
@@ -665,7 +665,7 @@ class IMERGExtractor(BaseExtractor):
                 windows_by_year.setdefault(win_start.year, []).append(win_start)
 
             for y, month_starts in sorted(windows_by_year.items()):
-                store_path = zarr_root / f"IMERG_{y}.zarr"
+                store_path = zarr_root / f"{y}.zarr"
                 zarr_key = f"zarr_{y}"
 
                 if y in year_skip_download and store_path.exists():

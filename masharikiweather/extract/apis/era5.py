@@ -1832,7 +1832,7 @@ class ERA5Extractor(BaseExtractor):
                     variables=variables,
                     levels=levels,
                     save_zarr=True,
-                    zarr_name=f"era5_{yr}.zarr",
+                    zarr_name=f"{yr}.zarr",
                     use_legacy=use_legacy,
                     use_cds_arco=use_cds_arco,
                     use_google_arco=use_google_arco,
@@ -1851,9 +1851,9 @@ class ERA5Extractor(BaseExtractor):
                     keep_cache=keep_cache,
                     dry_run=False,
                 )
-            return last_zarr if last_zarr is not None else self.output_dir / f"era5_{s_dt.year}.zarr"
+            return last_zarr if last_zarr is not None else self.output_dir / f"{s_dt.year}.zarr"
 
-        effective_zarr_name = zarr_name or f"era5_{s_dt.year}.zarr"
+        effective_zarr_name = zarr_name or f"{s_dt.year}.zarr"
         append_existing_zarr = False
         if save_zarr and resume and not overwrite:
             existing_zarr_path = self.output_dir / effective_zarr_name
