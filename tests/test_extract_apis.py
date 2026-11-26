@@ -2552,15 +2552,15 @@ def test_era5_yearly_zarr_incremental_date_delta(tmp_path: Path, monkeypatch: An
     monkeypatch.setattr(ext, "check_google_arco_availability", lambda **kw: True)
     monkeypatch.setattr(ext, "extract_google_arco_slice", _fake_google_arco)
 
-    # 1. Initial pull: Jan 1 - Jan 5 -> writes era5_2023.zarr
+    # 1. Initial pull: Jan 1 - Jan 5 -> writes 2023.zarr
     zp = ext.extract("2023-01-01", "2023-01-05", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
-    assert Path(zp) == tmp_path / "era5_2023.zarr"
+    assert Path(zp) == tmp_path / "2023.zarr"
     assert calls == [("2023-01-01", "2023-01-05")]
 
     # 2. Subset pull: Jan 2 - Jan 4 -> 0 downloads
     calls.clear()
     zp2 = ext.extract("2023-01-02", "2023-01-04", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
-    assert Path(zp2) == tmp_path / "era5_2023.zarr"
+    assert Path(zp2) == tmp_path / "2023.zarr"
     assert calls == []
 
     # 3. Extend to Jan 8 -> only fetches Jan 6 - Jan 8 and appends
@@ -2568,20 +2568,20 @@ def test_era5_yearly_zarr_incremental_date_delta(tmp_path: Path, monkeypatch: An
     ext.extract("2023-01-01", "2023-01-08", bbox=[0.0, 36.0, 1.0, 37.0], variables=["2m_temperature"], save_zarr=True, show_progress=False)
     assert calls == [("2023-01-06", "2023-01-08")]
 
-    ds = xr.open_zarr(str(tmp_path / "era5_2023.zarr"))
+    ds = xr.open_zarr(str(tmp_path / "2023.zarr"))
     assert ds.sizes["time"] == 8
     ds.close()
 
 
 def test_imerg_yearly_zarr_and_open_imerg_zarr(tmp_path: Path) -> None:
-    """Verify open_imerg_zarr reads yearly IMERG_YYYY.zarr stores and inspect_zarr_coverage detects date bounds."""
+    """Verify open_imerg_zarr reads yearly {year}.zarr stores and inspect_zarr_coverage detects date bounds."""
     import xarray as xr
     from masharikiweather.extract.apis.imerg import open_imerg_zarr
     from masharikiweather.extract.apis.resilience import append_to_zarr, compute_missing_zarr_windows, inspect_zarr_coverage
 
     zdir = tmp_path / "zarr"
     zdir.mkdir(parents=True, exist_ok=True)
-    store = zdir / "IMERG_2023.zarr"
+    store = zdir / "2023.zarr"
     t1 = pd.date_range("2023-01-01", periods=3, freq="D")
     ds1 = xr.Dataset(
         {"precipitation": (("time", "lat", "lon"), np.ones((3, 2, 2), dtype=np.float32))},
