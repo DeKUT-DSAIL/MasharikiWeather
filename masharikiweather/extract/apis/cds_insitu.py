@@ -416,8 +416,9 @@ class CDSInSituExtractor(BaseExtractor):
         vars_to_fetch = variables if variables is not None else self.variables
         client = self._get_client(cds_key=cds_key, cds_url=cds_url)
 
-        target_parquet = self.output_dir / f"insitu_surface_{year}.parquet"
-        target_nc = self.output_dir / f"insitu_surface_{year}.nc"
+        agg_tag = str(self.time_aggregation or "daily").strip().lower()
+        target_parquet = self.output_dir / f"insitu_surface_{agg_tag}_{year}.parquet"
+        target_nc = self.output_dir / f"insitu_surface_{agg_tag}_{year}.nc"
 
         if output_format == "parquet" and target_parquet.exists():
             logger.info("File already exists locally: %s", target_parquet)
